@@ -1,1 +1,1 @@
-"""Electrochemical technique MethodSCRIPT generation."""
+"""MethodSCRIPT generation for electrochemical techniques."""

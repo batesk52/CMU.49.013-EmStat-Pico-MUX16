@@ -69,19 +69,19 @@ CMU.49.013-EmStat-Pico-MUX16/
 
 #### src/techniques/
 - **scripts.py** - MethodSCRIPT generator for all electrochemical techniques (Req 4)
-  * Template-based generation: preamble (pgstat config, cell_on) followed by technique-specific measurement loop followed by postamble (on_finished: cell_off)
+  * Template-based generation: preamble (pgstat config, cell_on) followed by technique measurement loop and postamble (on_finished: cell_off)
   * Supports 15 standard techniques (LSV, DPV, SWV, NPV, ACV, CV, CA, FCA, CP, OCP, EIS, GEIS, PAD, LSP, FCV) and 3 MUX-alternating variants (ca_alt_mux, cp_alt_mux, ocp_alt_mux)
-  * Fully parameterised: potential range, scan rate, frequency range, step size, amplitude, current range with sensible defaults per technique
-  * Values formatted with MethodSCRIPT SI prefix notation (e.g., 500m for 0.5 V, 100u for 0.0001 A)
-  * Each technique includes pck_start/pck_add/pck_end blocks for data packet configuration with technique-appropriate variable types
-  * Multi-channel measurements wrapped in meas_loop_for scan loop; MUX-alternating techniques delegate channel switching to the device
+  * Parameterised via `generate(technique, params, channels)` with defaults for all parameters (potential range, scan rate, frequency range, step size, amplitude, current range)
+  * Formats all values with MethodSCRIPT SI prefix notation (e.g., `500m` for 0.5 V) via internal `_format_si()` helper
+  * Includes pck_start/pck_add/pck_end blocks configured per technique type (voltammetry, amperometry, potentiometry, EIS)
+  * Multi-channel runs wrap the technique body in a MUX scan loop via `MuxController.scan_channels_script_with_body()`
 
 #### src/data/
 - **models.py** - Data models for measurements and configuration (Req 2, 4)
-  * `TechniqueConfig` dataclass: bundles technique name (auto-lowercased), parameter dict, and 1-indexed channel list
-  * `DataPoint` dataclass: timestamp, channel, and variable dict mapping names to float values with convenience `get()` accessor
-  * `MeasurementResult`: collects DataPoints with metadata (technique, start_time, device_info); provides `for_channel()` filtering and `channels` property
-  * `ChannelData`: per-channel filtered view with `values(name)`, `timestamps()`, and `variable_names` accessors for plotting and export
+  * `TechniqueConfig` dataclass: technique name (auto-lowercased), parameter dict, and channel list
+  * `DataPoint` dataclass: timestamp, channel, and variable dict mapping names to float values with `get()` accessor
+  * `MeasurementResult`: ordered list of DataPoints with metadata (technique, start_time, device_info, params, channels) and `channel_data()` filtered-view method
+  * `ChannelData`: per-channel subset with `values(name)` and `timestamps()` convenience extractors
 
 #### src/engine/
 - [ ] **measurement_engine.py** - Background measurement thread (Req 2, 3, 4)

@@ -1,115 +1,117 @@
 """Data models for measurements and configuration.
 
-Provides dataclasses that flow through the measurement pipeline:
-``TechniqueConfig`` is built from GUI inputs, ``DataPoint`` instances
-are emitted by the engine during acquisition, and ``MeasurementResult``
-collects them for export. ``ChannelData`` offers a filtered view of
-results for a single MUX channel.
+Provides dataclasses for technique configuration, individual data points,
+full measurement results with metadata, and per-channel filtered views.
+These models form the data layer shared between the engine, GUI, and
+export modules.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
 class TechniqueConfig:
     """Configuration for an electrochemical technique.
 
-    Bundles the technique name with its parameter dictionary and the
-    list of MUX channels to measure on.
+    Bundles the technique name, its parameters, and the list of MUX
+    channels to measure on.
 
     Attributes:
-        technique: Technique identifier (e.g., 'cv', 'dpv', 'eis').
-        params: Technique-specific parameters keyed by name
-            (e.g., ``{'e_begin': -0.5, 'scan_rate': 0.1}``).
-        channels: 1-indexed MUX channel numbers to scan (1-16).
+        technique: Lowercase technique identifier (e.g., 'cv', 'dpv',
+            'eis'). Must match a key in the technique script registry.
+        params: Technique-specific parameter dictionary. Keys and
+            expected types vary by technique (e.g., ``e_begin``,
+            ``scan_rate``, ``freq_start``).
+        channels: 1-indexed MUX channel numbers to include in the
+            measurement (e.g., ``[1, 2, 5]``).
     """
 
     technique: str
-    params: dict
+    params: dict[str, Any]
     channels: list[int]
 
     def __post_init__(self) -> None:
-        """Normalize technique name to lowercase."""
+        """Normalise technique name to lowercase."""
         self.technique = self.technique.lower()
 
 
 @dataclass
 class DataPoint:
-    """A single measurement data point from the device.
+    """A single decoded measurement sample.
 
-    Each data point carries decoded variable values from one packet
-    line, tagged with the MUX channel and a timestamp.
+    Represents one data packet from the device, containing one or more
+    named measurement values (potential, current, impedance, etc.).
 
     Attributes:
-        timestamp: Time of acquisition (seconds from measurement start,
-            or absolute datetime depending on context).
-        channel: 1-indexed MUX channel that produced this data point.
-        variables: Mapping of variable name to decoded float value
+        timestamp: Time of acquisition in seconds relative to
+            measurement start. ``None`` if not yet assigned.
+        channel: 1-indexed MUX channel that produced this sample.
+        variables: Mapping of variable names to float values
             (e.g., ``{'set_potential': 0.5, 'current': 1.2e-6}``).
     """
 
-    timestamp: float
+    timestamp: Optional[float]
     channel: int
-    variables: dict[str, float]
+    variables: dict[str, float] = field(default_factory=dict)
 
     def get(self, name: str, default: float = 0.0) -> float:
-        """Return the value for a variable name, or *default*.
+        """Return the value of a named variable.
 
         Args:
-            name: Variable name (e.g., 'current', 'measured_potential').
-            default: Fallback value if *name* is not present.
+            name: Variable name (e.g., 'current', 'set_potential').
+            default: Value to return if the variable is not present.
 
         Returns:
-            The variable value or *default*.
+            The float value, or *default* if not found.
         """
         return self.variables.get(name, default)
 
 
 @dataclass
 class MeasurementResult:
-    """Collected data points and metadata for a complete measurement run.
+    """Complete result of a measurement run.
 
-    Populated incrementally by the measurement engine during acquisition
-    and consumed by exporters after the run completes.
+    Collects all data points from a single measurement execution along
+    with metadata describing the run.
 
     Attributes:
-        data_points: All data points in acquisition order.
-        technique: Technique identifier used for this run.
+        data_points: Ordered list of all decoded data points.
+        technique: Lowercase technique identifier used for this run.
         start_time: Wall-clock time when the measurement started.
-        device_info: Optional dict with device metadata (firmware
-            version, serial number, port, etc.).
+        device_info: Optional dict with device metadata (e.g.,
+            ``{'firmware': '...', 'serial': '...'}``).
+        params: Copy of the technique parameters used.
+        channels: List of channels that were measured.
     """
 
     data_points: list[DataPoint] = field(default_factory=list)
     technique: str = ""
     start_time: Optional[datetime] = None
-    device_info: Optional[dict[str, str]] = None
+    device_info: dict[str, str] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
+    channels: list[int] = field(default_factory=list)
 
     def add_point(self, point: DataPoint) -> None:
-        """Append a data point to the result buffer.
+        """Append a data point to the result.
 
         Args:
             point: The decoded data point to add.
         """
         self.data_points.append(point)
 
-    @property
-    def channels(self) -> list[int]:
-        """Return sorted list of unique channel numbers present."""
-        return sorted({dp.channel for dp in self.data_points})
-
-    def for_channel(self, channel: int) -> "ChannelData":
-        """Return a ``ChannelData`` view filtered to one channel.
+    def channel_data(self, channel: int) -> ChannelData:
+        """Return a filtered view for a single channel.
 
         Args:
-            channel: 1-indexed MUX channel number.
+            channel: 1-indexed channel number.
 
         Returns:
-            A ``ChannelData`` containing only points for *channel*.
+            A ``ChannelData`` instance containing only the data points
+            from the specified channel.
         """
         filtered = [
             dp for dp in self.data_points if dp.channel == channel
@@ -118,44 +120,53 @@ class MeasurementResult:
             channel=channel,
             data_points=filtered,
             technique=self.technique,
-            start_time=self.start_time,
-            device_info=self.device_info,
+            params=self.params,
         )
 
-    def __len__(self) -> int:
+    @property
+    def num_points(self) -> int:
+        """Return the total number of data points."""
         return len(self.data_points)
+
+    @property
+    def measured_channels(self) -> list[int]:
+        """Return sorted list of channels that have data points."""
+        return sorted({dp.channel for dp in self.data_points})
 
 
 @dataclass
 class ChannelData:
-    """Filtered view of a ``MeasurementResult`` for a single channel.
+    """Filtered view of measurement data for a single channel.
 
-    Provides convenience accessors for extracting arrays of specific
-    variables, useful for plotting and export.
+    Provides convenient access to the data points belonging to one
+    MUX channel within a ``MeasurementResult``.
 
     Attributes:
-        channel: 1-indexed MUX channel number.
+        channel: 1-indexed channel number.
         data_points: Data points for this channel only.
-        technique: Technique identifier from the parent result.
-        start_time: Measurement start time from the parent result.
-        device_info: Device metadata from the parent result.
+        technique: Technique identifier.
+        params: Technique parameters.
     """
 
     channel: int
     data_points: list[DataPoint] = field(default_factory=list)
     technique: str = ""
-    start_time: Optional[datetime] = None
-    device_info: Optional[dict[str, str]] = None
+    params: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def num_points(self) -> int:
+        """Return the number of data points for this channel."""
+        return len(self.data_points)
 
     def values(self, name: str) -> list[float]:
-        """Extract a list of values for a single variable name.
+        """Extract a list of values for a named variable.
 
         Args:
             name: Variable name (e.g., 'current').
 
         Returns:
             List of float values in acquisition order. Points that
-            do not contain *name* are skipped.
+            lack the variable are skipped.
         """
         return [
             dp.variables[name]
@@ -164,16 +175,14 @@ class ChannelData:
         ]
 
     def timestamps(self) -> list[float]:
-        """Return timestamps for all data points in this channel."""
-        return [dp.timestamp for dp in self.data_points]
+        """Return timestamps for all data points in this channel.
 
-    @property
-    def variable_names(self) -> set[str]:
-        """Return the set of variable names present across all points."""
-        names: set[str] = set()
-        for dp in self.data_points:
-            names.update(dp.variables.keys())
-        return names
-
-    def __len__(self) -> int:
-        return len(self.data_points)
+        Returns:
+            List of timestamp floats. Points with ``None`` timestamps
+            are excluded.
+        """
+        return [
+            dp.timestamp
+            for dp in self.data_points
+            if dp.timestamp is not None
+        ]
