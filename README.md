@@ -96,21 +96,19 @@ CMU.49.013-EmStat-Pico-MUX16/
 ### Phase 3: GUI Application
 
 #### src/gui/
-- [ ] **plot_widget.py** - Live pyqtgraph plot with per-channel curves (Req 5)
-  * pyqtgraph PlotWidget subclass with technique-aware axis configuration
-  * Per-channel curves with distinct colors (16-color palette)
-  * add_point(channel, x, y) for real-time updates from engine signals
-  * Technique presets: I vs E (CV/LSV/DPV/SWV), I vs t (CA/CP), -Z'' vs Z' (EIS), etc.
-  * Auto-range with manual zoom/pan override
-  * Clear and reset between measurements
-  * Validate: `python -c "from src.gui.plot_widget import LivePlotWidget; print('LivePlotWidget imported')"`
+- **plot_widget.py** - Live pyqtgraph plot with per-channel curves (Req 5)
+  * ``LivePlotWidget(pg.PlotWidget)`` subclass with technique-aware axis labels for all 18 supported techniques
+  * 16-color palette (CHANNEL_COLORS) assigns visually distinct colors to CH1-CH16
+  * ``add_point(channel, x, y)`` streams real-time data; ``on_data_point(DataPoint)`` slot connects directly to engine signals
+  * Technique presets via ``set_technique()``: I vs E (CV/LSV/DPV/SWV/NPV/ACV/FCV/LSP/PAD), I vs t (CA/FCA), E vs t (CP/OCP), -Z'' vs Z' (EIS/GEIS)
+  * Auto-range enabled by default; defers to manual zoom/pan when user interacts, re-enabled on measurement completion
+  * ``clear_plot()`` removes all curves between measurements; ``reset()`` also restores default axis labels
 
-- [ ] **controls.py** - GUI control panels for connection, technique, channels (Req 6)
-  * `ConnectionPanel`: COM port combo (auto-detect), connect/disconnect buttons, firmware version label, status indicator
-  * `TechniquePanel`: technique dropdown, dynamic parameter fields (spin boxes, range inputs) that update per technique
-  * `ChannelPanel`: 4x4 grid of channel checkboxes (1-16), select all/none buttons
-  * `MeasurementControlPanel`: Start, Stop (abort), Halt, Resume buttons with enable/disable logic
-  * Validate: `python -c "from src.gui.controls import ConnectionPanel; print('Controls imported')"`
+- **controls.py** - GUI control panels for connection, technique, channels (Req 6)
+  * ``ConnectionPanel(QGroupBox)``: COM port combo with auto-detect via ``serial.tools.list_ports``, connect/disconnect buttons, firmware version label, status indicator with color-coded states (connected/disconnected/error)
+  * ``TechniquePanel(QGroupBox)``: technique dropdown populated from ``supported_techniques()``, dynamic parameter fields (QDoubleSpinBox for floats, QSpinBox for ints, QComboBox for current range) rebuilt per technique from ``technique_params()`` defaults
+  * ``ChannelPanel(QGroupBox)``: 4x4 grid of 16 channel checkboxes (CH1 checked by default), Select All / Select None batch buttons, emits ``channels_changed(list)`` signal
+  * ``MeasurementControlPanel(QGroupBox)``: Start (green), Stop/abort (red), Halt, Resume buttons with state-driven enable/disable logic (idle/running/halted/disabled modes)
 
 - [ ] **main_window.py** - Main application window (Req 6)
   * QMainWindow with dock-based layout: left panel (controls), center (live plot), bottom (log/status)
