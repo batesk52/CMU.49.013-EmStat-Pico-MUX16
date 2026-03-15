@@ -97,19 +97,18 @@ CMU.49.013-EmStat-Pico-MUX16/
 
 #### src/gui/
 - **plot_widget.py** - Live pyqtgraph plot with per-channel curves (Req 5)
-  * ``LivePlotWidget(pg.PlotWidget)`` subclass with technique-aware axis labels that auto-configure via ``set_technique()``
-  * 16-colour palette with per-channel ``PlotDataItem`` curves created on first data point
-  * ``add_point(channel, x, y)`` appends to per-channel buffers and updates curves in real time
-  * ``on_data_point(DataPoint)`` slot connects directly to ``MeasurementEngine.data_point_ready`` signal
-  * Technique presets for voltammetry (I vs E), amperometry (I vs t), potentiometry (E vs t), and impedance (-Z'' vs Z' Nyquist)
-  * Auto-range enabled by default; manual zoom/pan detected and preserved via ``sigRangeChangedManually``
-  * ``clear_plot()`` and ``reset()`` methods for inter-measurement cleanup
+  * ``LivePlotWidget(pg.PlotWidget)`` subclass with technique-aware axis labels for all 18 supported techniques
+  * 16-color palette (CHANNEL_COLORS) assigns visually distinct colors to CH1-CH16
+  * ``add_point(channel, x, y)`` streams real-time data; ``on_data_point(DataPoint)`` slot connects directly to engine signals
+  * Technique presets via ``set_technique()``: I vs E (CV/LSV/DPV/SWV/NPV/ACV/FCV/LSP/PAD), I vs t (CA/FCA), E vs t (CP/OCP), -Z'' vs Z' (EIS/GEIS)
+  * Auto-range enabled by default; defers to manual zoom/pan when user interacts, re-enabled on measurement completion
+  * ``clear_plot()`` removes all curves between measurements; ``reset()`` also restores default axis labels
 
 - **controls.py** - GUI control panels for connection, technique, channels (Req 6)
-  * ``ConnectionPanel``: COM port combo (auto-detected via pyserial ``comports()``), Connect/Disconnect buttons, firmware version label, colour-coded status indicator with ``set_connected()``/``set_disconnected()`` state management
-  * ``TechniquePanel``: technique dropdown populated from ``supported_techniques()``, dynamic parameter fields (QDoubleSpinBox/QSpinBox/QComboBox) rebuilt per technique using ``technique_params()`` defaults, current range dropdown with all 11 hardware ranges
-  * ``ChannelPanel``: 4x4 QGridLayout of 16 QCheckBox widgets (CH1-CH16), Select All / Select None buttons, ``selected_channels()`` returns sorted 1-indexed list
-  * ``MeasurementControlPanel``: Start, Stop (abort), Halt, Resume buttons with three-state lifecycle (``set_idle()``, ``set_running()``, ``set_halted()``) controlling enable/disable logic
+  * ``ConnectionPanel(QGroupBox)``: COM port combo with auto-detect via ``serial.tools.list_ports``, connect/disconnect buttons, firmware version label, status indicator with color-coded states (connected/disconnected/error)
+  * ``TechniquePanel(QGroupBox)``: technique dropdown populated from ``supported_techniques()``, dynamic parameter fields (QDoubleSpinBox for floats, QSpinBox for ints, QComboBox for current range) rebuilt per technique from ``technique_params()`` defaults
+  * ``ChannelPanel(QGroupBox)``: 4x4 grid of 16 channel checkboxes (CH1 checked by default), Select All / Select None batch buttons, emits ``channels_changed(list)`` signal
+  * ``MeasurementControlPanel(QGroupBox)``: Start (green), Stop/abort (red), Halt, Resume buttons with state-driven enable/disable logic (idle/running/halted/disabled modes)
 
 - [ ] **main_window.py** - Main application window (Req 6)
   * QMainWindow with dock-based layout: left panel (controls), center (live plot), bottom (log/status)
