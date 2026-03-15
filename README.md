@@ -110,14 +110,13 @@ CMU.49.013-EmStat-Pico-MUX16/
   * ``ChannelPanel(QGroupBox)``: 4x4 grid of 16 channel checkboxes (CH1 checked by default), Select All / Select None batch buttons, emits ``channels_changed(list)`` signal
   * ``MeasurementControlPanel(QGroupBox)``: Start (green), Stop/abort (red), Halt, Resume buttons with state-driven enable/disable logic (idle/running/halted/disabled modes)
 
-- [ ] **main_window.py** - Main application window (Req 6)
-  * QMainWindow with dock-based layout: left panel (controls), center (live plot), bottom (log/status)
-  * Wire all signals: engine → plot widget, controls → engine
-  * Menu bar: File (export, quit), Device (connect, disconnect), Help (about)
-  * Status bar: connection state, measurement progress, current channel
-  * On measurement complete: prompt for export (CSV + .pssession)
-  * Application entry point (`if __name__ == "__main__"`)
-  * Validate: `python -c "from src.gui.main_window import MainWindow; print('MainWindow imported')"`
+- **main_window.py** - Main application window (Req 6)
+  * ``MainWindow(QMainWindow)`` with dock-based layout: left dock (ConnectionPanel, TechniquePanel, ChannelPanel, MeasurementControlPanel), centre (LivePlotWidget), bottom dock (QPlainTextEdit log console with attached logging handler)
+  * Wires all Qt signals: engine ``data_point_ready`` to plot ``on_data_point``, engine ``measurement_finished``/``measurement_error``/``channel_changed``/``measurement_started`` to status bar and panel state updates, control panel signals to engine ``start_measurement``/``abort``/``halt``/``resume``
+  * Menu bar with File (Export Results Ctrl+E, Quit Ctrl+Q), Device (Connect, Disconnect), Help (About) actions
+  * Status bar with three permanent labels: connection state, measurement progress, and current MUX channel
+  * On measurement complete: prompts user to export; creates timestamped subdirectory with per-channel CSV files (delegates to ``CSVExporter`` when available, falls back to basic CSV writer)
+  * Application entry point via ``main()`` function and ``if __name__ == "__main__"`` block; configures root logger and launches QApplication
 
 ### Phase 4: Data Export
 
