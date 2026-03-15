@@ -68,22 +68,20 @@ CMU.49.013-EmStat-Pico-MUX16/
 ### Phase 2: Measurement Core
 
 #### src/techniques/
-- [ ] **scripts.py** - MethodSCRIPT generator for all electrochemical techniques (Req 4)
-  * Template-based generation: preamble (pgstat config, cell_on) → technique loop → postamble (on_finished: cell_off)
-  * Support all techniques: LSV, DPV, SWV, NPV, ACV, CV, CA, FCA, CP, OCP, EIS, GEIS, PAD, LSP, FCV
-  * Support MUX-alternating: meas_loop_ca_alt_mux, meas_loop_cp_alt_mux, meas_loop_ocp_alt_mux
-  * Parameterize: potential range, scan rate, frequency range, step size, amplitude, current range
-  * Format values with MethodSCRIPT SI prefixes (e.g., 500m for 0.5V)
-  * Include pck_start/pck_add/pck_end for data packet configuration
-  * Validate: `python -c "from src.techniques.scripts import generate; print(generate('cv', {'e_begin': -0.5, 'e_vertex1': 0.5, 'e_vertex2': -0.5, 'scan_rate': 0.1}, [1]))"`
+- **scripts.py** - MethodSCRIPT generator for all electrochemical techniques (Req 4)
+  * Template-based generation: preamble (pgstat config, cell_on) followed by technique measurement loop and postamble (on_finished: cell_off)
+  * Supports 15 standard techniques (LSV, DPV, SWV, NPV, ACV, CV, CA, FCA, CP, OCP, EIS, GEIS, PAD, LSP, FCV) and 3 MUX-alternating variants (ca_alt_mux, cp_alt_mux, ocp_alt_mux)
+  * Parameterised via `generate(technique, params, channels)` with defaults for all parameters (potential range, scan rate, frequency range, step size, amplitude, current range)
+  * Formats all values with MethodSCRIPT SI prefix notation (e.g., `500m` for 0.5 V) via internal `_format_si()` helper
+  * Includes pck_start/pck_add/pck_end blocks configured per technique type (voltammetry, amperometry, potentiometry, EIS)
+  * Multi-channel runs wrap the technique body in a MUX scan loop via `MuxController.scan_channels_script_with_body()`
 
 #### src/data/
-- [ ] **models.py** - Data models for measurements and configuration (Req 2, 4)
-  * `TechniqueConfig` dataclass: technique name, parameter dict, channel list
-  * `DataPoint` dataclass: timestamp, channel, variable dict (name→value pairs)
-  * `MeasurementResult`: list of DataPoints + metadata (technique, start_time, device_info)
-  * `ChannelData`: filtered view of MeasurementResult for one channel
-  * Validate: `python -c "from src.data.models import TechniqueConfig, DataPoint; print(TechniqueConfig('cv', {}, [1]))"`
+- **models.py** - Data models for measurements and configuration (Req 2, 4)
+  * `TechniqueConfig` dataclass: technique name (auto-lowercased), parameter dict, and channel list
+  * `DataPoint` dataclass: timestamp, channel, and variable dict mapping names to float values with `get()` accessor
+  * `MeasurementResult`: ordered list of DataPoints with metadata (technique, start_time, device_info, params, channels) and `channel_data()` filtered-view method
+  * `ChannelData`: per-channel subset with `values(name)` and `timestamps()` convenience extractors
 
 #### src/engine/
 - [ ] **measurement_engine.py** - Background measurement thread (Req 2, 3, 4)
