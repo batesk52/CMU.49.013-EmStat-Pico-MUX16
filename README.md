@@ -40,28 +40,30 @@ CMU.49.013-EmStat-Pico-MUX16/
 ### Phase 1: Communication Foundation
 
 #### src/comms/
-- [ ] **serial_connection.py** - Serial connection manager for EmStat Pico (Req 1)
-  * Connect/disconnect at 230400 baud, 8N1, XON/XOFF flow control via pyserial
-  * Send raw commands (`t`, `i`, `v`, `e`, `l`, `Z`, `h`, `H`) and read responses
-  * Script loading: send lines terminated with `\n`, empty line to end
-  * Query firmware version and serial number on connect
-  * Validate: `python -c "from src.comms.serial_connection import PicoConnection; print(PicoConnection.__init__.__doc__)"`
+- **serial_connection.py** - Serial connection manager for EmStat Pico (Req 1)
+  * Connects/disconnects at 230400 baud, 8N1 with XON/XOFF flow control via pyserial
+  * Sends raw commands (`t`, `i`, `v`, `e`, `l`, `Z`, `h`, `H`) and reads responses, stripping device echo
+  * Loads MethodSCRIPT by sending lines terminated with `\n`; empty line signals end-of-script
+  * Queries firmware version (`t`) and serial number (`i`) automatically on connect
+  * Thread-safe write access via internal lock for concurrent abort/halt/resume from GUI thread
+  * Context manager support for safe connect/disconnect lifecycle
 
-- [ ] **protocol.py** - MethodSCRIPT data packet parser (Req 2)
-  * Decode hex data packets: `P<var1>;<var2>;...\n` format
-  * Convert 28-bit hex values with SI prefix to float: `(hex - 2^27) * SI_factor`
-  * Map 2-char variable type codes to names (da→potential, ba→current, etc.)
-  * Parse measurement loop markers (M, *, L, +) for technique/channel tracking
-  * Handle metadata fields (status, current range, noise) after comma separators
-  * Validate: `python -c "from src.comms.protocol import PacketParser; p = PacketParser(); print(p.decode_value('8000800', 'u'))"`
+- **protocol.py** - MethodSCRIPT data packet parser (Req 2)
+  * Decodes hex data packets in `P<var1>;<var2>;...\n` format into `ParsedPacket` objects
+  * Converts 28-bit hex values with SI prefix to float: `(hex - 2^27) * 10^(SI_exponent)`
+  * Maps 2-char variable type codes to names (da=set_potential, ba=current, ab=measured_potential, etc.)
+  * Tracks measurement loop markers (M, *, L, +) with stateful depth and channel index
+  * Parses optional metadata fields (status bits, current range) after comma separators
+  * Provides `SI_PREFIXES` and `VAR_TYPES` constant dictionaries for external use
 
-- [ ] **mux.py** - MUX16 channel address calculation and GPIO control (Req 3)
-  * Calculate 10-bit GPIO address for channels 1-16 (MUX16 mode: WE+RE/CE linked)
-  * Address format: bits[9:8]=enable(inverted), bits[7:4]=RE/CE, bits[3:0]=WE
-  * Generate `set_gpio_cfg 0x3FFi 1` initialization script
-  * Generate `set_gpio <addr>i` channel selection script
-  * Generate multi-channel scan loop with `add_var` stepping
-  * Validate: `python -c "from src.comms.mux import MuxController; m = MuxController(); print(hex(m.channel_address(1)))"`
+- **mux.py** - MUX16 channel address calculation and GPIO control (Req 3)
+  * Calculates 10-bit GPIO addresses for channels 1-16 (MUX16 mode: WE and RE/CE switched together)
+  * Address format: bits[9:8]=enable (inverted), bits[7:4]=RE/CE, bits[3:0]=WE
+  * Generates `set_gpio_cfg 0x3FFi 1` initialisation script for configuring all pins as outputs
+  * Generates `set_gpio <addr>i` channel selection commands for individual channel switching
+  * Generates multi-channel scan loops with `meas_loop_for` and `add_var` stepping
+  * Validates channel numbers (1-16) with descriptive `MuxError` exceptions
+  * Supports both bare scan loops and scan-with-measurement-body composition
 
 ### Phase 2: Measurement Core
 
