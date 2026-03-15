@@ -121,9 +121,9 @@ CMU.49.013-EmStat-Pico-MUX16/
 ### Phase 4: Data Export
 
 #### src/data/
-- [ ] **exporters.py** - CSV and .pssession file export (Req 7)
-  * `CSVExporter`: one CSV per channel, columns based on technique (time, potential, current, impedance, phase)
-  * `PsSessionExporter`: UTF-16 JSON matching PalmSens .pssession format for CMU.49.011 compatibility
-  * Include metadata header: technique, parameters, timestamp, device serial, firmware version
-  * Timestamped output directory in exports/ (format: YYYYMMDD_HHMMSS_technique)
-  * Validate: `python -c "from src.data.exporters import CSVExporter; print('Exporters imported')"`
+- **exporters.py** - CSV and .pssession file export (Req 7)
+  * `CSVExporter` writes one CSV per channel with technique-aware column ordering (voltammetry: potential/current, EIS: frequency/impedance/phase, amperometry: current/potential/charge)
+  * `PsSessionExporter` writes UTF-16 LE encoded JSON matching PalmSens .pssession format for CMU.49.011 compatibility
+  * Metadata header block (``#``-prefixed) includes technique, parameters, timestamp, device serial, and firmware version
+  * `make_export_dir()` helper creates timestamped output directories (``YYYYMMDD_HHMMSS_technique``)
+  * `export()` alias on CSVExporter provides backward compatibility with GUI fallback path
