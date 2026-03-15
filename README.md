@@ -84,14 +84,14 @@ CMU.49.013-EmStat-Pico-MUX16/
   * `ChannelData`: per-channel subset with `values(name)` and `timestamps()` convenience extractors
 
 #### src/engine/
-- [ ] **measurement_engine.py** - Background measurement thread (Req 2, 3, 4)
-  * QThread subclass: accepts connection, technique config, channels
-  * Builds full MethodSCRIPT (technique + MUX loop) via scripts.py and mux.py
-  * Sends script, reads streaming response lines, parses packets in real-time
-  * Emits Qt signals: data_point_ready, measurement_started, measurement_finished, measurement_error, channel_changed
-  * Supports abort (Z command), halt (h), resume (H) during execution
-  * Buffers all DataPoints into MeasurementResult for post-run export
-  * Validate: `python -c "from src.engine.measurement_engine import MeasurementEngine; print(MeasurementEngine.__doc__)"`
+- **measurement_engine.py** - Background measurement thread (Req 2, 3, 4)
+  * QThread subclass that accepts a PicoConnection and TechniqueConfig, then runs the full measurement lifecycle in a background thread
+  * Generates complete MethodSCRIPT (preamble + technique body + MUX channel loop + safety postamble) via `scripts.generate()` and sends it to the device
+  * Reads streaming response lines in real time, parsing data packets via `PacketParser` into `DataPoint` objects with elapsed timestamps and channel assignment
+  * Emits Qt signals for GUI integration: `data_point_ready(DataPoint)`, `measurement_started(str)`, `measurement_finished(MeasurementResult)`, `measurement_error(str)`, `channel_changed(int)`
+  * Supports abort (`Z` command), halt (`h`), and resume (`H`) from the GUI thread via PicoConnection's thread-safe write methods
+  * Buffers all decoded DataPoints into a `MeasurementResult` with device metadata, technique parameters, and channel list for post-run export
+  * Handles serial disconnection and device error codes gracefully, emitting `measurement_error` signal with descriptive messages
 
 ### Phase 3: GUI Application
 
