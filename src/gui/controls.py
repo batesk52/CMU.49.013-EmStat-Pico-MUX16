@@ -14,6 +14,7 @@ directly; the main window wires panel signals to the engine and connection.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -21,6 +22,8 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -278,6 +281,7 @@ class TechniquePanel(QGroupBox):
 
     technique_changed = pyqtSignal(str)
     params_changed = pyqtSignal()
+    preset_selected = pyqtSignal(str)  # preset key
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Technique", parent)
@@ -287,6 +291,30 @@ class TechniquePanel(QGroupBox):
     def _setup_ui(self) -> None:
         """Build the panel layout."""
         layout = QVBoxLayout(self)
+
+        # Preset selector
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("Preset:"))
+        self._preset_combo = QComboBox()
+        self._preset_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._preset_combo.addItem("(No Preset)", "")
+        self._preset_combo.currentIndexChanged.connect(
+            self._on_preset_selected
+        )
+        preset_row.addWidget(self._preset_combo, 1)
+
+        self._save_preset_btn = QPushButton("Save...")
+        self._save_preset_btn.setToolTip("Save current settings as preset")
+        preset_row.addWidget(self._save_preset_btn)
+        layout.addLayout(preset_row)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
 
         # Technique selector
         selector_row = QHBoxLayout()
@@ -360,7 +388,50 @@ class TechniquePanel(QGroupBox):
                 self._technique_combo.setCurrentIndex(i)
                 return
 
+    def set_params(self, params: dict[str, Any]) -> None:
+        """Programmatically set parameter values.
+
+        Only sets values for parameters that exist in the current
+        technique's widget set.
+
+        Args:
+            params: Dict mapping parameter names to values.
+        """
+        for name, value in params.items():
+            widget = self._param_widgets.get(name)
+            if widget is None:
+                continue
+            if isinstance(widget, QDoubleSpinBox):
+                widget.setValue(float(value))
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(int(value))
+            elif isinstance(widget, QComboBox):
+                idx = widget.findText(str(value))
+                if idx >= 0:
+                    widget.setCurrentIndex(idx)
+
+    def refresh_presets(
+        self, presets: dict[str, str]
+    ) -> None:
+        """Reload the preset combo box.
+
+        Args:
+            presets: Dict mapping preset keys to display names.
+        """
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.clear()
+        self._preset_combo.addItem("(No Preset)", "")
+        for key, name in sorted(presets.items()):
+            self._preset_combo.addItem(name, key)
+        self._preset_combo.blockSignals(False)
+
     # ---- Internal --------------------------------------------------------
+
+    def _on_preset_selected(self, index: int) -> None:
+        """Handle preset combo box selection change."""
+        key = self._preset_combo.itemData(index)
+        if key:
+            self.preset_selected.emit(key)
 
     def _on_technique_selected(self, index: int) -> None:
         """Handle technique combo box selection change."""
@@ -609,9 +680,12 @@ class MeasurementControlPanel(QGroupBox):
     stop_requested = pyqtSignal()
     halt_requested = pyqtSignal()
     resume_requested = pyqtSignal()
+    auto_save_changed = pyqtSignal(bool)
+    auto_save_dir_changed = pyqtSignal(str)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Measurement", parent)
+        self._auto_save_dir: str = ""
         self._setup_ui()
         self.set_idle()
 
@@ -649,6 +723,27 @@ class MeasurementControlPanel(QGroupBox):
         bottom_row.addWidget(self._resume_btn)
         layout.addLayout(bottom_row)
 
+        # Auto-save section
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep)
+
+        self._auto_save_cb = QCheckBox("Auto-save CSV during measurement")
+        self._auto_save_cb.toggled.connect(self._on_auto_save_toggled)
+        layout.addWidget(self._auto_save_cb)
+
+        dir_row = QHBoxLayout()
+        self._dir_label = QLabel("Directory: (not set)")
+        self._dir_label.setStyleSheet("color: #666; font-size: 11px;")
+        dir_row.addWidget(self._dir_label, 1)
+
+        self._browse_btn = QPushButton("Browse...")
+        self._browse_btn.setMaximumWidth(80)
+        self._browse_btn.clicked.connect(self._on_browse_clicked)
+        dir_row.addWidget(self._browse_btn)
+        layout.addLayout(dir_row)
+
     # ---- Public state management -----------------------------------------
 
     def set_idle(self) -> None:
@@ -678,3 +773,53 @@ class MeasurementControlPanel(QGroupBox):
         self._stop_btn.setEnabled(False)
         self._halt_btn.setEnabled(False)
         self._resume_btn.setEnabled(False)
+
+    # ---- Auto-save API ---------------------------------------------------
+
+    def is_auto_save_enabled(self) -> bool:
+        """Return whether auto-save is checked."""
+        return self._auto_save_cb.isChecked()
+
+    def auto_save_directory(self) -> str:
+        """Return the configured auto-save directory."""
+        return self._auto_save_dir
+
+    def set_auto_save(
+        self, enabled: bool, directory: str = ""
+    ) -> None:
+        """Programmatically set auto-save state.
+
+        Args:
+            enabled: Whether to enable auto-save.
+            directory: Output directory path.
+        """
+        self._auto_save_cb.blockSignals(True)
+        self._auto_save_cb.setChecked(enabled)
+        self._auto_save_cb.blockSignals(False)
+        if directory:
+            self._auto_save_dir = directory
+            self._dir_label.setText(
+                f"Directory: {os.path.basename(directory)}"
+            )
+            self._dir_label.setToolTip(directory)
+
+    # ---- Private slots ---------------------------------------------------
+
+    def _on_auto_save_toggled(self, checked: bool) -> None:
+        """Handle auto-save checkbox toggle."""
+        self.auto_save_changed.emit(checked)
+
+    def _on_browse_clicked(self) -> None:
+        """Open directory picker for auto-save output."""
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Auto-Save Directory",
+            self._auto_save_dir or "",
+        )
+        if path:
+            self._auto_save_dir = path
+            self._dir_label.setText(
+                f"Directory: {os.path.basename(path)}"
+            )
+            self._dir_label.setToolTip(path)
+            self.auto_save_dir_changed.emit(path)

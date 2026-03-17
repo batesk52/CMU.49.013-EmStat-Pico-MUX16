@@ -40,7 +40,8 @@ from PyQt6.QtWidgets import (
 )
 
 from src.comms.serial_connection import PicoConnection, PicoConnectionError
-from src.data.models import MeasurementResult, TechniqueConfig
+from src.data.models import AutoSaveConfig, MeasurementResult, TechniqueConfig
+from src.data.presets import PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
     ChannelPanel,
@@ -96,6 +97,8 @@ class MainWindow(QMainWindow):
         self._connection = PicoConnection()
         self._engine = MeasurementEngine(parent=self)
         self._last_result: Optional[MeasurementResult] = None
+        self._preset_mgr = PresetManager()
+        self._auto_save_active = False
 
         # Build UI
         self._build_central_widget()
@@ -106,6 +109,9 @@ class MainWindow(QMainWindow):
 
         # Wire signals
         self._wire_signals()
+
+        # Load presets into UI
+        self._load_presets_into_ui()
 
         # Initial state
         self._update_ui_disconnected()
@@ -260,6 +266,11 @@ class MainWindow(QMainWindow):
             self._on_resume_measurement
         )
 
+        # Preset selector -> main window
+        self._tech_panel.preset_selected.connect(
+            self._on_preset_selected
+        )
+
         # Engine signals -> GUI updates
         self._engine.data_point_ready.connect(
             self._plot.on_data_point
@@ -275,6 +286,9 @@ class MainWindow(QMainWindow):
         )
         self._engine.channel_changed.connect(
             self._on_channel_changed
+        )
+        self._engine.auto_save_completed.connect(
+            self._on_auto_save_completed
         )
 
     # ------------------------------------------------------------------
@@ -345,10 +359,26 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Build auto-save config if enabled
+        auto_save = None
+        if self._meas_panel.is_auto_save_enabled():
+            auto_dir = self._meas_panel.auto_save_directory()
+            if not auto_dir:
+                auto_dir = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    "..", "..", "exports",
+                )
+                auto_dir = os.path.normpath(auto_dir)
+            auto_save = AutoSaveConfig(
+                enabled=True, output_dir=auto_dir
+            )
+            self._auto_save_active = True
+
         config = TechniqueConfig(
             technique=technique,
             params=params,
             channels=channels,
+            auto_save=auto_save,
         )
 
         # Prepare the plot
@@ -419,8 +449,18 @@ class MainWindow(QMainWindow):
             n_channels,
         )
 
-        # Prompt user for export
-        self._prompt_export(result)
+        # If auto-save was active, data is already on disk
+        if self._auto_save_active:
+            self._auto_save_active = False
+            QMessageBox.information(
+                self,
+                "Auto-Save Complete",
+                f"Data auto-saved during measurement.\n"
+                f"{n_points} points across {n_channels} channel(s).\n\n"
+                "Use File > Export for additional formats.",
+            )
+        else:
+            self._prompt_export(result)
 
     @pyqtSlot(str)
     def _on_measurement_error(self, message: str) -> None:
@@ -564,6 +604,51 @@ class MainWindow(QMainWindow):
                     for vn in var_names:
                         row.append(dp.variables.get(vn, ""))
                     writer.writerow(row)
+
+    # ------------------------------------------------------------------
+    # Presets and auto-save
+    # ------------------------------------------------------------------
+
+    def _load_presets_into_ui(self) -> None:
+        """Populate the technique panel preset combo box."""
+        presets = {
+            k: p.name
+            for k, p in self._preset_mgr.get_all().items()
+        }
+        self._tech_panel.refresh_presets(presets)
+
+    @pyqtSlot(str)
+    def _on_preset_selected(self, key: str) -> None:
+        """Load a preset into the technique, channel, and auto-save panels."""
+        preset = self._preset_mgr.get_preset(key)
+        if preset is None:
+            return
+
+        self._tech_panel.set_technique(preset.technique)
+        self._tech_panel.set_params(preset.params)
+        self._chan_panel.set_channels(preset.channels)
+
+        default_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "exports",
+        )
+        default_dir = os.path.normpath(default_dir)
+        self._meas_panel.set_auto_save(
+            preset.auto_save, default_dir
+        )
+
+        self.statusBar().showMessage(
+            f"Loaded preset: {preset.name}"
+        )
+        logger.info("Loaded preset: %s", preset.name)
+
+    @pyqtSlot(str)
+    def _on_auto_save_completed(self, output_dir: str) -> None:
+        """Update status bar when auto-save writes files."""
+        dirname = os.path.basename(output_dir)
+        self.statusBar().showMessage(
+            f"Auto-saved to: {dirname}"
+        )
 
     # ------------------------------------------------------------------
     # UI state management

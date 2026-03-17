@@ -35,6 +35,7 @@ from src.comms.serial_connection import (
     PicoConnection,
     PicoConnectionError,
 )
+from src.data.incremental_writer import IncrementalCSVWriter
 from src.data.models import DataPoint, MeasurementResult, TechniqueConfig
 from src.techniques.scripts import generate
 
@@ -81,6 +82,7 @@ class MeasurementEngine(QThread):
     measurement_finished = pyqtSignal(object)  # MeasurementResult
     measurement_error = pyqtSignal(str)  # error message
     channel_changed = pyqtSignal(int)  # 1-indexed channel
+    auto_save_completed = pyqtSignal(str)  # output dir path
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -89,6 +91,8 @@ class MeasurementEngine(QThread):
         self._abort_requested: bool = False
         self._halted: bool = False
         self.result: Optional[MeasurementResult] = None
+        self._writer: Optional[IncrementalCSVWriter] = None
+        self._last_flush_index: int = 0
 
     # ---- Public API (called from GUI thread) -----------------------------
 
@@ -266,10 +270,29 @@ class MeasurementEngine(QThread):
             channels=list(channels),
         )
 
+        # -- Initialise auto-save writer if enabled -------------------------
+        self._writer = None
+        self._last_flush_index = 0
+        if (
+            config.auto_save is not None
+            and config.auto_save.enabled
+            and config.auto_save.output_dir
+        ):
+            self._writer = IncrementalCSVWriter()
+            auto_dir = self._writer.start(
+                technique=technique,
+                params=params,
+                device_info=self.result.device_info,
+                channels=channels,
+                output_dir=config.auto_save.output_dir,
+            )
+            logger.info("Auto-save enabled: %s", auto_dir)
+
         # -- Send script to device -----------------------------------------
         try:
             connection.send_script(script_lines)
         except (PicoConnectionError, ValueError) as exc:
+            self._finish_writer()
             self.measurement_error.emit(
                 f"Failed to send script: {exc}"
             )
@@ -360,6 +383,8 @@ class MeasurementEngine(QThread):
                     # for next pass through the channel list
                     current_channel_idx = 0
                     current_channel = channels[current_channel_idx]
+                    # Auto-save: flush points from this loop
+                    self._flush_auto_save()
 
                 elif result == LoopMarker.END_MEAS:
                     # Measurement complete
@@ -369,6 +394,10 @@ class MeasurementEngine(QThread):
                 elif result == LoopMarker.BEGIN:
                     # Start of measurement loop -- no action needed
                     pass
+
+        # -- Flush remaining auto-save data and finish writer ----------------
+        self._flush_auto_save()
+        self._finish_writer()
 
         # -- Emit completion -----------------------------------------------
         if self._abort_requested:
@@ -380,3 +409,27 @@ class MeasurementEngine(QThread):
                 self.result.num_points,
             )
             self.measurement_finished.emit(self.result)
+
+    def _flush_auto_save(self) -> None:
+        """Flush new data points to the incremental writer."""
+        if self._writer is None or self.result is None:
+            return
+        new_points = self.result.data_points[
+            self._last_flush_index :
+        ]
+        if new_points:
+            count = self._writer.flush_points(new_points)
+            self._last_flush_index = len(self.result.data_points)
+            logger.debug(
+                "Auto-saved %d points at loop boundary.", count
+            )
+
+    def _finish_writer(self) -> None:
+        """Close the incremental writer and emit completion signal."""
+        if self._writer is not None and self._writer.is_active:
+            paths = self._writer.finish()
+            if paths:
+                self.auto_save_completed.emit(
+                    self._writer.output_dir
+                )
+            self._writer = None

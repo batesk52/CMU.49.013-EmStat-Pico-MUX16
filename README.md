@@ -13,6 +13,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 │   ├── data/               # Data models + CSV/.pssession export
 │   ├── engine/             # Background measurement thread
 │   └── gui/                # PyQt6 main window, live plot, control panels
+├── presets/                # Measurement preset configurations (JSON)
 ├── tests/                  # Test suite
 ├── exports/                # Measurement output files
 └── docs/                   # Protocol references
@@ -29,11 +30,14 @@ CMU.49.013-EmStat-Pico-MUX16/
 - `src/gui/controls.py` - Connection, technique, channel, and measurement panels
 - `src/data/models.py` - Dataclasses for results, configs, channels
 - `src/data/exporters.py` - CSV + .pssession export
+- `src/data/incremental_writer.py` - Auto-save CSV writer (per MUX loop)
+- `src/data/presets.py` - Measurement preset manager with built-in NO Sensing
 
 ### Use Cases
 1. Run cyclic voltammetry across 16 electrode channels with live overlay plots
 2. Perform EIS on selected channels and export Nyquist data for analysis in CMU.49.011
 3. Multi-channel chronoamperometry for biosensor calibration with real-time current monitoring
+4. Run NO sensing preset with auto-save for crash-safe in-vivo experiments (DARPA IV&V)
 
 ## Implementation Blueprint
 
@@ -127,3 +131,19 @@ CMU.49.013-EmStat-Pico-MUX16/
   * Metadata header block (``#``-prefixed) includes technique, parameters, timestamp, device serial, and firmware version
   * `make_export_dir()` helper creates timestamped output directories (``YYYYMMDD_HHMMSS_technique``)
   * `export()` alias on CSVExporter provides backward compatibility with GUI fallback path
+
+### Phase 5: Operational Features
+
+#### src/data/
+- **incremental_writer.py** - Auto-save CSV writer for crash safety (Req 8)
+  * `IncrementalCSVWriter` writes CSV data incrementally at each MUX loop boundary
+  * Per-channel file handles opened on first data point, appended on each flush
+  * Calls `f.flush()` + `os.fsync()` after each write for crash safety in in-vivo experiments
+  * Thread-safe via `threading.Lock` (finish may be called from GUI thread during abort)
+  * CSV format identical to `CSVExporter` output for downstream compatibility
+
+- **presets.py** - Measurement preset management (Req 9)
+  * `Preset` dataclass: name, technique, params, channels, auto_save, description
+  * `PresetManager` loads/saves/manages presets from `presets/presets.json`
+  * Ships with built-in `no_sensing` preset: CA_alt_mux at 0.85V, channels 1-8, auto-save enabled
+  * Built-in presets cannot be deleted; user presets can be added and removed

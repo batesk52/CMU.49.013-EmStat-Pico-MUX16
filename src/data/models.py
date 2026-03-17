@@ -14,6 +14,24 @@ from typing import Any, Optional
 
 
 @dataclass
+class AutoSaveConfig:
+    """Configuration for incremental auto-save during measurement.
+
+    When enabled, CSV data is flushed to disk at each MUX loop
+    boundary so that data is preserved even if the application
+    crashes or the user aborts mid-experiment.
+
+    Attributes:
+        enabled: Whether auto-save is active.
+        output_dir: Base directory for auto-saved files. A timestamped
+            subdirectory is created automatically.
+    """
+
+    enabled: bool = False
+    output_dir: str = ""
+
+
+@dataclass
 class TechniqueConfig:
     """Configuration for an electrochemical technique.
 
@@ -28,11 +46,14 @@ class TechniqueConfig:
             ``scan_rate``, ``freq_start``).
         channels: 1-indexed MUX channel numbers to include in the
             measurement (e.g., ``[1, 2, 5]``).
+        auto_save: Optional auto-save configuration. When provided and
+            enabled, measurement data is written incrementally to CSV.
     """
 
     technique: str
     params: dict[str, Any]
     channels: list[int]
+    auto_save: Optional[AutoSaveConfig] = None
 
     def __post_init__(self) -> None:
         """Normalise technique name to lowercase."""

@@ -6,11 +6,27 @@ Project-specific task tracking and history.
 
 ## In Progress
 
-[Empty - tasks will be added as work begins]
+[Empty - no tasks currently in progress]
 
 ---
 
 ## Completed
+
+### 2026-03-17: Session Signoff
+- [x | Session | 2026-03-17 00:00] Phase 5 operational features implemented (auto-save + presets)
+  - Completed: Digested DARPA IV&V email/SOPs, extracted MUX-16-relevant NO sensing protocol details, blueprinted and implemented 2 new features across 6 tasks (2 new files, 4 modified). Also extracted 3 SOPs from zip (NO, E-stim, E-rec — only NO uses MUX16)
+  - Branch: phase5/operational-features (from phase4/data-export)
+  - Left off: All code implemented and syntax-validated. "Save Preset..." button wired but needs dialog handler
+  - Next: Test with real EmStat Pico MUX16 hardware, merge branch chain to main, implement save-preset dialog
+
+### 2026-03-16: Phase 5 — Operational Features
+- [x | Agent | 2026-03-16] src/data/models.py - Added AutoSaveConfig dataclass, extended TechniqueConfig
+- [x | Agent | 2026-03-16] src/data/incremental_writer.py - NEW. IncrementalCSVWriter with per-loop flush, fsync, thread-safe finish
+- [x | Agent | 2026-03-16] src/data/presets.py - NEW. PresetManager with built-in NO Sensing preset (CA_alt_mux, 0.85V, CH1-8)
+- [x | Agent | 2026-03-16] src/engine/measurement_engine.py - Added auto-save hooks at END_LOOP, auto_save_completed signal
+- [x | Agent | 2026-03-16] src/gui/controls.py - Added preset selector to TechniquePanel, auto-save toggle to MeasurementControlPanel
+- [x | Agent | 2026-03-16] src/gui/main_window.py - Wired PresetManager, preset loading, auto-save config, auto_save_completed signal
+- [x | Agent | 2026-03-16] Docs - Updated product_requirements (Req 8, 9), README (Phase 5), architecture (data flow, modules)
 
 ### 2026-03-15: Session Signoff
 - [x | Session | 2026-03-15 22:00] Full implementation complete (10/10 tasks via code-team tournament)

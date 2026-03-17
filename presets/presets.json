@@ -1,0 +1,23 @@
+{
+  "no_sensing": {
+    "name": "NO Sensing (DARPA IV&V)",
+    "technique": "ca_alt_mux",
+    "params": {
+      "e_dc": 0.85,
+      "t_run": 10.0,
+      "t_interval": 0.1
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "auto_save": true,
+    "description": "NO biosensor: CA at 0.85V, channels 1-8, auto-save enabled"
+  }
+}
