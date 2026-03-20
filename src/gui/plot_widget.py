@@ -73,25 +73,25 @@ _TECHNIQUE_AXES: dict[str, tuple[str, str, str, str, str, str]] = {
     ),
     # Potentiometric: E vs t
     "cp": (
-        "Time", "Potential", "s", "V", "time", "measured_potential",
+        "Time", "Potential", "s", "V", "time", "potential",
     ),
     "ocp": (
-        "Time", "Potential", "s", "V", "time", "measured_potential",
+        "Time", "Potential", "s", "V", "time", "potential",
     ),
     "cp_alt_mux": (
-        "Time", "Potential", "s", "V", "time", "measured_potential",
+        "Time", "Potential", "s", "V", "time", "potential",
     ),
     "ocp_alt_mux": (
-        "Time", "Potential", "s", "V", "time", "measured_potential",
+        "Time", "Potential", "s", "V", "time", "potential",
     ),
     # Impedance: -Z'' vs Z' (Nyquist)
     "eis": (
         "Z' (real)", "-Z'' (imag)", "\u03a9", "\u03a9",
-        "impedance_real", "impedance_imaginary",
+        "zreal", "zimag",
     ),
     "geis": (
         "Z' (real)", "-Z'' (imag)", "\u03a9", "\u03a9",
-        "impedance_real", "impedance_imaginary",
+        "zreal", "zimag",
     ),
 }
 
@@ -358,7 +358,7 @@ class LivePlotWidget(pg.PlotWidget):
             if val is None:
                 return None
             # Negate Z'' for standard Nyquist convention (-Z'' vs Z')
-            if self.y_var == "impedance_imaginary":
+            if self.y_var == "zimag":
                 return -val
             return val
         return None

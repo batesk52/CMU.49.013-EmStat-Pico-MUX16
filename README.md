@@ -55,7 +55,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 - **protocol.py** - MethodSCRIPT data packet parser (Req 2)
   * Decodes hex data packets in `P<var1>;<var2>;...\n` format into `ParsedPacket` objects
   * Converts 28-bit hex values with SI prefix to float: `(hex - 2^27) * 10^(SI_exponent)`
-  * Maps 2-char variable type codes to names (da=set_potential, ba=current, ab=measured_potential, etc.)
+  * Maps 2-char variable type codes to names (da=set_potential, ba=current, ab=potential, cc=zreal, cd=zimag, etc.)
   * Tracks measurement loop markers (M, *, L, +) with stateful depth and channel index
   * Parses optional metadata fields (status bits, current range) after comma separators
   * Provides `SI_PREFIXES` and `VAR_TYPES` constant dictionaries for external use
@@ -126,7 +126,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 
 #### src/data/
 - **exporters.py** - CSV and .pssession file export (Req 7)
-  * `CSVExporter` writes one CSV per channel with technique-aware column ordering (voltammetry: potential/current, EIS: frequency/impedance/phase, amperometry: current/potential/charge)
+  * `CSVExporter` writes one CSV per channel with technique-aware column ordering (voltammetry: potential/current, EIS: set_frequency/impedance/zreal/zimag/phase, amperometry: current/potential)
   * `PsSessionExporter` writes UTF-16 LE encoded JSON matching PalmSens .pssession format for CMU.49.011 compatibility
   * Metadata header block (``#``-prefixed) includes technique, parameters, timestamp, device serial, and firmware version
   * `make_export_dir()` helper creates timestamped output directories (``YYYYMMDD_HHMMSS_technique``)

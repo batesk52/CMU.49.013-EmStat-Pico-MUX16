@@ -40,30 +40,35 @@ SI_PREFIXES: dict[str, int] = {
     "T": 12,   # tera
     "P": 15,   # peta
     "E": 18,   # exa
+    "i": 0,    # integer (no scaling)
 }
 
 # 2-character variable type codes → human-readable measurement names.
 # Derived from MethodSCRIPT V1.6 specification Appendix.
 VAR_TYPES: dict[str, str] = {
     "aa": "unknown",
-    "ab": "measured_potential",
-    "ac": "applied_potential",
-    "ad": "cell_current",      # alternate current label
-    "ae": "cell_potential",     # alternate potential label
-    "ba": "current",
-    "bb": "phase",             # alternate phase label
-    "ca": "time",
-    "cb": "impedance_real",
-    "cc": "frequency",
-    "cd": "charge",
-    "da": "set_potential",
-    "db": "impedance_imaginary",
-    "dc": "impedance",
-    "dd": "phase",
-    "eb": "potential_ce",
-    "ec": "potential_we_vs_ce",
-    "jb": "misc_generic_2",
+    "ab": "potential",           # WE vs RE (V)
+    "ac": "potential_ce",        # CE vs GND (V)
+    "ad": "potential_se",        # SE vs GND (V)
+    "ae": "potential_re",        # RE vs GND (V)
+    "af": "potential_we",        # WE vs GND (V)
+    "ag": "potential_we_ce",     # WE vs CE (V)
+    "ba": "current",             # WE current (A)
+    "ca": "phase",               # Phase (degrees)
+    "cb": "impedance",           # |Z| magnitude (ohms)
+    "cc": "zreal",               # Z' real (ohms)
+    "cd": "zimag",               # Z'' imaginary (ohms)
+    "da": "set_potential",       # Applied potential (V)
+    "db": "set_current",         # Applied current (A)
+    "dc": "set_frequency",       # Applied frequency (Hz)
+    "dd": "set_amplitude",       # Applied AC amplitude (Vrms)
+    "ea": "channel",             # Channel number
+    "eb": "time",                # Time (s)
+    "ec": "pin_mask",            # Pin mask
+    "ed": "temperature",         # Temperature (C)
+    "ee": "count",               # Generic count
     "ja": "misc_generic_1",
+    "jb": "misc_generic_2",
 }
 
 # Status bit masks (metadata after comma in variable field)
@@ -83,6 +88,8 @@ class LoopMarker(Enum):
     END_LOOP = "*"    # End of loop iteration (more to come)
     END_MEAS = "+"    # End of measurement
     SUB_BEGIN = "L"   # Start of sub-loop (e.g., inner MUX channel loop)
+    SCAN_START = "C"  # Start of scan (nscans > 1)
+    SCAN_END = "-"    # End of scan (nscans > 1)
 
 
 @dataclass
@@ -178,7 +185,7 @@ class PacketParser:
 
         if first == "P":
             return self.parse_packet(line)
-        if first in ("M", "*", "+", "L"):
+        if first in ("M", "*", "+", "L", "C", "-"):
             return self._handle_loop_marker(first)
 
         # Unrecognised line (could be echo, error code, etc.)
@@ -280,16 +287,14 @@ class PacketParser:
             meta = meta.strip()
             if not meta:
                 continue
-            # Status field: 4-char hex
-            if len(meta) == 4:
+            if meta.startswith("1"):
                 try:
-                    status = int(meta, 16)
+                    status = int(meta[1:], 16)
                 except ValueError:
                     pass
-            # Current range: typically 2-char hex
-            elif len(meta) <= 3:
+            elif meta.startswith("2"):
                 try:
-                    current_range = int(meta, 16)
+                    current_range = int(meta[1:], 16)
                 except ValueError:
                     pass
 
@@ -321,5 +326,11 @@ class PacketParser:
                 "Sub-loop begin (channel_index=%d)", self.channel_index
             )
             return LoopMarker.SUB_BEGIN
+        elif char == "C":
+            logger.debug("Scan start")
+            return LoopMarker.SCAN_START
+        elif char == "-":
+            logger.debug("Scan end")
+            return LoopMarker.SCAN_END
         # Should not reach here
         return LoopMarker.BEGIN  # pragma: no cover

@@ -34,24 +34,23 @@ logger = logging.getLogger(__name__)
 # here are appended alphabetically after the preferred columns.
 _VOLTAMMETRY_COLS = [
     "set_potential",
-    "measured_potential",
+    "potential",
     "current",
 ]
 _AMPEROMETRY_COLS = [
     "current",
     "set_potential",
-    "measured_potential",
-    "charge",
+    "potential",
 ]
 _POTENTIOMETRY_COLS = [
-    "measured_potential",
+    "potential",
     "current",
 ]
 _EIS_COLS = [
-    "frequency",
+    "set_frequency",
     "impedance",
-    "impedance_real",
-    "impedance_imaginary",
+    "zreal",
+    "zimag",
     "phase",
 ]
 

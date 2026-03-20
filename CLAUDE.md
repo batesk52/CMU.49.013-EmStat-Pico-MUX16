@@ -40,7 +40,7 @@ Template: codebase
 - Packet format: `Pvar1;var2;...varN\n`
 - Variable: 2-char type code + 7-char hex value + 1-char SI prefix
 - Decode: `(hex_to_uint(value) - 2^27) * 10^(SI_exponent)`
-- Variable types: `da`=set_potential, `ab`=measured_potential, `ba`=current, `dc`=impedance, `dd`=phase, `cc`=frequency
+- Variable types: `da`=set_potential, `ab`=potential, `ba`=current, `cb`=impedance, `ca`=phase, `cc`=zreal, `cd`=zimag, `dc`=set_frequency
 
 ### Threading
 - GUI thread: NEVER perform serial I/O or blocking waits

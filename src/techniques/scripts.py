@@ -348,7 +348,7 @@ def _pck_amperometry() -> list[str]:
     """Packet config for amperometric techniques (time + current)."""
     return [
         "pck_start",
-        "pck_add ca",
+        "pck_add da",
         "pck_add ba",
         "pck_end",
     ]
@@ -358,19 +358,21 @@ def _pck_potentiometry() -> list[str]:
     """Packet config for potentiometric techniques (time + potential)."""
     return [
         "pck_start",
-        "pck_add ca",
+        "pck_add ba",
         "pck_add ab",
         "pck_end",
     ]
 
 
 def _pck_eis() -> list[str]:
-    """Packet config for EIS (freq, Z_real, Z_imag, phase)."""
+    """Packet config for EIS (Z_real, Z_imag, phase, |Z|, freq)."""
     return [
         "pck_start",
         "pck_add cc",
+        "pck_add cd",
+        "pck_add ca",
+        "pck_add cb",
         "pck_add dc",
-        "pck_add dd",
         "pck_end",
     ]
 
