@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QDockWidget,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -40,8 +41,9 @@ from PyQt6.QtWidgets import (
 )
 
 from src.comms.serial_connection import PicoConnection, PicoConnectionError
+from src.data.exporters import PsSessionExporter
 from src.data.models import AutoSaveConfig, MeasurementResult, TechniqueConfig
-from src.data.presets import PresetManager
+from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
     ChannelPanel,
@@ -269,6 +271,11 @@ class MainWindow(QMainWindow):
         # Preset selector -> main window
         self._tech_panel.preset_selected.connect(
             self._on_preset_selected
+        )
+
+        # Save preset button -> main window
+        self._tech_panel.save_preset_requested.connect(
+            self._on_save_preset
         )
 
         # Engine signals -> GUI updates
@@ -549,6 +556,14 @@ class MainWindow(QMainWindow):
 
         try:
             self._write_csv_files(result, export_dir)
+
+            # Write .pssession file alongside the CSVs
+            pssession_path = os.path.join(
+                export_dir, f"{technique}.pssession"
+            )
+            ps_exporter = PsSessionExporter()
+            ps_exporter.export_pssession(result, pssession_path)
+
             self.statusBar().showMessage(
                 f"Results exported to {export_dir}"
             )
@@ -616,6 +631,42 @@ class MainWindow(QMainWindow):
             for k, p in self._preset_mgr.get_all().items()
         }
         self._tech_panel.refresh_presets(presets)
+
+    @pyqtSlot()
+    def _on_save_preset(self) -> None:
+        """Prompt the user for a name and save current settings."""
+        name, ok = QInputDialog.getText(
+            self,
+            "Save Preset",
+            "Preset name:",
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        # Derive a key from the name (lowercase, underscores)
+        key = name.lower().replace(" ", "_")
+
+        technique = self._tech_panel.selected_technique()
+        params = self._tech_panel.get_params()
+        channels = self._chan_panel.selected_channels()
+        auto_save = self._meas_panel.is_auto_save_enabled()
+
+        preset = Preset(
+            name=name,
+            technique=technique,
+            params=params,
+            channels=channels,
+            auto_save=auto_save,
+            description=f"User preset: {name}",
+        )
+        self._preset_mgr.add_preset(key, preset)
+
+        # Refresh the preset combo box
+        self._load_presets_into_ui()
+
+        self.statusBar().showMessage(f"Preset saved: {name}")
+        logger.info("Saved preset: %s (key=%s)", name, key)
 
     @pyqtSlot(str)
     def _on_preset_selected(self, key: str) -> None:

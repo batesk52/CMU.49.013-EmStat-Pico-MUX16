@@ -8,6 +8,10 @@ Project-specific task tracking and history.
 
 [Empty - no tasks currently in progress]
 
+### Queued (Phase 6 — Completion Fixes)
+- [ ] controls.py + main_window.py — Save Preset dialog (Req 9)
+- [ ] main_window.py — Wire .pssession export in GUI export flow (Req 7)
+
 ---
 
 ## Completed

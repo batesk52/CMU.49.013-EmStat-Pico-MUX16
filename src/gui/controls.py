@@ -277,11 +277,13 @@ class TechniquePanel(QGroupBox):
         technique_changed(str): Emitted with the technique key when
             the user selects a different technique.
         params_changed(): Emitted when any parameter value changes.
+        save_preset_requested(): Emitted when the user clicks Save.
     """
 
     technique_changed = pyqtSignal(str)
     params_changed = pyqtSignal()
     preset_selected = pyqtSignal(str)  # preset key
+    save_preset_requested = pyqtSignal()
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Technique", parent)
@@ -307,6 +309,9 @@ class TechniquePanel(QGroupBox):
 
         self._save_preset_btn = QPushButton("Save...")
         self._save_preset_btn.setToolTip("Save current settings as preset")
+        self._save_preset_btn.clicked.connect(
+            self.save_preset_requested.emit
+        )
         preset_row.addWidget(self._save_preset_btn)
         layout.addLayout(preset_row)
 

@@ -147,3 +147,19 @@ CMU.49.013-EmStat-Pico-MUX16/
   * `PresetManager` loads/saves/manages presets from `presets/presets.json`
   * Ships with built-in `no_sensing` preset: CA_alt_mux at 0.85V, channels 1-8, auto-save enabled
   * Built-in presets cannot be deleted; user presets can be added and removed
+
+### Phase 6: Completion Fixes
+
+#### src/gui/
+- [ ] **controls.py + main_window.py** - Save Preset dialog (Req 9)
+  * Add `save_preset_requested` signal to `TechniquePanel` connected to `_save_preset_btn.clicked`
+  * Implement `_on_save_preset()` in `MainWindow`: QInputDialog for name, gather current technique/params/channels/auto-save, call `PresetManager.add_preset()`, refresh preset combo
+  * Validate: launch app, configure a technique, click Save, verify preset appears in dropdown and persists in `presets/presets.json`
+  * Validate: `python -c "from src.data.presets import PresetManager; pm = PresetManager(); pm.add_preset('test', pm.get_preset('no_sensing')); print(pm.list_presets())"`
+
+#### src/gui/
+- [ ] **main_window.py** - Wire .pssession export in GUI export flow (Req 7)
+  * Call `PsSessionExporter.export_pssession()` alongside CSV export in `_do_export()`
+  * Import `PsSessionExporter` from `src.data.exporters`
+  * Validate: run a measurement export, verify `.pssession` file created in output directory alongside per-channel CSVs
+  * Validate: `python -c "from src.data.exporters import PsSessionExporter; print('PsSessionExporter ready')"
