@@ -13,6 +13,22 @@ Project-specific task tracking and history.
 ## Completed
 
 ### 2026-03-19: Session Signoff
+- [x | Session | 2026-03-19] Major protocol overhaul — audited against PalmSens official spec, fixed everything
+  - Completed: Phase 6 completion fixes (save preset dialog, .pssession export), 2 critical bugfixes (channel_changed emit, EIS Nyquist vars), full protocol spec correction (13 wrong VAR_TYPES, pck_add codes, metadata parsing, scan markers), added 7 advanced EIS types (ce-ck)
+  - Branch: phase5/operational-features (commit d7cdb52+)
+  - Left off: All code aligned with official PalmSens MethodSCRIPT spec. Branch chain still not merged to main. MUX still uses raw GPIO (not mux_config/mux_set_channel API)
+  - Next: Hardware testing with real EmStat Pico MUX16, merge branch chain to main, consider MUX API migration
+
+### 2026-03-19: Protocol Spec Correction (Tournament, 3 coders)
+- [x | Agent | 2026-03-19] src/comms/protocol.py — Replaced 13 wrong VAR_TYPES with official PalmSens mapping, added 'i' SI prefix, fixed metadata parsing, added scan markers
+- [x | Agent | 2026-03-19] src/techniques/scripts.py — Fixed pck_add codes: amperometry (da+ba), potentiometry (ba+ab), EIS (cc+cd+ca+cb+dc)
+- [x | Agent | 2026-03-19] src/gui/plot_widget.py + src/data/exporters.py — Cascaded variable name updates (potential, zreal, zimag, set_frequency)
+
+### 2026-03-19: Bugfix Audit (Tournament, 3 coders)
+- [x | Agent | 2026-03-19] src/engine/measurement_engine.py + src/comms/protocol.py — Fixed missing channel_changed emit on END_LOOP + parser channel_index reset
+- [x | Agent | 2026-03-19] src/gui/plot_widget.py — Fixed EIS/GEIS Nyquist plot: uses impedance_real/impedance_imaginary vars, negates Z'' by variable name
+
+### 2026-03-19: Session Signoff
 - [x | Session | 2026-03-19] Phase 6 completion fixes — audited codebase, found 2 gaps, implemented via code-team tournament
   - Completed: Save Preset dialog now functional (signal + QInputDialog + PresetManager wiring), .pssession export wired into GUI export flow alongside CSV
   - Branch: phase5/operational-features (commit a6fa5a7)
