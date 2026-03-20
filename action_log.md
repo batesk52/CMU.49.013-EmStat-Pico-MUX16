@@ -8,13 +8,13 @@ Project-specific task tracking and history.
 
 [Empty - no tasks currently in progress]
 
-### Queued (Phase 6 — Completion Fixes)
-- [ ] controls.py + main_window.py — Save Preset dialog (Req 9)
-- [ ] main_window.py — Wire .pssession export in GUI export flow (Req 7)
-
 ---
 
 ## Completed
+
+### 2026-03-19: Phase 6 — Completion Fixes (Tournament, 3 coders)
+- [x | Agent | 2026-03-19] src/gui/controls.py + src/gui/main_window.py — Save Preset dialog (Req 9). Added save_preset_requested signal, QInputDialog handler, PresetManager.add_preset() call, combo refresh
+- [x | Agent | 2026-03-19] src/gui/main_window.py — Wired PsSessionExporter.export_pssession() in _do_export() alongside CSV export (Req 7)
 
 ### 2026-03-17: Session Signoff
 - [x | Session | 2026-03-17 00:00] Phase 5 operational features implemented (auto-save + presets)
