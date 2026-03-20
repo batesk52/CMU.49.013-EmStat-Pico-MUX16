@@ -383,6 +383,11 @@ class MeasurementEngine(QThread):
                     # for next pass through the channel list
                     current_channel_idx = 0
                     current_channel = channels[current_channel_idx]
+                    self.channel_changed.emit(current_channel)
+                    logger.debug(
+                        "Loop reset — channel back to %d",
+                        current_channel,
+                    )
                     # Auto-save: flush points from this loop
                     self._flush_auto_save()
 
