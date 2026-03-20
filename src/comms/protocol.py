@@ -308,6 +308,7 @@ class PacketParser:
             logger.debug("Loop begin (depth=%d)", self.loop_depth)
             return LoopMarker.BEGIN
         elif char == "*":
+            self.channel_index = 0
             logger.debug("Loop end iteration (depth=%d)", self.loop_depth)
             return LoopMarker.END_LOOP
         elif char == "+":

@@ -86,12 +86,12 @@ _TECHNIQUE_AXES: dict[str, tuple[str, str, str, str, str, str]] = {
     ),
     # Impedance: -Z'' vs Z' (Nyquist)
     "eis": (
-        "-Z'' (imag)", "Z' (real)", "\u03a9", "\u03a9",
-        "impedance", "phase",
+        "Z' (real)", "-Z'' (imag)", "\u03a9", "\u03a9",
+        "impedance_real", "impedance_imaginary",
     ),
     "geis": (
-        "-Z'' (imag)", "Z' (real)", "\u03a9", "\u03a9",
-        "impedance", "phase",
+        "Z' (real)", "-Z'' (imag)", "\u03a9", "\u03a9",
+        "impedance_real", "impedance_imaginary",
     ),
 }
 
@@ -344,6 +344,9 @@ class LivePlotWidget(pg.PlotWidget):
     def _extract_y(self, dp: DataPoint) -> Optional[float]:
         """Extract the Y-axis value from a data point.
 
+        For Nyquist plots (EIS/GEIS), the impedance imaginary component
+        is negated to follow the standard -Z'' convention.
+
         Args:
             dp: The data point to extract from.
 
@@ -351,7 +354,13 @@ class LivePlotWidget(pg.PlotWidget):
             The Y value, or ``None`` if unavailable.
         """
         if self.y_var:
-            return dp.variables.get(self.y_var)
+            val = dp.variables.get(self.y_var)
+            if val is None:
+                return None
+            # Negate Z'' for standard Nyquist convention (-Z'' vs Z')
+            if self.technique in ("eis", "geis"):
+                return -val
+            return val
         return None
 
     def _on_manual_range_change(self) -> None:
