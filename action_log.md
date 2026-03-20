@@ -12,6 +12,13 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-03-19: Session Signoff
+- [x | Session | 2026-03-19] Phase 6 completion fixes — audited codebase, found 2 gaps, implemented via code-team tournament
+  - Completed: Save Preset dialog now functional (signal + QInputDialog + PresetManager wiring), .pssession export wired into GUI export flow alongside CSV
+  - Branch: phase5/operational-features (commit a6fa5a7)
+  - Left off: All 9 requirements now fully implemented. Branch chain still not merged to main
+  - Next: Manual testing with real EmStat Pico MUX16 hardware, merge branch chain (phase1→phase2→phase3→phase4→phase5) to main
+
 ### 2026-03-19: Phase 6 — Completion Fixes (Tournament, 3 coders)
 - [x | Agent | 2026-03-19] src/gui/controls.py + src/gui/main_window.py — Save Preset dialog (Req 9). Added save_preset_requested signal, QInputDialog handler, PresetManager.add_preset() call, combo refresh
 - [x | Agent | 2026-03-19] src/gui/main_window.py — Wired PsSessionExporter.export_pssession() in _do_export() alongside CSV export (Req 7)
