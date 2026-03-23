@@ -304,11 +304,18 @@ class MeasurementEngine(QThread):
         # -- Stream and parse response -------------------------------------
         parser = PacketParser()
         measurement_start_time = time.monotonic()
+        channel_start_time = measurement_start_time
 
         # Track the current channel: start at the first selected channel
         current_channel_idx = 0
         current_channel = channels[current_channel_idx]
         self.channel_changed.emit(current_channel)
+
+        # Track scans per channel for multi-scan techniques (e.g. CV)
+        n_scans = int(params.get("n_scans", 1))
+        scan_counter = 0
+        total_loops_expected = n_scans * len(channels)
+        total_loops_seen = 0
 
         # Count of empty reads in a row (detect end of measurement)
         consecutive_empty = 0
@@ -356,7 +363,7 @@ class MeasurementEngine(QThread):
 
             if isinstance(result, ParsedPacket):
                 # Decode packet into a DataPoint
-                elapsed = time.monotonic() - measurement_start_time
+                elapsed = time.monotonic() - channel_start_time
                 data_point = DataPoint(
                     timestamp=elapsed,
                     channel=current_channel,
@@ -367,29 +374,37 @@ class MeasurementEngine(QThread):
 
             elif isinstance(result, LoopMarker):
                 if result == LoopMarker.SUB_BEGIN:
-                    # Sub-loop marker: advance to next channel
-                    if current_channel_idx + 1 < len(channels):
-                        current_channel_idx += 1
-                        current_channel = channels[
-                            current_channel_idx
-                        ]
-                        self.channel_changed.emit(current_channel)
-                        logger.debug(
-                            "Channel changed to %d", current_channel
-                        )
+                    # Sub-loop marker from compact `loop i <= e`.
+                    # Channel tracking is handled by END_LOOP counter.
+                    logger.debug("Sub-loop marker (ignored for channel tracking)")
 
                 elif result == LoopMarker.END_LOOP:
-                    # End of loop iteration -- reset channel index
-                    # for next pass through the channel list
-                    current_channel_idx = 0
-                    current_channel = channels[current_channel_idx]
-                    self.channel_changed.emit(current_channel)
-                    logger.debug(
-                        "Loop reset — channel back to %d",
-                        current_channel,
-                    )
-                    # Auto-save: flush points from this loop
+                    # Each * marks end of one scan. After n_scans
+                    # per channel, advance to the next channel.
+                    scan_counter += 1
+                    total_loops_seen += 1
                     self._flush_auto_save()
+                    if scan_counter >= n_scans:
+                        scan_counter = 0
+                        if current_channel_idx + 1 < len(channels):
+                            current_channel_idx += 1
+                            current_channel = channels[
+                                current_channel_idx
+                            ]
+                            channel_start_time = time.monotonic()
+                            self.channel_changed.emit(current_channel)
+                            logger.debug(
+                                "Channel advanced to %d",
+                                current_channel,
+                            )
+                    # All expected data collected — finish
+                    if total_loops_seen >= total_loops_expected:
+                        logger.info(
+                            "All %d loops complete. "
+                            "Measurement finished.",
+                            total_loops_seen,
+                        )
+                        break
 
                 elif result == LoopMarker.END_MEAS:
                     # Measurement complete

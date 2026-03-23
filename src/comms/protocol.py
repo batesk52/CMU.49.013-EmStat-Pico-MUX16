@@ -74,8 +74,26 @@ VAR_TYPES: dict[str, str] = {
     "ec": "pin_mask",            # Pin mask
     "ed": "temperature",         # Temperature (C)
     "ee": "count",               # Generic count
+    "as": "ain0",                # Analog input 0 (V)
+    "at": "ain1",                # Analog input 1 (V)
+    "au": "ain2",                # Analog input 2 (V)
+    "av": "ain3",                # Analog input 3 (V)
+    "aw": "ain4",                # Analog input 4 (V)
+    "ax": "ain5",                # Analog input 5 (V)
+    "ay": "ain6",                # Analog input 6 (V)
+    "az": "ain7",                # Analog input 7 (V)
+    "ha": "generic_current_1",   # Generic current 1 (A)
+    "hb": "generic_current_2",   # Generic current 2 (A)
+    "hc": "generic_current_3",   # Generic current 3 (A)
+    "hd": "generic_current_4",   # Generic current 4 (A)
+    "ia": "generic_potential_1", # Generic potential 1 (V)
+    "ib": "generic_potential_2", # Generic potential 2 (V)
+    "ic": "generic_potential_3", # Generic potential 3 (V)
+    "id": "generic_potential_4", # Generic potential 4 (V)
     "ja": "misc_generic_1",
     "jb": "misc_generic_2",
+    "jc": "misc_generic_3",
+    "jd": "misc_generic_4",
 }
 
 # Status bit masks (metadata after comma in variable field)
@@ -285,7 +303,12 @@ class PacketParser:
         prefix = main[9]
 
         name = self.parse_var_type(var_type)
-        value = self.decode_value(hex_str, prefix)
+
+        # PalmSens sends "     nan" for NaN/overload conditions
+        if hex_str.strip() == "nan":
+            value = float("nan")
+        else:
+            value = self.decode_value(hex_str, prefix)
 
         # Parse optional metadata fields
         status = None

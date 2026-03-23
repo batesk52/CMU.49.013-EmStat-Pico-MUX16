@@ -2,6 +2,35 @@
 
 Python GUI application for operating the PalmSens EmStat Pico MUX16 potentiostat via MethodSCRIPT over serial, with live multi-channel plotting and data export.
 
+## Quick Start (Fresh PC)
+
+**Prerequisites:** Python 3.10+, VS Code (optional)
+
+### 1. Create a virtual environment
+```
+python -m venv C:\Users\KarlJ\envs\cmu.49.013
+```
+
+### 2. Activate it
+```
+C:\Users\KarlJ\envs\cmu.49.013\Scripts\activate.bat
+```
+You should see `(cmu.49.013)` in your prompt.
+
+### 3. Install dependencies
+```
+cd C:\Users\KarlJ\Documents\_all_work\CMU.49.013-EmStat-Pico-MUX16
+pip install -r requirements.txt
+```
+
+### 4. Run the app
+```
+python -m src.gui.main_window
+```
+
+### VS Code Integration
+`Ctrl+Shift+P` → **Python: Select Interpreter** → pick `cmu.49.013`. New terminals will auto-activate the environment.
+
 ## Architecture Overview
 
 ### Folder Structure

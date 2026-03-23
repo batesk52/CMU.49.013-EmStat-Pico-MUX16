@@ -94,17 +94,24 @@ class PicoConnection:
                 parity=PARITY,
                 stopbits=STOPBITS,
                 timeout=COMMAND_TIMEOUT,
-                xonxoff=False,
+                xonxoff=True,
                 rtscts=False,
                 dsrdtr=False,
                 write_timeout=2,
             )
+            # Increase receive buffer to prevent data loss on long
+            # multi-scan sequences (Windows default is only 4096).
+            self._serial.set_buffer_size(rx_size=65536, tx_size=4096)
             logger.info("Opened serial port %s at %d baud.", self.port, BAUDRATE)
         except serial.SerialException as exc:
             self._serial = None
             raise PicoConnectionError(
                 f"Failed to open port {self.port}: {exc}"
             ) from exc
+
+        # Flush any stale data left in the serial buffer (e.g. from a
+        # previous aborted measurement) before querying device identity.
+        self._serial.reset_input_buffer()
 
         # Query device identity
         try:
@@ -198,6 +205,13 @@ class PicoConnection:
 
         with self._lock:
             try:
+                # Drain any stale data before loading a new script
+                old_timeout = self._serial.timeout
+                self._serial.timeout = 0.1
+                while self._serial.readline():
+                    pass
+                self._serial.timeout = old_timeout
+
                 # Enter script-loading mode
                 self._serial.write(b"e\n")
                 self._serial.flush()

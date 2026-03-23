@@ -73,22 +73,27 @@ def _format_si(value: float) -> str:
         '0 '
     """
     if value == 0.0:
-        return "0 "
+        return "0"
 
     abs_val = abs(value)
 
     for prefix, exp in _SI_TABLE:
         scaled = abs_val / (10**exp)
         if scaled >= 1.0 or exp == -18:
-            # Use integer representation if no fractional part
             mantissa = value / (10**exp)
-            if mantissa == int(mantissa):
-                return f"{int(mantissa)}{prefix}"
-            # Use up to 6 significant figures
-            return f"{mantissa:g}{prefix}"
+            # Unity prefix: use bare number (no trailing space)
+            pfx = "" if prefix == " " else prefix
+            if abs(mantissa - round(mantissa)) < 1e-9:
+                return f"{int(round(mantissa))}{pfx}"
+            return f"{mantissa:g}{pfx}"
 
     # Fallback (should not be reached)
-    return f"{value} "  # pragma: no cover
+    return f"{value:g}"  # pragma: no cover
+
+
+def _indent(lines: list[str]) -> list[str]:
+    """Indent MethodSCRIPT lines with two spaces for loop body."""
+    return [f"  {line}" for line in lines]
 
 
 def _format_int(value: int) -> str:
@@ -299,8 +304,8 @@ def _preamble(params: dict[str, Any]) -> list[str]:
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 2")
-    lines.append(f"set_max_bandwidth {_format_int(200)}")
-    lines.append(f"set_cr {cr_idx}i")
+    cr = params.get("cr", "100u")
+    lines.append(f"set_autoranging 100n {cr}")
     lines.append("cell_on")
     return lines
 
@@ -313,15 +318,13 @@ def _preamble_galvano(params: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     lines.append("e")
     cr = params.get("cr", "100u")
-    cr_idx = _cr_index(cr)
     lines.append("var p")
     lines.append("var c")
     lines.append("set_pgstat_chan 1")
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 3")
-    lines.append(f"set_max_bandwidth {_format_int(200)}")
-    lines.append(f"set_cr {cr_idx}i")
+    lines.append(f"set_autoranging 100n {cr}")
     lines.append("cell_on")
     return lines
 
@@ -354,8 +357,8 @@ def _pck_voltammetry() -> list[str]:
     """Packet config for voltammetric techniques (potential + current)."""
     return [
         "pck_start",
-        "pck_add da",
-        "pck_add ba",
+        "pck_add p",
+        "pck_add c",
         "pck_end",
     ]
 
@@ -364,8 +367,8 @@ def _pck_amperometry() -> list[str]:
     """Packet config for amperometric techniques (time + current)."""
     return [
         "pck_start",
-        "pck_add da",
-        "pck_add ba",
+        "pck_add p",
+        "pck_add c",
         "pck_end",
     ]
 
@@ -374,21 +377,22 @@ def _pck_potentiometry() -> list[str]:
     """Packet config for potentiometric techniques (time + potential)."""
     return [
         "pck_start",
-        "pck_add ba",
-        "pck_add ab",
+        "pck_add p",
+        "pck_add c",
         "pck_end",
     ]
 
 
 def _pck_eis() -> list[str]:
-    """Packet config for EIS (Z_real, Z_imag, phase, |Z|, freq)."""
+    """Packet config for EIS (Z_real, Z_imag, phase, |Z|, freq).
+
+    Note: EIS may need additional variables declared for full impedance
+    data. This uses p and c for now — validate with hardware.
+    """
     return [
         "pck_start",
-        "pck_add cc",
-        "pck_add cd",
-        "pck_add ca",
-        "pck_add cb",
-        "pck_add dc",
+        "pck_add p",
+        "pck_add c",
         "pck_end",
     ]
 
@@ -405,10 +409,10 @@ def _gen_lsv(params: dict[str, Any]) -> list[str]:
     e_step = _format_si(params.get("e_step", 0.01))
     scan_rate = _format_si(params.get("scan_rate", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_lsv p c {e_begin} {e_end} {e_step} {scan_rate}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -422,11 +426,11 @@ def _gen_dpv(params: dict[str, Any]) -> list[str]:
     t_pulse = _format_si(params.get("t_pulse", 0.05))
     scan_rate = _format_si(params.get("scan_rate", 0.05))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_dpv p c {e_begin} {e_end} {e_step}"
         f" {e_pulse} {t_pulse} {scan_rate}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -439,11 +443,11 @@ def _gen_swv(params: dict[str, Any]) -> list[str]:
     amplitude = _format_si(params.get("amplitude", 0.025))
     frequency = _format_si(params.get("frequency", 25.0))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_swv p c {e_begin} {e_end} {e_step}"
         f" {amplitude} {frequency}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -457,11 +461,11 @@ def _gen_npv(params: dict[str, Any]) -> list[str]:
     t_pulse = _format_si(params.get("t_pulse", 0.05))
     t_base = _format_si(params.get("t_base", 0.5))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_npv p c {e_begin} {e_end} {e_step}"
         f" {e_pulse} {t_pulse} {t_base}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -474,11 +478,11 @@ def _gen_acv(params: dict[str, Any]) -> list[str]:
     amplitude = _format_si(params.get("amplitude", 0.01))
     frequency = _format_si(params.get("frequency", 50.0))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_acv p c {e_begin} {e_end} {e_step}"
         f" {amplitude} {frequency}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -495,15 +499,15 @@ def _gen_cv(params: dict[str, Any]) -> list[str]:
     e_step = _format_si(params.get("e_step", 0.01))
     scan_rate = _format_si(params.get("scan_rate", 0.1))
     n_scans = int(params.get("n_scans", 1))
-    lines: list[str] = []
-    lines.extend(_pck_voltammetry())
-    if n_scans != 1:
-        lines.append(f"nscans {_format_int(n_scans)}")
-    lines.append(
+    scan_body = [
         f"meas_loop_cv p c {e_begin} {e_vertex1} {e_vertex2}"
-        f" {e_step} {scan_rate}"
-    )
-    lines.append("endloop")
+        f" {e_step} {scan_rate}",
+        *_indent(_pck_voltammetry()),
+        "endloop",
+    ]
+    lines: list[str] = []
+    for _ in range(n_scans):
+        lines.extend(scan_body)
     return lines
 
 
@@ -513,10 +517,10 @@ def _gen_ca(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_amperometry())
     lines.append(
-        f"meas_loop_ca p c {e_dc} {t_run} {t_interval}"
+        f"meas_loop_ca p c {e_dc} {t_interval} {t_run}"
     )
+    lines.extend(_indent(_pck_amperometry()))
     lines.append("endloop")
     return lines
 
@@ -527,10 +531,10 @@ def _gen_fca(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_amperometry())
     lines.append(
         f"meas_loop_fca p c {e_dc} {t_run} {t_interval}"
     )
+    lines.extend(_indent(_pck_amperometry()))
     lines.append("endloop")
     return lines
 
@@ -541,10 +545,10 @@ def _gen_cp(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_potentiometry())
     lines.append(
         f"meas_loop_cp p c {i_dc} {t_run} {t_interval}"
     )
+    lines.extend(_indent(_pck_potentiometry()))
     lines.append("endloop")
     return lines
 
@@ -554,8 +558,8 @@ def _gen_ocp(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 60.0))
     t_interval = _format_si(params.get("t_interval", 1.0))
     lines: list[str] = []
-    lines.extend(_pck_potentiometry())
     lines.append(f"meas_loop_ocp p c {t_run} {t_interval}")
+    lines.extend(_indent(_pck_potentiometry()))
     lines.append("endloop")
     return lines
 
@@ -568,11 +572,11 @@ def _gen_eis(params: dict[str, Any]) -> list[str]:
     freq_end = _format_si(params.get("freq_end", 0.1))
     n_freq = int(params.get("n_freq", 50))
     lines: list[str] = []
-    lines.extend(_pck_eis())
     lines.append(
         f"meas_loop_eis p c {e_dc} {e_ac}"
         f" {freq_start} {freq_end} {_format_int(n_freq)}"
     )
+    lines.extend(_indent(_pck_eis()))
     lines.append("endloop")
     return lines
 
@@ -585,11 +589,11 @@ def _gen_geis(params: dict[str, Any]) -> list[str]:
     freq_end = _format_si(params.get("freq_end", 0.1))
     n_freq = int(params.get("n_freq", 50))
     lines: list[str] = []
-    lines.extend(_pck_eis())
     lines.append(
         f"meas_loop_geis p c {i_dc} {i_ac}"
         f" {freq_start} {freq_end} {_format_int(n_freq)}"
     )
+    lines.extend(_indent(_pck_eis()))
     lines.append("endloop")
     return lines
 
@@ -623,11 +627,11 @@ def _gen_pad(params: dict[str, Any]) -> list[str]:
     lines.append(f"set_e {e_eq}")
     lines.append(f"wait {t_eq}")
     # DPV measurement
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_dpv p c {e_begin} {e_end} {e_step}"
         f" {e_pulse} {t_pulse} {scan_rate}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -639,10 +643,10 @@ def _gen_lsp(params: dict[str, Any]) -> list[str]:
     e_step = _format_si(params.get("e_step", 0.01))
     scan_rate = _format_si(params.get("scan_rate", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_lsp p c {e_begin} {e_end} {e_step} {scan_rate}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -656,11 +660,11 @@ def _gen_fcv(params: dict[str, Any]) -> list[str]:
     scan_rate = _format_si(params.get("scan_rate", 1.0))
     n_scans = int(params.get("n_scans", 1))
     lines: list[str] = []
-    lines.extend(_pck_voltammetry())
     lines.append(
         f"meas_loop_fcv p c {e_begin} {e_vertex1} {e_vertex2}"
         f" {e_step} {scan_rate} {_format_int(n_scans)}"
     )
+    lines.extend(_indent(_pck_voltammetry()))
     lines.append("endloop")
     return lines
 
@@ -674,10 +678,10 @@ def _gen_ca_alt_mux(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_amperometry())
     lines.append(
         f"meas_loop_ca_alt_mux p c {e_dc} {t_run} {t_interval}"
     )
+    lines.extend(_indent(_pck_amperometry()))
     lines.append("endloop")
     return lines
 
@@ -688,10 +692,10 @@ def _gen_cp_alt_mux(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
-    lines.extend(_pck_potentiometry())
     lines.append(
         f"meas_loop_cp_alt_mux p c {i_dc} {t_run} {t_interval}"
     )
+    lines.extend(_indent(_pck_potentiometry()))
     lines.append("endloop")
     return lines
 
@@ -701,10 +705,10 @@ def _gen_ocp_alt_mux(params: dict[str, Any]) -> list[str]:
     t_run = _format_si(params.get("t_run", 60.0))
     t_interval = _format_si(params.get("t_interval", 1.0))
     lines: list[str] = []
-    lines.extend(_pck_potentiometry())
     lines.append(
         f"meas_loop_ocp_alt_mux p c {t_run} {t_interval}"
     )
+    lines.extend(_indent(_pck_potentiometry()))
     lines.append("endloop")
     return lines
 
@@ -816,7 +820,16 @@ def generate(
         script_lines.extend(mux.select_channel_script(channels[0]))
         script_lines.extend(body)
     else:
-        # Multi-channel: wrap technique body in a MUX scan loop
+        # Multi-channel: add loop variables if using compact pattern
+        if mux._is_consecutive(channels):
+            # Insert var i / var e after the existing var declarations
+            # Find insertion point (after last 'var' line)
+            insert_idx = 0
+            for idx, line in enumerate(script_lines):
+                if line.startswith("var "):
+                    insert_idx = idx + 1
+            script_lines.insert(insert_idx, "var e")
+            script_lines.insert(insert_idx, "var i")
         script_lines.extend(
             mux.scan_channels_script_with_body(channels, body)
         )

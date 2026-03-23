@@ -7,6 +7,7 @@ plot widget so that data flows engine -> GUI exclusively through signals.
 
 Typical launch::
 
+    source ~/envs/cmu.49.013/Scripts/activate
     python -m src.gui.main_window
 
 Or import and instantiate::
@@ -25,7 +26,7 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
@@ -60,16 +61,27 @@ APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
 
 
+class _LogSignalBridge(QObject):
+    """Thread-safe bridge: emits a signal so the GUI thread updates."""
+
+    log_message = pyqtSignal(str)
+
+
 class _LogHandler(logging.Handler):
-    """Logging handler that appends formatted records to a QPlainTextEdit."""
+    """Logging handler that appends formatted records to a QPlainTextEdit.
+
+    Uses a signal to marshal messages from any thread to the GUI thread,
+    since QWidget.appendPlainText must only be called from the GUI thread.
+    """
 
     def __init__(self, text_widget: QPlainTextEdit) -> None:
         super().__init__()
-        self._widget = text_widget
+        self._bridge = _LogSignalBridge()
+        self._bridge.log_message.connect(text_widget.appendPlainText)
 
     def emit(self, record: logging.LogRecord) -> None:
         msg = self.format(record)
-        self._widget.appendPlainText(msg)
+        self._bridge.log_message.emit(msg)
 
 
 class MainWindow(QMainWindow):
@@ -765,6 +777,17 @@ def main() -> None:
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    import traceback
+
+    def exception_hook(exc_type, exc_value, exc_tb):
+        """Print unhandled exceptions instead of silently crashing."""
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+        logging.error(
+            "Unhandled exception: %s", exc_value, exc_info=True
+        )
+
+    sys.excepthook = exception_hook
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)

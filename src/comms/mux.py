@@ -97,7 +97,7 @@ class MuxController:
         Returns:
             List of MethodSCRIPT lines (without trailing newlines).
         """
-        return [f"set_gpio_cfg 0x{GPIO_CONFIG_MASK:03X}i 1"]
+        return [f"set_gpio_cfg 0x{GPIO_CONFIG_MASK:03X}i 1i"]
 
     def select_channel_script(self, channel: int) -> list[str]:
         """Generate MethodSCRIPT lines to switch to a specific channel.
@@ -186,16 +186,19 @@ class MuxController:
         channels: list[int],
         body_lines: list[str],
     ) -> list[str]:
-        """Generate a multi-channel scan loop with measurement body.
+        """Generate multi-channel measurement script with GPIO switching.
 
-        For each selected channel, the generated script:
-        1. Sets the MUX GPIO to the channel address
-        2. Executes the provided measurement body lines
+        Uses the compact ``loop i <= e`` pattern for consecutive channels
+        (e.g., CH1-CH8), keeping script size constant regardless of channel
+        count. Falls back to sequential repetition for non-consecutive
+        channels (limited to ~5 channels by device script memory).
+
+        The compact loop requires ``var i`` and ``var e`` to be declared
+        in the script preamble.
 
         Args:
             channels: 1-indexed channel numbers (1–16).
             body_lines: MethodSCRIPT lines to execute per channel.
-                These are indented inside the loop.
 
         Returns:
             Complete MethodSCRIPT lines for the multi-channel scan.
@@ -211,28 +214,61 @@ class MuxController:
         for ch in channels:
             self._validate_channel(ch)
 
+        if self._is_consecutive(channels):
+            return self._compact_loop_script(channels, body_lines)
+        else:
+            return self._sequential_script(channels, body_lines)
+
+    def _is_consecutive(self, channels: list[int]) -> bool:
+        """Check if channels form a consecutive sequence."""
+        return channels == list(
+            range(channels[0], channels[0] + len(channels))
+        )
+
+    def _compact_loop_script(
+        self,
+        channels: list[int],
+        body_lines: list[str],
+    ) -> list[str]:
+        """Generate compact loop script for consecutive channels.
+
+        Uses ``loop i <= e`` with ``set_gpio i`` to iterate channels
+        in ~30 lines regardless of channel count. Matches the PalmSens
+        reference pattern from ca_mux_16chan_low.mscr.
+        """
+        start_addr = self.channel_address(channels[0])
+        end_addr = self.channel_address(channels[-1])
+
         lines: list[str] = []
-
-        # Configure GPIO pins as outputs
         lines.extend(self.gpio_config_script())
-
-        # Outer loop over channels using add_var stepping
-        n_channels = len(channels)
-        lines.append(f"meas_loop_for p c {n_channels}i")
-
-        for i, ch in enumerate(channels):
-            addr = self.channel_address(ch)
-            if i > 0:
-                lines.append(f"  add_var p 1i 0i")
-            lines.append(f"  set_gpio 0x{addr:03X}i")
-            lines.append("  wait 100m")
-
-            # Insert measurement body (indented)
-            for body_line in body_lines:
-                lines.append(f"  {body_line}")
-
+        lines.append(f"store_var i {start_addr}i aa")
+        lines.append(f"store_var e {end_addr}i aa")
+        lines.append("loop i <= e")
+        lines.append("    set_gpio i")
+        lines.append("    wait 100m")
+        for body_line in body_lines:
+            lines.append(f"    {body_line}")
+        lines.append("    add_var i 0b01")
         lines.append("endloop")
+        return lines
 
+    def _sequential_script(
+        self,
+        channels: list[int],
+        body_lines: list[str],
+    ) -> list[str]:
+        """Generate sequential per-channel script for non-consecutive channels.
+
+        Repeats the measurement body for each channel. Limited to ~5
+        channels by the device's script memory (~60 lines max).
+        """
+        lines: list[str] = []
+        lines.extend(self.gpio_config_script())
+        for ch in channels:
+            addr = self.channel_address(ch)
+            lines.append(f"set_gpio 0x{addr:03X}i")
+            lines.append("wait 100m")
+            lines.extend(body_lines)
         return lines
 
     @staticmethod
