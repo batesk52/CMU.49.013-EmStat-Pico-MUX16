@@ -54,6 +54,7 @@ class TechniqueConfig:
     params: dict[str, Any]
     channels: list[int]
     auto_save: Optional[AutoSaveConfig] = None
+    continuous: bool = False
 
     def __post_init__(self) -> None:
         """Normalise technique name to lowercase."""

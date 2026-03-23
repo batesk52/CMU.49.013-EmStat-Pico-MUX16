@@ -393,11 +393,14 @@ class MainWindow(QMainWindow):
             )
             self._auto_save_active = True
 
+        from src.techniques.scripts import is_continuous_technique
+
         config = TechniqueConfig(
             technique=technique,
             params=params,
             channels=channels,
             auto_save=auto_save,
+            continuous=is_continuous_technique(technique),
         )
 
         # Prepare the plot

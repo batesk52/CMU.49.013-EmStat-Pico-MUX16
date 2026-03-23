@@ -232,22 +232,11 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "n_scans": 1,
         "cr": "100u",
     },
-    # MUX-alternating variants
+    # MUX round-robin (continuous mode)
     "ca_alt_mux": {
         "e_dc": 0.2,
-        "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
-    },
-    "cp_alt_mux": {
-        "i_dc": 0.0001,
-        "t_run": 10.0,
-        "t_interval": 0.1,
-        "cr": "100u",
-    },
-    "ocp_alt_mux": {
-        "t_run": 60.0,
-        "t_interval": 1.0,
     },
 }
 
@@ -673,42 +662,19 @@ def _gen_fcv(params: dict[str, Any]) -> list[str]:
 
 
 def _gen_ca_alt_mux(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_ca_alt_mux body (MUX-alternating CA)."""
+    """Generate round-robin CA body (1 data point per channel per round).
+
+    Uses standard meas_loop_ca with t_run = t_interval so each channel
+    gets exactly 1 data point. The engine re-sends this script each
+    round for continuous monitoring.
+    """
     e_dc = _format_si(params.get("e_dc", 0.2))
-    t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
     lines.append(
-        f"meas_loop_ca_alt_mux p c {e_dc} {t_run} {t_interval}"
+        f"meas_loop_ca p c {e_dc} {t_interval} {t_interval}"
     )
     lines.extend(_indent(_pck_amperometry()))
-    lines.append("endloop")
-    return lines
-
-
-def _gen_cp_alt_mux(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_cp_alt_mux body (MUX-alternating CP)."""
-    i_dc = _format_si(params.get("i_dc", 0.0001))
-    t_run = _format_si(params.get("t_run", 10.0))
-    t_interval = _format_si(params.get("t_interval", 0.1))
-    lines: list[str] = []
-    lines.append(
-        f"meas_loop_cp_alt_mux p c {i_dc} {t_run} {t_interval}"
-    )
-    lines.extend(_indent(_pck_potentiometry()))
-    lines.append("endloop")
-    return lines
-
-
-def _gen_ocp_alt_mux(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_ocp_alt_mux body (MUX-alternating OCP)."""
-    t_run = _format_si(params.get("t_run", 60.0))
-    t_interval = _format_si(params.get("t_interval", 1.0))
-    lines: list[str] = []
-    lines.append(
-        f"meas_loop_ocp_alt_mux p c {t_run} {t_interval}"
-    )
-    lines.extend(_indent(_pck_potentiometry()))
     lines.append("endloop")
     return lines
 
@@ -735,14 +701,13 @@ _TECHNIQUE_REGISTRY: dict[str, tuple] = {
     "pad": (_gen_pad, _preamble),
     "lsp": (_gen_lsp, _preamble),
     "fcv": (_gen_fcv, _preamble),
-    # MUX-alternating variants
+    # MUX round-robin (continuous mode — engine re-sends each round)
     "ca_alt_mux": (_gen_ca_alt_mux, _preamble),
-    "cp_alt_mux": (_gen_cp_alt_mux, _preamble_galvano),
-    "ocp_alt_mux": (_gen_ocp_alt_mux, _preamble_ocp),
 }
 
-# Techniques whose _alt_mux loop already handles MUX internally
-_ALT_MUX_TECHNIQUES = {"ca_alt_mux", "cp_alt_mux", "ocp_alt_mux"}
+# Round-robin techniques: engine re-sends the script each round
+# for continuous multi-channel monitoring
+_CONTINUOUS_TECHNIQUES = {"ca_alt_mux"}
 
 
 # ---------------------------------------------------------------------------
@@ -806,15 +771,7 @@ def generate(
     # Build technique body
     body = body_gen(merged)
 
-    if technique in _ALT_MUX_TECHNIQUES:
-        # Alt-MUX techniques handle MUX switching internally.
-        # Just configure GPIO and include the body directly.
-        script_lines.extend(mux.gpio_config_script())
-        # Set up the initial channel addresses for the MUX
-        for ch in channels:
-            mux._validate_channel(ch)
-        script_lines.extend(body)
-    elif len(channels) == 1:
+    if len(channels) == 1:
         # Single channel: configure GPIO, select channel, run technique
         script_lines.extend(mux.gpio_config_script())
         script_lines.extend(mux.select_channel_script(channels[0]))
@@ -852,6 +809,11 @@ def supported_techniques() -> list[str]:
         List of lowercase technique keys (e.g., ``['acv', 'ca', ...]``).
     """
     return sorted(_TECHNIQUE_REGISTRY.keys())
+
+
+def is_continuous_technique(technique: str) -> bool:
+    """Return True if the technique uses continuous round-robin mode."""
+    return technique.lower() in _CONTINUOUS_TECHNIQUES
 
 
 def technique_params(technique: str) -> dict[str, Any]:

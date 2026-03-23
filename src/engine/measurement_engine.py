@@ -288,138 +288,137 @@ class MeasurementEngine(QThread):
             )
             logger.info("Auto-save enabled: %s", auto_dir)
 
-        # -- Send script to device -----------------------------------------
-        try:
-            connection.send_script(script_lines)
-        except (PicoConnectionError, ValueError) as exc:
-            self._finish_writer()
-            self.measurement_error.emit(
-                f"Failed to send script: {exc}"
-            )
-            return
-
-        self.measurement_started.emit(technique)
-        logger.info("Measurement started: %s", technique)
-
-        # -- Stream and parse response -------------------------------------
-        parser = PacketParser()
+        # -- Run measurement (single or continuous) -------------------------
+        continuous = config.continuous
         measurement_start_time = time.monotonic()
-        channel_start_time = measurement_start_time
-
-        # Track the current channel: start at the first selected channel
-        current_channel_idx = 0
-        current_channel = channels[current_channel_idx]
-        self.channel_changed.emit(current_channel)
-
-        # Track scans per channel for multi-scan techniques (e.g. CV)
+        parser = PacketParser()
         n_scans = int(params.get("n_scans", 1))
-        scan_counter = 0
-        total_loops_expected = n_scans * len(channels)
-        total_loops_seen = 0
-
-        # Count of empty reads in a row (detect end of measurement)
-        consecutive_empty = 0
-        max_consecutive_empty = 3
+        round_num = 0
 
         while not self._abort_requested:
-            # Read one line from the device
+            # -- Send script to device ------------------------------------
             try:
-                line = connection.read_response(
-                    timeout=MEASUREMENT_TIMEOUT
-                )
-            except PicoConnectionError as exc:
+                connection.send_script(script_lines)
+            except (PicoConnectionError, ValueError) as exc:
+                self._finish_writer()
                 self.measurement_error.emit(
-                    f"Serial read error: {exc}"
+                    f"Failed to send script: {exc}"
                 )
                 return
 
-            # Handle empty lines (timeout or end of data)
-            if line == _EMPTY_LINE:
-                consecutive_empty += 1
-                if consecutive_empty >= max_consecutive_empty:
-                    logger.debug(
-                        "Received %d consecutive empty reads; "
-                        "assuming measurement complete.",
-                        consecutive_empty,
-                    )
-                    break
-                continue
+            if round_num == 0:
+                self.measurement_started.emit(technique)
+                logger.info("Measurement started: %s", technique)
+
+            # -- Track channels for this round ----------------------------
+            current_channel_idx = 0
+            current_channel = channels[current_channel_idx]
+            self.channel_changed.emit(current_channel)
+            channel_start_time = time.monotonic()
+            parser.reset()  # reset loop_depth between rounds
+
+            scan_counter = 0
+            loops_this_round = 0
+            loops_expected = n_scans * len(channels)
             consecutive_empty = 0
 
-            # Check for device error lines
-            if line.startswith(_ERROR_PREFIX):
-                error_msg = f"Device error: {line}"
-                logger.error(error_msg)
-                self.measurement_error.emit(error_msg)
-                return
+            # -- Read one round of responses ------------------------------
+            while not self._abort_requested:
+                try:
+                    line = connection.read_response(
+                        timeout=MEASUREMENT_TIMEOUT
+                    )
+                except PicoConnectionError as exc:
+                    self.measurement_error.emit(
+                        f"Serial read error: {exc}"
+                    )
+                    return
 
-            # Parse the line
-            result = parser.parse_line(line)
+                if line == _EMPTY_LINE:
+                    consecutive_empty += 1
+                    if consecutive_empty >= 3:
+                        break
+                    continue
+                consecutive_empty = 0
 
-            if result is None:
-                # Unrecognised line -- log and continue
-                logger.debug("Skipping unrecognised line: %r", line)
-                continue
+                if line.startswith(_ERROR_PREFIX):
+                    error_msg = f"Device error: {line}"
+                    logger.error(error_msg)
+                    self.measurement_error.emit(error_msg)
+                    return
 
-            if isinstance(result, ParsedPacket):
-                # Decode packet into a DataPoint
-                elapsed = time.monotonic() - channel_start_time
-                data_point = DataPoint(
-                    timestamp=elapsed,
-                    channel=current_channel,
-                    variables=dict(result.values),
-                )
-                self.result.add_point(data_point)
-                self.data_point_ready.emit(data_point)
+                result = parser.parse_line(line)
 
-            elif isinstance(result, LoopMarker):
-                if result == LoopMarker.SUB_BEGIN:
-                    # Sub-loop marker from compact `loop i <= e`.
-                    # Channel tracking is handled by END_LOOP counter.
-                    logger.debug("Sub-loop marker (ignored for channel tracking)")
+                if result is None:
+                    logger.debug("Skipping unrecognised line: %r", line)
+                    continue
 
-                elif result == LoopMarker.END_LOOP:
-                    # Each * marks end of one scan. After n_scans
-                    # per channel, advance to the next channel.
-                    scan_counter += 1
-                    total_loops_seen += 1
-                    self._flush_auto_save()
-                    if scan_counter >= n_scans:
-                        scan_counter = 0
-                        if current_channel_idx + 1 < len(channels):
-                            current_channel_idx += 1
-                            current_channel = channels[
-                                current_channel_idx
-                            ]
-                            channel_start_time = time.monotonic()
-                            self.channel_changed.emit(current_channel)
-                            logger.debug(
-                                "Channel advanced to %d",
-                                current_channel,
-                            )
-                    # All expected data collected — finish
-                    if total_loops_seen >= total_loops_expected:
+                if isinstance(result, ParsedPacket):
+                    # Continuous: global time (data accumulates)
+                    # Single-run: per-channel time (each CH starts at 0)
+                    if continuous:
+                        elapsed = time.monotonic() - measurement_start_time
+                    else:
+                        elapsed = time.monotonic() - channel_start_time
+                    data_point = DataPoint(
+                        timestamp=elapsed,
+                        channel=current_channel,
+                        variables=dict(result.values),
+                    )
+                    self.result.add_point(data_point)
+                    self.data_point_ready.emit(data_point)
+
+                elif isinstance(result, LoopMarker):
+                    if result == LoopMarker.SUB_BEGIN:
+                        pass  # compact loop marker, ignore
+
+                    elif result == LoopMarker.END_LOOP:
+                        scan_counter += 1
+                        loops_this_round += 1
+                        self._flush_auto_save()
+                        if scan_counter >= n_scans:
+                            scan_counter = 0
+                            if current_channel_idx + 1 < len(channels):
+                                current_channel_idx += 1
+                                current_channel = channels[
+                                    current_channel_idx
+                                ]
+                                if not continuous:
+                                    channel_start_time = time.monotonic()
+                                self.channel_changed.emit(
+                                    current_channel
+                                )
+                        if loops_this_round >= loops_expected:
+                            break
+
+                    elif result == LoopMarker.END_MEAS:
                         logger.info(
-                            "All %d loops complete. "
-                            "Measurement finished.",
-                            total_loops_seen,
+                            "End-of-measurement marker received."
                         )
                         break
 
-                elif result == LoopMarker.END_MEAS:
-                    # Measurement complete
-                    logger.info("Received end-of-measurement marker.")
-                    break
+                    elif result == LoopMarker.BEGIN:
+                        pass
 
-                elif result == LoopMarker.BEGIN:
-                    # Start of measurement loop -- no action needed
-                    pass
+            round_num += 1
+            logger.info(
+                "Round %d complete: %d points total.",
+                round_num,
+                self.result.num_points,
+            )
 
-        # -- Flush remaining auto-save data and finish writer ----------------
+            # Single-run mode: exit after one round
+            if not continuous:
+                break
+
+            # Brief pause between rounds to let device settle
+            # and avoid CRC errors from residual serial data
+            time.sleep(0.2)
+
+        # -- Cleanup -------------------------------------------------------
         self._flush_auto_save()
         self._finish_writer()
 
-        # -- Emit completion -----------------------------------------------
         if self._abort_requested:
             logger.info("Measurement aborted by user.")
             self.measurement_error.emit("Measurement aborted by user.")
