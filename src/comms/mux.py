@@ -1,13 +1,13 @@
 """MUX16 channel address calculation and GPIO control script generation.
 
 The PalmSens MUX16 multiplexer switches 16 electrode channels via a
-10-bit GPIO address. In MUX16 mode, Working Electrode (WE) and
-Reference/Counter Electrode (RE/CE) are switched together.
+10-bit GPIO address. Only the Working Electrode (WE) is multiplexed;
+Reference/Counter Electrode (RE/CE) is shared (CE/RE 1 only).
 
 Address bit layout (10 bits)::
 
     Bits [9:8]  — Enable (inverted: 0 = enabled, 1 = disabled)
-    Bits [7:4]  — RE/CE channel select (0-15)
+    Bits [7:4]  — RE/CE channel select (always 0 for common RE/CE)
     Bits [3:0]  — WE channel select (0-15)
 
 Hardware channels are 1-indexed (CH1–CH16), while GPIO addresses use
@@ -45,15 +45,15 @@ class MuxController:
     1–16 and to generate MethodSCRIPT script fragments for GPIO
     initialisation, channel selection, and multi-channel scanning.
 
-    In MUX16 mode, WE and RE/CE are always switched together, so
-    ``bits[7:4]`` (RE/CE) and ``bits[3:0]`` (WE) are set to the same
-    channel index.
+    Only WE is multiplexed; RE/CE is shared (CE/RE 1 only), so
+    ``bits[7:4]`` (RE/CE) are always 0 and only ``bits[3:0]`` (WE)
+    change per channel.
 
     Example::
 
         mux = MuxController()
         addr = mux.channel_address(1)   # 0x000
-        addr = mux.channel_address(16)  # 0x0FF
+        addr = mux.channel_address(16)  # 0x00F
         script = mux.select_channel_script(5)
     """
 
@@ -64,16 +64,17 @@ class MuxController:
             channel: 1-indexed channel number (1–16).
 
         Returns:
-            10-bit integer address with enable bits cleared (enabled)
-            and WE/RE-CE set to the corresponding 0-indexed channel.
+            10-bit integer address with enable bits cleared (enabled),
+            RE/CE fixed at 0 (common RE/CE), and WE set to the
+            corresponding 0-indexed channel.
 
         Raises:
             MuxError: If channel is outside the valid range 1–16.
         """
         self._validate_channel(channel)
         idx = channel - 1  # Convert to 0-indexed
-        # WE = bits[3:0], RE/CE = bits[7:4], enable = bits[9:8] = 0
-        address = (idx << 4) | idx
+        # WE = bits[3:0], RE/CE = bits[7:4] = 0 (common), enable = bits[9:8] = 0
+        address = idx
         return address
 
     def channel_address_disabled(self) -> int:

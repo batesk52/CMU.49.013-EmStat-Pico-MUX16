@@ -1,6 +1,6 @@
 """Serial connection manager for the PalmSens EmStat Pico.
 
-Handles UART communication at 230400 baud with XON/XOFF flow control.
+Handles UART communication at 230400 baud (no software flow control).
 Provides methods for sending commands, loading MethodSCRIPT scripts,
 and reading device responses.
 """
@@ -68,7 +68,7 @@ class PicoConnection:
     def connect(self, port: Optional[str] = None) -> None:
         """Open the serial connection and query device identity.
 
-        Configures the port for 230400/8N1 with XON/XOFF flow control,
+        Configures the port for 230400/8N1 (no software flow control),
         then queries firmware version and serial number.
 
         Args:
@@ -94,9 +94,10 @@ class PicoConnection:
                 parity=PARITY,
                 stopbits=STOPBITS,
                 timeout=COMMAND_TIMEOUT,
-                xonxoff=True,
+                xonxoff=False,
                 rtscts=False,
                 dsrdtr=False,
+                write_timeout=2,
             )
             logger.info("Opened serial port %s at %d baud.", self.port, BAUDRATE)
         except serial.SerialException as exc:

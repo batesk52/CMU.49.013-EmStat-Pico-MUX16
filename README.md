@@ -151,15 +151,10 @@ CMU.49.013-EmStat-Pico-MUX16/
 ### Phase 6: Completion Fixes
 
 #### src/gui/
-- [ ] **controls.py + main_window.py** - Save Preset dialog (Req 9)
-  * Add `save_preset_requested` signal to `TechniquePanel` connected to `_save_preset_btn.clicked`
-  * Implement `_on_save_preset()` in `MainWindow`: QInputDialog for name, gather current technique/params/channels/auto-save, call `PresetManager.add_preset()`, refresh preset combo
-  * Validate: launch app, configure a technique, click Save, verify preset appears in dropdown and persists in `presets/presets.json`
-  * Validate: `python -c "from src.data.presets import PresetManager; pm = PresetManager(); pm.add_preset('test', pm.get_preset('no_sensing')); print(pm.list_presets())"`
+- **controls.py + main_window.py** - Save Preset dialog (Req 9)
+  * `TechniquePanel` emits `save_preset_requested` signal via Save button
+  * `MainWindow._on_save_preset()` prompts with QInputDialog, gathers current technique/params/channels/auto-save state, calls `PresetManager.add_preset()`, and refreshes the preset combo
 
-#### src/gui/
-- [ ] **main_window.py** - Wire .pssession export in GUI export flow (Req 7)
-  * Call `PsSessionExporter.export_pssession()` alongside CSV export in `_do_export()`
-  * Import `PsSessionExporter` from `src.data.exporters`
-  * Validate: run a measurement export, verify `.pssession` file created in output directory alongside per-channel CSVs
-  * Validate: `python -c "from src.data.exporters import PsSessionExporter; print('PsSessionExporter ready')"
+- **main_window.py** - .pssession export in GUI export flow (Req 7)
+  * `_do_export()` calls `PsSessionExporter.export_pssession()` alongside per-channel CSV export
+  * Output directory contains both per-channel CSVs and a single `.pssession` file per run
