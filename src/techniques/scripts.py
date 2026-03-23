@@ -285,8 +285,9 @@ def _cr_index(cr: str) -> str:
 def _preamble(params: dict[str, Any]) -> list[str]:
     """Build the standard script preamble.
 
-    Configures the potentiostat mode and current range, then turns
-    the cell on.
+    Configures both potentiostat channels (chan 1 off, chan 0 in
+    potentiostatic mode), sets current range, then turns cell on.
+    The dual-channel setup is required for MUX16 operation.
     """
     lines: list[str] = []
     lines.append("e")
@@ -294,7 +295,10 @@ def _preamble(params: dict[str, Any]) -> list[str]:
     cr_idx = _cr_index(cr)
     lines.append("var p")
     lines.append("var c")
-    lines.append(f"set_pgstat_mode 0")
+    lines.append("set_pgstat_chan 1")
+    lines.append("set_pgstat_mode 0")
+    lines.append("set_pgstat_chan 0")
+    lines.append("set_pgstat_mode 2")
     lines.append(f"set_max_bandwidth {_format_int(200)}")
     lines.append(f"set_cr {cr_idx}i")
     lines.append("cell_on")
@@ -302,14 +306,20 @@ def _preamble(params: dict[str, Any]) -> list[str]:
 
 
 def _preamble_galvano(params: dict[str, Any]) -> list[str]:
-    """Build preamble for galvanostatic techniques (CP, GEIS)."""
+    """Build preamble for galvanostatic techniques (CP, GEIS).
+
+    Configures chan 1 off, chan 0 in galvanostatic mode.
+    """
     lines: list[str] = []
     lines.append("e")
     cr = params.get("cr", "100u")
     cr_idx = _cr_index(cr)
     lines.append("var p")
     lines.append("var c")
-    lines.append(f"set_pgstat_mode 3")
+    lines.append("set_pgstat_chan 1")
+    lines.append("set_pgstat_mode 0")
+    lines.append("set_pgstat_chan 0")
+    lines.append("set_pgstat_mode 3")
     lines.append(f"set_max_bandwidth {_format_int(200)}")
     lines.append(f"set_cr {cr_idx}i")
     lines.append("cell_on")
@@ -317,12 +327,18 @@ def _preamble_galvano(params: dict[str, Any]) -> list[str]:
 
 
 def _preamble_ocp() -> list[str]:
-    """Build preamble for OCP (no cell_on, open circuit)."""
+    """Build preamble for OCP (no cell_on, open circuit).
+
+    Configures chan 1 off, chan 0 in high-impedance mode.
+    """
     lines: list[str] = []
     lines.append("e")
     lines.append("var p")
     lines.append("var c")
-    lines.append(f"set_pgstat_mode 2")
+    lines.append("set_pgstat_chan 1")
+    lines.append("set_pgstat_mode 0")
+    lines.append("set_pgstat_chan 0")
+    lines.append("set_pgstat_mode 2")
     return lines
 
 
@@ -468,7 +484,11 @@ def _gen_acv(params: dict[str, Any]) -> list[str]:
 
 
 def _gen_cv(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_cv script body."""
+    """Generate meas_loop_cv script body.
+
+    Note: ``nscans`` is a separate command before the measurement loop,
+    NOT a trailing argument to ``meas_loop_cv`` (which causes ``!4005``).
+    """
     e_begin = _format_si(params.get("e_begin", -0.5))
     e_vertex1 = _format_si(params.get("e_vertex1", 0.5))
     e_vertex2 = _format_si(params.get("e_vertex2", -0.5))
@@ -477,9 +497,11 @@ def _gen_cv(params: dict[str, Any]) -> list[str]:
     n_scans = int(params.get("n_scans", 1))
     lines: list[str] = []
     lines.extend(_pck_voltammetry())
+    if n_scans != 1:
+        lines.append(f"nscans {_format_int(n_scans)}")
     lines.append(
         f"meas_loop_cv p c {e_begin} {e_vertex1} {e_vertex2}"
-        f" {e_step} {scan_rate} {_format_int(n_scans)}"
+        f" {e_step} {scan_rate}"
     )
     lines.append("endloop")
     return lines

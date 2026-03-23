@@ -55,7 +55,7 @@ class Preset:
 _BUILTIN_PRESETS: dict[str, Preset] = {
     "no_sensing": Preset(
         name="NO Sensing (DARPA IV&V)",
-        technique="ca_alt_mux",
+        technique="ca",
         params={
             "e_dc": 0.85,
             "t_run": 10.0,

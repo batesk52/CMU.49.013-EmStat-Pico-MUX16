@@ -102,17 +102,20 @@ class MuxController:
     def select_channel_script(self, channel: int) -> list[str]:
         """Generate MethodSCRIPT lines to switch to a specific channel.
 
+        Includes a 100 ms settle time after switching to allow the
+        MUX hardware to stabilise before measurement begins.
+
         Args:
             channel: 1-indexed channel number (1–16).
 
         Returns:
-            List of MethodSCRIPT lines to set the GPIO address.
+            List of MethodSCRIPT lines to set the GPIO address and wait.
 
         Raises:
             MuxError: If channel is outside the valid range.
         """
         addr = self.channel_address(channel)
-        return [f"set_gpio 0x{addr:03X}i"]
+        return [f"set_gpio 0x{addr:03X}i", "wait 100m"]
 
     def disable_script(self) -> list[str]:
         """Generate MethodSCRIPT lines to disable MUX outputs.
@@ -172,6 +175,7 @@ class MuxController:
                 # Subsequent channels — use add_var to step
                 lines.append(f"  add_var p 1i 0i")
                 lines.append(f"  set_gpio 0x{addr:03X}i")
+            lines.append("  wait 100m")
 
         lines.append("endloop")
 
@@ -221,6 +225,7 @@ class MuxController:
             if i > 0:
                 lines.append(f"  add_var p 1i 0i")
             lines.append(f"  set_gpio 0x{addr:03X}i")
+            lines.append("  wait 100m")
 
             # Insert measurement body (indented)
             for body_line in body_lines:
