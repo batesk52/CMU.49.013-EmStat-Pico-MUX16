@@ -491,9 +491,19 @@ class MainWindow(QMainWindow):
         self._status_progress.setText("Error")
         self.statusBar().showMessage(f"Error: {message}")
         logger.error("Measurement error: %s", message)
-        QMessageBox.critical(
-            self, "Measurement Error", message
-        )
+
+        # Enable export if we collected any data (e.g. abort mid-EIS)
+        if (
+            self._engine.result is not None
+            and self._engine.result.num_points > 0
+        ):
+            self._last_result = self._engine.result
+            self._export_action.setEnabled(True)
+
+        if "aborted" not in message.lower():
+            QMessageBox.critical(
+                self, "Measurement Error", message
+            )
 
     @pyqtSlot(int)
     def _on_channel_changed(self, channel: int) -> None:
