@@ -20,7 +20,7 @@ Template: codebase
 ## Project-Specific Patterns
 
 ### Serial Communication
-- Always use XON/XOFF flow control (pyserial `xonxoff=True`)
+- Always use XON/XOFF flow control (pyserial `xonxoff=True`) per PalmSens comm protocol doc
 - All commands terminated with `\n` (LF only, never CR)
 - Device echoes first character of command — strip before parsing response
 - Timeout reads at 5 seconds for commands, 60+ seconds during measurements
@@ -31,16 +31,22 @@ Template: codebase
 - No empty lines within scripts (device interprets as end-of-script)
 - Every script MUST include `on_finished:\n  cell_off` for safety
 
+### MethodSCRIPT Firmware
+- Firmware v1.6+ required for compact `loop i <= e` MUX pattern with `set_gpio i`
+- `store_var` integer values MUST have `i` suffix: `store_var i 0i aa` (not `0 aa`)
+- `add_var i 0b01` — use binary format for GPIO address increment
+- `meas_loop_ca` argument order: `p c <e_dc> <t_interval> <t_run>` (interval before run)
+
 ### MUX16 Addressing
 - Hardware labels are 1-indexed (CH1-CH16), GPIO addresses are 0-indexed
-- MUX16 mode: WE and RE/CE switched together, address = `(ch-1) << 4 | (ch-1)` with enable bits cleared
+- WE only is multiplexed; RE/CE is shared (common reference/counter electrode)
 - Enable bits (9:8) are inverted: 0 = enabled, 1 = disabled
 
 ### Data Packet Decoding
 - Packet format: `Pvar1;var2;...varN\n`
 - Variable: 2-char type code + 7-char hex value + 1-char SI prefix
 - Decode: `(hex_to_uint(value) - 2^27) * 10^(SI_exponent)`
-- Variable types: `da`=set_potential, `ab`=measured_potential, `ba`=current, `dc`=impedance, `dd`=phase, `cc`=frequency
+- Variable types: `da`=set_potential, `ab`=potential, `ba`=current, `cb`=impedance, `ca`=phase, `cc`=zreal, `cd`=zimag, `dc`=set_frequency
 
 ### Threading
 - GUI thread: NEVER perform serial I/O or blocking waits

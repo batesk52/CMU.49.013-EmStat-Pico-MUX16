@@ -2,6 +2,35 @@
 
 Python GUI application for operating the PalmSens EmStat Pico MUX16 potentiostat via MethodSCRIPT over serial, with live multi-channel plotting and data export.
 
+## Quick Start (Fresh PC)
+
+**Prerequisites:** Python 3.10+, VS Code (optional)
+
+### 1. Create a virtual environment
+```
+python -m venv C:\Users\KarlJ\envs\cmu.49.013
+```
+
+### 2. Activate it
+```
+C:\Users\KarlJ\envs\cmu.49.013\Scripts\activate.bat
+```
+You should see `(cmu.49.013)` in your prompt.
+
+### 3. Install dependencies
+```
+cd C:\Users\KarlJ\Documents\_all_work\CMU.49.013-EmStat-Pico-MUX16
+pip install -r requirements.txt
+```
+
+### 4. Run the app
+```
+python -m src.gui.main_window
+```
+
+### VS Code Integration
+`Ctrl+Shift+P` → **Python: Select Interpreter** → pick `cmu.49.013`. New terminals will auto-activate the environment.
+
 ## Architecture Overview
 
 ### Folder Structure
@@ -13,6 +42,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 │   ├── data/               # Data models + CSV/.pssession export
 │   ├── engine/             # Background measurement thread
 │   └── gui/                # PyQt6 main window, live plot, control panels
+├── presets/                # Measurement preset configurations (JSON)
 ├── tests/                  # Test suite
 ├── exports/                # Measurement output files
 └── docs/                   # Protocol references
@@ -29,104 +59,131 @@ CMU.49.013-EmStat-Pico-MUX16/
 - `src/gui/controls.py` - Connection, technique, channel, and measurement panels
 - `src/data/models.py` - Dataclasses for results, configs, channels
 - `src/data/exporters.py` - CSV + .pssession export
+- `src/data/incremental_writer.py` - Auto-save CSV writer (per MUX loop)
+- `src/data/presets.py` - Measurement preset manager with built-in NO Sensing
 
 ### Use Cases
 1. Run cyclic voltammetry across 16 electrode channels with live overlay plots
 2. Perform EIS on selected channels and export Nyquist data for analysis in CMU.49.011
 3. Multi-channel chronoamperometry for biosensor calibration with real-time current monitoring
+4. Run NO sensing preset with auto-save for crash-safe in-vivo experiments (DARPA IV&V)
 
 ## Implementation Blueprint
 
 ### Phase 1: Communication Foundation
 
 #### src/comms/
-- [ ] **serial_connection.py** - Serial connection manager for EmStat Pico (Req 1)
-  * Connect/disconnect at 230400 baud, 8N1, XON/XOFF flow control via pyserial
-  * Send raw commands (`t`, `i`, `v`, `e`, `l`, `Z`, `h`, `H`) and read responses
-  * Script loading: send lines terminated with `\n`, empty line to end
-  * Query firmware version and serial number on connect
-  * Validate: `python -c "from src.comms.serial_connection import PicoConnection; print(PicoConnection.__init__.__doc__)"`
+- **serial_connection.py** - Serial connection manager for EmStat Pico (Req 1)
+  * Connects/disconnects at 230400 baud, 8N1 with XON/XOFF flow control via pyserial
+  * Sends raw commands (`t`, `i`, `v`, `e`, `l`, `Z`, `h`, `H`) and reads responses, stripping device echo
+  * Loads MethodSCRIPT by sending lines terminated with `\n`; empty line signals end-of-script
+  * Queries firmware version (`t`) and serial number (`i`) automatically on connect
+  * Thread-safe write access via internal lock for concurrent abort/halt/resume from GUI thread
+  * Context manager support for safe connect/disconnect lifecycle
 
-- [ ] **protocol.py** - MethodSCRIPT data packet parser (Req 2)
-  * Decode hex data packets: `P<var1>;<var2>;...\n` format
-  * Convert 28-bit hex values with SI prefix to float: `(hex - 2^27) * SI_factor`
-  * Map 2-char variable type codes to names (da→potential, ba→current, etc.)
-  * Parse measurement loop markers (M, *, L, +) for technique/channel tracking
-  * Handle metadata fields (status, current range, noise) after comma separators
-  * Validate: `python -c "from src.comms.protocol import PacketParser; p = PacketParser(); print(p.decode_value('8000800', 'u'))"`
+- **protocol.py** - MethodSCRIPT data packet parser (Req 2)
+  * Decodes hex data packets in `P<var1>;<var2>;...\n` format into `ParsedPacket` objects
+  * Converts 28-bit hex values with SI prefix to float: `(hex - 2^27) * 10^(SI_exponent)`
+  * Maps 2-char variable type codes to names (da=set_potential, ba=current, ab=potential, cc=zreal, cd=zimag, etc.)
+  * Tracks measurement loop markers (M, *, L, +) with stateful depth and channel index
+  * Parses optional metadata fields (status bits, current range) after comma separators
+  * Provides `SI_PREFIXES` and `VAR_TYPES` constant dictionaries for external use
 
-- [ ] **mux.py** - MUX16 channel address calculation and GPIO control (Req 3)
-  * Calculate 10-bit GPIO address for channels 1-16 (MUX16 mode: WE+RE/CE linked)
-  * Address format: bits[9:8]=enable(inverted), bits[7:4]=RE/CE, bits[3:0]=WE
-  * Generate `set_gpio_cfg 0x3FFi 1` initialization script
-  * Generate `set_gpio <addr>i` channel selection script
-  * Generate multi-channel scan loop with `add_var` stepping
-  * Validate: `python -c "from src.comms.mux import MuxController; m = MuxController(); print(hex(m.channel_address(1)))"`
+- **mux.py** - MUX16 channel address calculation and GPIO control (Req 3)
+  * Calculates 10-bit GPIO addresses for channels 1-16 (MUX16 mode: WE and RE/CE switched together)
+  * Address format: bits[9:8]=enable (inverted), bits[7:4]=RE/CE, bits[3:0]=WE
+  * Generates `set_gpio_cfg 0x3FFi 1` initialisation script for configuring all pins as outputs
+  * Generates `set_gpio <addr>i` channel selection commands for individual channel switching
+  * Generates multi-channel scan loops with `meas_loop_for` and `add_var` stepping
+  * Validates channel numbers (1-16) with descriptive `MuxError` exceptions
+  * Supports both bare scan loops and scan-with-measurement-body composition
 
 ### Phase 2: Measurement Core
 
 #### src/techniques/
-- [ ] **scripts.py** - MethodSCRIPT generator for all electrochemical techniques (Req 4)
-  * Template-based generation: preamble (pgstat config, cell_on) → technique loop → postamble (on_finished: cell_off)
-  * Support all techniques: LSV, DPV, SWV, NPV, ACV, CV, CA, FCA, CP, OCP, EIS, GEIS, PAD, LSP, FCV
-  * Support MUX-alternating: meas_loop_ca_alt_mux, meas_loop_cp_alt_mux, meas_loop_ocp_alt_mux
-  * Parameterize: potential range, scan rate, frequency range, step size, amplitude, current range
-  * Format values with MethodSCRIPT SI prefixes (e.g., 500m for 0.5V)
-  * Include pck_start/pck_add/pck_end for data packet configuration
-  * Validate: `python -c "from src.techniques.scripts import generate; print(generate('cv', {'e_begin': -0.5, 'e_vertex1': 0.5, 'e_vertex2': -0.5, 'scan_rate': 0.1}, [1]))"`
+- **scripts.py** - MethodSCRIPT generator for all electrochemical techniques (Req 4)
+  * Template-based generation: preamble (pgstat config, cell_on) followed by technique measurement loop and postamble (on_finished: cell_off)
+  * Supports 15 standard techniques (LSV, DPV, SWV, NPV, ACV, CV, CA, FCA, CP, OCP, EIS, GEIS, PAD, LSP, FCV) and 3 MUX-alternating variants (ca_alt_mux, cp_alt_mux, ocp_alt_mux)
+  * Parameterised via `generate(technique, params, channels)` with defaults for all parameters (potential range, scan rate, frequency range, step size, amplitude, current range)
+  * Formats all values with MethodSCRIPT SI prefix notation (e.g., `500m` for 0.5 V) via internal `_format_si()` helper
+  * Includes pck_start/pck_add/pck_end blocks configured per technique type (voltammetry, amperometry, potentiometry, EIS)
+  * Multi-channel runs wrap the technique body in a MUX scan loop via `MuxController.scan_channels_script_with_body()`
 
 #### src/data/
-- [ ] **models.py** - Data models for measurements and configuration (Req 2, 4)
-  * `TechniqueConfig` dataclass: technique name, parameter dict, channel list
-  * `DataPoint` dataclass: timestamp, channel, variable dict (name→value pairs)
-  * `MeasurementResult`: list of DataPoints + metadata (technique, start_time, device_info)
-  * `ChannelData`: filtered view of MeasurementResult for one channel
-  * Validate: `python -c "from src.data.models import TechniqueConfig, DataPoint; print(TechniqueConfig('cv', {}, [1]))"`
+- **models.py** - Data models for measurements and configuration (Req 2, 4)
+  * `TechniqueConfig` dataclass: technique name (auto-lowercased), parameter dict, and channel list
+  * `DataPoint` dataclass: timestamp, channel, and variable dict mapping names to float values with `get()` accessor
+  * `MeasurementResult`: ordered list of DataPoints with metadata (technique, start_time, device_info, params, channels) and `channel_data()` filtered-view method
+  * `ChannelData`: per-channel subset with `values(name)` and `timestamps()` convenience extractors
 
 #### src/engine/
-- [ ] **measurement_engine.py** - Background measurement thread (Req 2, 3, 4)
-  * QThread subclass: accepts connection, technique config, channels
-  * Builds full MethodSCRIPT (technique + MUX loop) via scripts.py and mux.py
-  * Sends script, reads streaming response lines, parses packets in real-time
-  * Emits Qt signals: data_point_ready, measurement_started, measurement_finished, measurement_error, channel_changed
-  * Supports abort (Z command), halt (h), resume (H) during execution
-  * Buffers all DataPoints into MeasurementResult for post-run export
-  * Validate: `python -c "from src.engine.measurement_engine import MeasurementEngine; print(MeasurementEngine.__doc__)"`
+- **measurement_engine.py** - Background measurement thread (Req 2, 3, 4)
+  * QThread subclass that accepts a PicoConnection and TechniqueConfig, then runs the full measurement lifecycle in a background thread
+  * Generates complete MethodSCRIPT (preamble + technique body + MUX channel loop + safety postamble) via `scripts.generate()` and sends it to the device
+  * Reads streaming response lines in real time, parsing data packets via `PacketParser` into `DataPoint` objects with elapsed timestamps and channel assignment
+  * Emits Qt signals for GUI integration: `data_point_ready(DataPoint)`, `measurement_started(str)`, `measurement_finished(MeasurementResult)`, `measurement_error(str)`, `channel_changed(int)`
+  * Supports abort (`Z` command), halt (`h`), and resume (`H`) from the GUI thread via PicoConnection's thread-safe write methods
+  * Buffers all decoded DataPoints into a `MeasurementResult` with device metadata, technique parameters, and channel list for post-run export
+  * Handles serial disconnection and device error codes gracefully, emitting `measurement_error` signal with descriptive messages
 
 ### Phase 3: GUI Application
 
 #### src/gui/
-- [ ] **plot_widget.py** - Live pyqtgraph plot with per-channel curves (Req 5)
-  * pyqtgraph PlotWidget subclass with technique-aware axis configuration
-  * Per-channel curves with distinct colors (16-color palette)
-  * add_point(channel, x, y) for real-time updates from engine signals
-  * Technique presets: I vs E (CV/LSV/DPV/SWV), I vs t (CA/CP), -Z'' vs Z' (EIS), etc.
-  * Auto-range with manual zoom/pan override
-  * Clear and reset between measurements
-  * Validate: `python -c "from src.gui.plot_widget import LivePlotWidget; print('LivePlotWidget imported')"`
+- **plot_widget.py** - Live pyqtgraph plot with per-channel curves (Req 5)
+  * ``LivePlotWidget(pg.PlotWidget)`` subclass with technique-aware axis labels for all 18 supported techniques
+  * 16-color palette (CHANNEL_COLORS) assigns visually distinct colors to CH1-CH16
+  * ``add_point(channel, x, y)`` streams real-time data; ``on_data_point(DataPoint)`` slot connects directly to engine signals
+  * Technique presets via ``set_technique()``: I vs E (CV/LSV/DPV/SWV/NPV/ACV/FCV/LSP/PAD), I vs t (CA/FCA), E vs t (CP/OCP), -Z'' vs Z' (EIS/GEIS)
+  * Auto-range enabled by default; defers to manual zoom/pan when user interacts, re-enabled on measurement completion
+  * ``clear_plot()`` removes all curves between measurements; ``reset()`` also restores default axis labels
 
-- [ ] **controls.py** - GUI control panels for connection, technique, channels (Req 6)
-  * `ConnectionPanel`: COM port combo (auto-detect), connect/disconnect buttons, firmware version label, status indicator
-  * `TechniquePanel`: technique dropdown, dynamic parameter fields (spin boxes, range inputs) that update per technique
-  * `ChannelPanel`: 4x4 grid of channel checkboxes (1-16), select all/none buttons
-  * `MeasurementControlPanel`: Start, Stop (abort), Halt, Resume buttons with enable/disable logic
-  * Validate: `python -c "from src.gui.controls import ConnectionPanel; print('Controls imported')"`
+- **controls.py** - GUI control panels for connection, technique, channels (Req 6)
+  * ``ConnectionPanel(QGroupBox)``: COM port combo with auto-detect via ``serial.tools.list_ports``, connect/disconnect buttons, firmware version label, status indicator with color-coded states (connected/disconnected/error)
+  * ``TechniquePanel(QGroupBox)``: technique dropdown populated from ``supported_techniques()``, dynamic parameter fields (QDoubleSpinBox for floats, QSpinBox for ints, QComboBox for current range) rebuilt per technique from ``technique_params()`` defaults
+  * ``ChannelPanel(QGroupBox)``: 4x4 grid of 16 channel checkboxes (CH1 checked by default), Select All / Select None batch buttons, emits ``channels_changed(list)`` signal
+  * ``MeasurementControlPanel(QGroupBox)``: Start (green), Stop/abort (red), Halt, Resume buttons with state-driven enable/disable logic (idle/running/halted/disabled modes)
 
-- [ ] **main_window.py** - Main application window (Req 6)
-  * QMainWindow with dock-based layout: left panel (controls), center (live plot), bottom (log/status)
-  * Wire all signals: engine → plot widget, controls → engine
-  * Menu bar: File (export, quit), Device (connect, disconnect), Help (about)
-  * Status bar: connection state, measurement progress, current channel
-  * On measurement complete: prompt for export (CSV + .pssession)
-  * Application entry point (`if __name__ == "__main__"`)
-  * Validate: `python -c "from src.gui.main_window import MainWindow; print('MainWindow imported')"`
+- **main_window.py** - Main application window (Req 6)
+  * ``MainWindow(QMainWindow)`` with dock-based layout: left dock (ConnectionPanel, TechniquePanel, ChannelPanel, MeasurementControlPanel), centre (LivePlotWidget), bottom dock (QPlainTextEdit log console with attached logging handler)
+  * Wires all Qt signals: engine ``data_point_ready`` to plot ``on_data_point``, engine ``measurement_finished``/``measurement_error``/``channel_changed``/``measurement_started`` to status bar and panel state updates, control panel signals to engine ``start_measurement``/``abort``/``halt``/``resume``
+  * Menu bar with File (Export Results Ctrl+E, Quit Ctrl+Q), Device (Connect, Disconnect), Help (About) actions
+  * Status bar with three permanent labels: connection state, measurement progress, and current MUX channel
+  * On measurement complete: prompts user to export; creates timestamped subdirectory with per-channel CSV files (delegates to ``CSVExporter`` when available, falls back to basic CSV writer)
+  * Application entry point via ``main()`` function and ``if __name__ == "__main__"`` block; configures root logger and launches QApplication
 
 ### Phase 4: Data Export
 
 #### src/data/
-- [ ] **exporters.py** - CSV and .pssession file export (Req 7)
-  * `CSVExporter`: one CSV per channel, columns based on technique (time, potential, current, impedance, phase)
-  * `PsSessionExporter`: UTF-16 JSON matching PalmSens .pssession format for CMU.49.011 compatibility
-  * Include metadata header: technique, parameters, timestamp, device serial, firmware version
-  * Timestamped output directory in exports/ (format: YYYYMMDD_HHMMSS_technique)
-  * Validate: `python -c "from src.data.exporters import CSVExporter; print('Exporters imported')"`
+- **exporters.py** - CSV and .pssession file export (Req 7)
+  * `CSVExporter` writes one CSV per channel with technique-aware column ordering (voltammetry: potential/current, EIS: set_frequency/impedance/zreal/zimag/phase, amperometry: current/potential)
+  * `PsSessionExporter` writes UTF-16 LE encoded JSON matching PalmSens .pssession format for CMU.49.011 compatibility
+  * Metadata header block (``#``-prefixed) includes technique, parameters, timestamp, device serial, and firmware version
+  * `make_export_dir()` helper creates timestamped output directories (``YYYYMMDD_HHMMSS_technique``)
+  * `export()` alias on CSVExporter provides backward compatibility with GUI fallback path
+
+### Phase 5: Operational Features
+
+#### src/data/
+- **incremental_writer.py** - Auto-save CSV writer for crash safety (Req 8)
+  * `IncrementalCSVWriter` writes CSV data incrementally at each MUX loop boundary
+  * Per-channel file handles opened on first data point, appended on each flush
+  * Calls `f.flush()` + `os.fsync()` after each write for crash safety in in-vivo experiments
+  * Thread-safe via `threading.Lock` (finish may be called from GUI thread during abort)
+  * CSV format identical to `CSVExporter` output for downstream compatibility
+
+- **presets.py** - Measurement preset management (Req 9)
+  * `Preset` dataclass: name, technique, params, channels, auto_save, description
+  * `PresetManager` loads/saves/manages presets from `presets/presets.json`
+  * Ships with built-in `no_sensing` preset: CA_alt_mux at 0.85V, channels 1-8, auto-save enabled
+  * Built-in presets cannot be deleted; user presets can be added and removed
+
+### Phase 6: Completion Fixes
+
+#### src/gui/
+- **controls.py + main_window.py** - Save Preset dialog (Req 9)
+  * `TechniquePanel` emits `save_preset_requested` signal via Save button
+  * `MainWindow._on_save_preset()` prompts with QInputDialog, gathers current technique/params/channels/auto-save state, calls `PresetManager.add_preset()`, and refreshes the preset combo
+
+- **main_window.py** - .pssession export in GUI export flow (Req 7)
+  * `_do_export()` calls `PsSessionExporter.export_pssession()` alongside per-channel CSV export
+  * Output directory contains both per-channel CSVs and a single `.pssession` file per run

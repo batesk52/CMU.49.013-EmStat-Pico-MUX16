@@ -31,10 +31,12 @@ Measurement orchestration running in background thread.
 
 ### Data Layer (`src/data/`)
 ```
-Data models and file export.
+Data models, file export, incremental auto-save, and measurement presets.
 - Dataclasses for measurement results, technique configs, channel data
 - CSV export with per-channel files
 - .pssession JSON export compatible with CMU.49.011
+- Incremental CSV writer for crash-safe auto-save at MUX loop boundaries
+- Measurement presets loaded from JSON (ships with NO Sensing preset)
 ```
 
 ### GUI Layer (`src/gui/`)
@@ -114,6 +116,25 @@ PyQt6 application with pyqtgraph live plotting.
 - `export_csv(result: MeasurementResult, output_dir: str) -> list[str]`
 - `export_pssession(result: MeasurementResult, output_path: str) -> str`
 
+#### `incremental_writer.py`
+**Purpose:** Crash-safe incremental CSV writing during measurement
+**Key Classes:**
+- `IncrementalCSVWriter` - Append-mode CSV writer with fsync
+**Interfaces:**
+- `start(technique, params, device_info, channels, output_dir) -> str`
+- `flush_points(points: list[DataPoint]) -> int`
+- `finish() -> list[str]`
+
+#### `presets.py`
+**Purpose:** Measurement preset management with JSON persistence
+**Key Classes:**
+- `Preset` - Named measurement configuration dataclass
+- `PresetManager` - Load/save/add/delete presets from JSON
+**Interfaces:**
+- `list_presets() -> list[str]`
+- `get_preset(key: str) -> Optional[Preset]`
+- `add_preset(key: str, preset: Preset) -> None`
+
 ### Module: `engine`
 
 #### `measurement_engine.py`
@@ -176,7 +197,9 @@ Qt Signal: data_point_ready(DataPoint)
      ↓
 LivePlotWidget.add_point() + MeasurementResult buffer
      ↓
-On completion → Exporters write CSV / .pssession
+On END_LOOP → IncrementalCSVWriter.flush_points() [if auto-save enabled]
+     ↓
+On completion → Exporters write CSV / .pssession (or skip if auto-saved)
 ```
 
 ## Design Patterns

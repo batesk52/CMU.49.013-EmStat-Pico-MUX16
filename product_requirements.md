@@ -125,6 +125,24 @@ The lab relies on individual PalmSens potentiostats for electrochemical measurem
 ### Internal Dependencies
 - CMU.49.011-Electrochemistry: .pssession format reference for export compatibility
 
+### Req 8: Incremental Auto-Save
+**Description:** Auto-save CSV data during measurement for crash safety
+**Acceptance Criteria:**
+- Must auto-save CSV data at each MUX loop boundary during measurement
+- Must create per-channel CSV files identical in format to manual export
+- Must preserve all data collected up to the point of abort or crash
+- Must be configurable (enable/disable toggle, output directory selection)
+- Must call fsync after each flush for crash safety
+
+### Req 9: Measurement Presets
+**Description:** Save and load named measurement configurations
+**Acceptance Criteria:**
+- Must support named preset configurations (technique, params, channels, auto-save)
+- Must ship with a built-in NO Sensing preset (CA_alt_mux, 0.85V, channels 1-8, auto-save on)
+- Must allow users to save custom presets
+- Must load presets on startup from a JSON file
+- Built-in presets cannot be deleted
+
 ## Risks
 
 | Risk | Impact | Likelihood | Mitigation |
