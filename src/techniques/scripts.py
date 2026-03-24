@@ -73,7 +73,7 @@ def _format_si(value: float) -> str:
         '0 '
     """
     if value == 0.0:
-        return "0"
+        return "0m"
 
     abs_val = abs(value)
 
@@ -299,6 +299,22 @@ def _preamble(params: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _preamble_eis(params: dict[str, Any]) -> list[str]:
+    """Build preamble for EIS (high-speed mode required)."""
+    lines: list[str] = []
+    lines.append("e")
+    cr = params.get("cr", "100u")
+    lines.append("var p")
+    lines.append("var c")
+    lines.append("set_pgstat_chan 1")
+    lines.append("set_pgstat_mode 0")
+    lines.append("set_pgstat_chan 0")
+    lines.append("set_pgstat_mode 3")  # high speed for EIS
+    lines.append(f"set_autoranging 100n {cr}")
+    lines.append("cell_on")
+    return lines
+
+
 def _preamble_galvano(params: dict[str, Any]) -> list[str]:
     """Build preamble for galvanostatic techniques (CP, GEIS).
 
@@ -373,15 +389,12 @@ def _pck_potentiometry() -> list[str]:
 
 
 def _pck_eis() -> list[str]:
-    """Packet config for EIS (Z_real, Z_imag, phase, |Z|, freq).
-
-    Note: EIS may need additional variables declared for full impedance
-    data. This uses p and c for now — validate with hardware.
-    """
+    """Packet config for EIS — uses 3 variables (h, r, j)."""
     return [
         "pck_start",
-        "pck_add p",
-        "pck_add c",
+        "pck_add h",
+        "pck_add r",
+        "pck_add j",
         "pck_end",
     ]
 
@@ -554,16 +567,23 @@ def _gen_ocp(params: dict[str, Any]) -> list[str]:
 
 
 def _gen_eis(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_eis script body."""
+    """Generate meas_loop_eis script body.
+
+    EIS uses 3 variables (h, r, j) not the standard (p, c).
+    DC potential is set via set_e before the loop, not as
+    an argument to meas_loop_eis. The manual (v1.6 p36) shows:
+        meas_loop_eis h r j <e_ac> <freq_start> <freq_end> <n_freq> <eis_opt>
+    """
     e_dc = _format_si(params.get("e_dc", 0.0))
     e_ac = _format_si(params.get("e_ac", 0.01))
     freq_start = _format_si(params.get("freq_start", 100000.0))
     freq_end = _format_si(params.get("freq_end", 0.1))
     n_freq = int(params.get("n_freq", 50))
     lines: list[str] = []
+    lines.append(f"set_e {e_dc}")
     lines.append(
-        f"meas_loop_eis p c {e_dc} {e_ac}"
-        f" {freq_start} {freq_end} {_format_int(n_freq)}"
+        f"meas_loop_eis h r j {e_ac}"
+        f" {freq_start} {freq_end} {n_freq} 0"
     )
     lines.extend(_indent(_pck_eis()))
     lines.append("endloop")
@@ -578,9 +598,10 @@ def _gen_geis(params: dict[str, Any]) -> list[str]:
     freq_end = _format_si(params.get("freq_end", 0.1))
     n_freq = int(params.get("n_freq", 50))
     lines: list[str] = []
+    lines.append(f"set_i {i_dc}")
     lines.append(
-        f"meas_loop_geis p c {i_dc} {i_ac}"
-        f" {freq_start} {freq_end} {_format_int(n_freq)}"
+        f"meas_loop_geis h r j {i_ac}"
+        f" {freq_start} {freq_end} {n_freq} 0"
     )
     lines.extend(_indent(_pck_eis()))
     lines.append("endloop")
@@ -696,7 +717,7 @@ _TECHNIQUE_REGISTRY: dict[str, tuple] = {
     "fca": (_gen_fca, _preamble),
     "cp": (_gen_cp, _preamble_galvano),
     "ocp": (_gen_ocp, _preamble_ocp),
-    "eis": (_gen_eis, _preamble),
+    "eis": (_gen_eis, _preamble_eis),
     "geis": (_gen_geis, _preamble_galvano),
     "pad": (_gen_pad, _preamble),
     "lsp": (_gen_lsp, _preamble),
@@ -766,6 +787,15 @@ def generate(
     else:
         script_lines = preamble_fn(merged)
 
+    # EIS uses extra variables (h, r, j) instead of (p, c)
+    if technique in ("eis", "geis"):
+        insert_idx = 0
+        for idx, line in enumerate(script_lines):
+            if line.startswith("var "):
+                insert_idx = idx + 1
+        for v in ("var j", "var r", "var h"):
+            script_lines.insert(insert_idx, v)
+
     mux = MuxController()
 
     # Build technique body
@@ -802,13 +832,20 @@ def generate(
     return script_lines
 
 
+# Techniques verified against hardware during validation session.
+# Other techniques remain in the registry but are hidden from the GUI
+# until they are validated.
+_VERIFIED_TECHNIQUES = {"cv", "ca", "ca_alt_mux", "eis"}
+
+
 def supported_techniques() -> list[str]:
-    """Return a sorted list of all supported technique identifiers.
+    """Return a sorted list of hardware-verified technique identifiers.
 
     Returns:
-        List of lowercase technique keys (e.g., ``['acv', 'ca', ...]``).
+        List of lowercase technique keys for techniques that have been
+        validated against real hardware.
     """
-    return sorted(_TECHNIQUE_REGISTRY.keys())
+    return sorted(_VERIFIED_TECHNIQUES)
 
 
 def is_continuous_technique(technique: str) -> bool:
