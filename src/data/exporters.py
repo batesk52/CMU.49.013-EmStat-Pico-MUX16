@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import math
 import os
 from datetime import datetime
 from typing import Any
@@ -190,6 +191,14 @@ class CSVExporter:
         all_vars: set[str] = set()
         for dp in ch_data.data_points:
             all_vars.update(dp.variables.keys())
+
+        # For EIS: compute impedance magnitude and phase from
+        # zreal and zimag if not already present
+        is_eis = "zreal" in all_vars and "zimag" in all_vars
+        if is_eis:
+            all_vars.add("impedance")
+            all_vars.add("phase")
+
         columns = _ordered_columns(ch_data.technique, all_vars)
 
         with open(filepath, "w", newline="", encoding="utf-8") as f:
@@ -218,9 +227,21 @@ class CSVExporter:
             writer = csv.writer(f)
             writer.writerow(["timestamp"] + columns)
             for dp in ch_data.data_points:
+                # Compute derived EIS values
+                vars_with_derived = dict(dp.variables)
+                if is_eis:
+                    zr = dp.variables.get("zreal", 0.0)
+                    zi = dp.variables.get("zimag", 0.0)
+                    vars_with_derived["impedance"] = math.sqrt(
+                        zr * zr + zi * zi
+                    )
+                    vars_with_derived["phase"] = math.degrees(
+                        math.atan2(zi, zr)
+                    )
+
                 row: list[Any] = [dp.timestamp]
                 for col in columns:
-                    row.append(dp.variables.get(col, ""))
+                    row.append(vars_with_derived.get(col, ""))
                 writer.writerow(row)
 
 
