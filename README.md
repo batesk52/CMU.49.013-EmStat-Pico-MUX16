@@ -90,24 +90,24 @@ CMU.49.013-EmStat-Pico-MUX16/
   * Provides `SI_PREFIXES` and `VAR_TYPES` constant dictionaries for external use
 
 - **mux.py** - MUX16 channel address calculation and GPIO control (Req 3)
-  * Calculates 10-bit GPIO addresses for channels 1-16 (MUX16 mode: WE and RE/CE switched together)
-  * Address format: bits[9:8]=enable (inverted), bits[7:4]=RE/CE, bits[3:0]=WE
-  * Generates `set_gpio_cfg 0x3FFi 1` initialisation script for configuring all pins as outputs
-  * Generates `set_gpio <addr>i` channel selection commands for individual channel switching
-  * Generates multi-channel scan loops with `meas_loop_for` and `add_var` stepping
-  * Validates channel numbers (1-16) with descriptive `MuxError` exceptions
-  * Supports both bare scan loops and scan-with-measurement-body composition
+  * WE-only addressing (RE/CE=0, common reference/counter electrode)
+  * Address format: bits[9:8]=enable (inverted), bits[7:4]=RE/CE (always 0), bits[3:0]=WE
+  * Generates `set_gpio_cfg 0x3FFi 1i` for configuring all pins as outputs
+  * 100 ms settle time (`wait 100m`) after each channel switch
+  * Compact `loop i <= e` pattern with `add_var i 0b01` for consecutive channels (constant script size)
+  * Sequential fallback for non-consecutive channel selections
+  * Hardware-validated on EmStat Pico MUX16 v2 (firmware v1.6)
 
 ### Phase 2: Measurement Core
 
 #### src/techniques/
 - **scripts.py** - MethodSCRIPT generator for all electrochemical techniques (Req 4)
-  * Template-based generation: preamble (pgstat config, cell_on) followed by technique measurement loop and postamble (on_finished: cell_off)
-  * Supports 15 standard techniques (LSV, DPV, SWV, NPV, ACV, CV, CA, FCA, CP, OCP, EIS, GEIS, PAD, LSP, FCV) and 3 MUX-alternating variants (ca_alt_mux, cp_alt_mux, ocp_alt_mux)
-  * Parameterised via `generate(technique, params, channels)` with defaults for all parameters (potential range, scan rate, frequency range, step size, amplitude, current range)
-  * Formats all values with MethodSCRIPT SI prefix notation (e.g., `500m` for 0.5 V) via internal `_format_si()` helper
-  * Includes pck_start/pck_add/pck_end blocks configured per technique type (voltammetry, amperometry, potentiometry, EIS)
-  * Multi-channel runs wrap the technique body in a MUX scan loop via `MuxController.scan_channels_script_with_body()`
+  * Dual `set_pgstat_chan` preamble (chan 1 off, chan 0 active) + `set_autoranging` for current range
+  * Hardware-verified techniques: CV, CA, CA MUX-alternating, EIS (single + multi-channel)
+  * `pck_add` uses MethodSCRIPT variable names (`p`, `c`, `h`, `r`, `j`) not type codes
+  * SI prefix formatting handles zero values (`0m`) for firmware compatibility
+  * Multi-channel runs use compact `loop i <= e` via `MuxController.scan_channels_script_with_body()`
+  * Safety postamble (`on_finished: cell_off`) on every generated script
 
 #### src/data/
 - **models.py** - Data models for measurements and configuration (Req 2, 4)
@@ -174,7 +174,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 - **presets.py** - Measurement preset management (Req 9)
   * `Preset` dataclass: name, technique, params, channels, auto_save, description
   * `PresetManager` loads/saves/manages presets from `presets/presets.json`
-  * Ships with built-in `no_sensing` preset: CA_alt_mux at 0.85V, channels 1-8, auto-save enabled
+  * Ships with built-in `no_sensing` preset: CA at 0.85V, channels 1-8, auto-save enabled
   * Built-in presets cannot be deleted; user presets can be added and removed
 
 ### Phase 6: Completion Fixes

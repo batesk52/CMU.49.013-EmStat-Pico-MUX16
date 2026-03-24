@@ -12,6 +12,22 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-03-24: Session Signoff
+- [x | Session | 2026-03-24] Post-validation project state update + comparison task planning
+  - Completed: Synced local repo with remote (branches flattened to main on lab PC), updated action_log/README/registry to reflect hardware-validated state, reviewed 15-bug session log from Notion, confirmed all local fixes superseded by remote, deleted stale phase branches, created CMU.17.011 (PalmSens4 vs MUX16 comparison — CV + EIS with ferricyanide, Tzahi's request)
+  - Left off: Main branch clean at c4a9a6f, all project docs updated, CMU.17.010 Done, CMU.17.011 Planned for 2026-03-26
+  - Next: Thursday lab session — run PalmSens4 vs MUX16 comparison (CMU.17.011), validate .pssession format against PSTrace
+
+### 2026-03-23: CMU.17.010 — Hardware Validation (PASSED)
+- [x | Karl | 2026-03-23] Hardware validation on real EmStat Pico MUX16
+  - Device: EP2IC0QZ on COM5, firmware upgraded v1.3 → v1.6
+  - 15 bugs found and fixed during testing (see Notion page for full list)
+  - Key fixes: pck_add uses variable names not type codes, meas_loop_ca arg order, SI prefix zero formatting, store_var/add_var suffix requirements, EIS pgstat mode, thread-safe logging, serial buffer overflow
+  - 4 techniques verified: CV, CA, CA MUX-alternating, EIS (single-ch + multi-ch + export)
+  - 8/9 success criteria passed; .pssession export creates file but format needs PSTrace validation
+  - Branches flattened to main (6 commits: 2cb90ab → c4a9a6f)
+  - Remaining: da8000000 short field investigation, EIS Bode plot option, .pssession PSTrace validation
+
 ### 2026-03-19: Session Signoff
 - [x | Session | 2026-03-19] Major protocol overhaul — audited against PalmSens official spec, fixed everything
   - Completed: Phase 6 completion fixes (save preset dialog, .pssession export), 2 critical bugfixes (channel_changed emit, EIS Nyquist vars), full protocol spec correction (13 wrong VAR_TYPES, pck_add codes, metadata parsing, scan markers), added 7 advanced EIS types (ce-ck)
