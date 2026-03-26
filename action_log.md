@@ -12,6 +12,12 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-03-25: Session Signoff
+- [x | Session | 2026-03-25] Presentation generation for MUX16 validation update
+  - Completed: Created 3-slide deck (CMU.49.013_MUX16_validation_2026-03-25.pptx) — title, CMU.17.010 validation results (8/9 passed, 15 bugs, 4 techniques), CMU.17.011 comparison plan with placeholder for tomorrow's data
+  - Left off: Presentation exported to exports/presentations/, CMU.17.011 still Planned
+  - Next: Run PalmSens4 vs MUX16 comparison (CMU.17.011) — ferricyanide CV+EIS on Naveen's device, 5% acceptance threshold
+
 ### 2026-03-24: Session Signoff
 - [x | Session | 2026-03-24] Post-validation project state update + comparison task planning
   - Completed: Synced local repo with remote (branches flattened to main on lab PC), updated action_log/README/registry to reflect hardware-validated state, reviewed 15-bug session log from Notion, confirmed all local fixes superseded by remote, deleted stale phase branches, created CMU.17.011 (PalmSens4 vs MUX16 comparison — CV + EIS with ferricyanide, Tzahi's request)
