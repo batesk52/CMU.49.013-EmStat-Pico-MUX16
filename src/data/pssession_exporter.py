@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import random
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -106,10 +107,9 @@ def datetime_to_dotnet_utc_ticks(dt: datetime) -> int:
     else:
         utc_ts = dt.timestamp()
     # For UTC ticks we add the UTC offset
-    import time
-    utc_offset_seconds = -time.timezone
+    utc_offset_seconds = time.timezone
     if time.daylight and time.localtime(dt.timestamp()).tm_isdst:
-        utc_offset_seconds = -time.altzone
+        utc_offset_seconds = time.altzone
     utc_ticks = (
         int(utc_ts * 10_000_000)
         + 621_355_968_000_000_000

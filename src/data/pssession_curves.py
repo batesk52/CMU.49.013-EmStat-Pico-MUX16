@@ -254,6 +254,13 @@ def build_curves_measurement(
             color = _COLORS[color_idx % len(_COLORS)]
             color_idx += 1
 
+            # Compute per-channel interval from zero-based times
+            ch_interval = (
+                ch_time_zeroed[1] - ch_time_zeroed[0]
+                if len(ch_time_zeroed) >= 2
+                else 0.5
+            )
+
             curve = {
                 "Appearance": default_appearance(color),
                 "Title": f"CA i vs t Channel {ch}",
@@ -271,6 +278,7 @@ def build_curves_measurement(
                     "DataValueType": (
                         "PalmSens.Data.GenericValue"
                     ),
+                    "IntervalTime": ch_interval,
                     "Unit": UNIT_TIME,
                     "DataValues": [
                         {"V": t} for t in ch_time_zeroed
