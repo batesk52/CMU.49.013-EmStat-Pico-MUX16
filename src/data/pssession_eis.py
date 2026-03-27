@@ -267,7 +267,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": UNIT_ZIM,
-                    "DataValues": [{"V": v} for v in zimags],
+                    "DataValues": [{"V": -v} for v in zimags],
                 },
                 # [6] Z
                 {
@@ -289,7 +289,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": UNIT_PHASE,
-                    "DataValues": [{"V": v} for v in phase],
+                    "DataValues": [{"V": -v} for v in phase],
                 },
                 # [8] Iac
                 {
