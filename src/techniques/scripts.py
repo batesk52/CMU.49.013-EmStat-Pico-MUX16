@@ -70,7 +70,7 @@ def _format_si(value: float) -> str:
         >>> _format_si(-0.0002)
         '-200u'
         >>> _format_si(0.0)
-        '0 '
+        '0m'
     """
     if value == 0.0:
         return "0m"
@@ -309,7 +309,6 @@ def _preamble(params: dict[str, Any]) -> list[str]:
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 2")
-    cr = params.get("cr", "100u")
     lines.append(f"set_autoranging 100n {cr}")
     lines.append("cell_on")
     return lines
