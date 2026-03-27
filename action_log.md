@@ -8,6 +8,14 @@ Project-specific task tracking and history.
 
 [Empty - no tasks currently in progress]
 
+### 2026-03-26: PsSessionExporter Rewrite for PSTrace Compatibility (feature/pssession_corrections)
+- [x | Agent | 2026-03-26] src/data/pssession_exporter.py — NEW. Main PsSessionExporter class with UTF-16 BOM encoding, minified JSON, trailing BOM, .NET DateTime ticks timestamps, unit constants (MicroAmpere, Volt, Time, MicroCoulomb), default Appearance/Hash helpers, method string builder with TECHNIQUE numbers
+- [x | Agent | 2026-03-26] src/data/pssession_curves.py — NEW. CV curves (1 per scan per channel), CA curves (1 per channel, zero-based time), full Curve structure (Appearance, Hash, Type, MeasType, XAxis/YAxis=int 0, CorrosionButlerVolmer/Tafel), DataSetCommon with time+potential+current+charge arrays, trapezoidal charge integration, current in MicroAmperes
+- [x | Agent | 2026-03-26] src/data/pssession_eis.py — NEW. EISDataList with ImpedimetricMeasurement type (Curves=[]), 22-array DataSetEIS per channel (Frequency, ZRe, ZIm, Z, Phase, Y, YRe, YIm, Capacitance, etc.), computed admittance and capacitance from raw impedance, AppearanceFrequencySubScanCurves
+- [x | Agent | 2026-03-26] src/data/exporters.py — Removed old PsSessionExporter (lines 248-624), added re-export from new module preserving import path
+- [x | Agent | 2026-03-26] claude_test_files/validate_pssession.py — 69-check structural validation (all pass)
+- [x | Agent | 2026-03-26] exports/exports_new/ — Re-exported real CV, EIS, CA data from lab session as .pssession files for PSTrace validation
+
 ### Planned: CMU.17.012 — SWV Hardware Validation
 
 **Goal:** Validate SWV (Square Wave Voltammetry) on real EmStat Pico MUX16 hardware. Fix bugs as they emerge.
