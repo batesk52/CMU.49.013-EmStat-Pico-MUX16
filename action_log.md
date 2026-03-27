@@ -8,9 +8,46 @@ Project-specific task tracking and history.
 
 [Empty - no tasks currently in progress]
 
+### Planned: CMU.17.012 — SWV Hardware Validation
+
+**Goal:** Validate SWV (Square Wave Voltammetry) on real EmStat Pico MUX16 hardware. Fix bugs as they emerge.
+
+**Validation Steps (in order):**
+
+1. **Single-channel SWV with ferricyanide** — Run on 1 channel, verify device accepts `meas_loop_swv` script without error
+2. **Check live plot** — Confirm I vs E curve renders correctly (peak-shaped voltammogram expected for ferricyanide)
+3. **Check data packet parsing** — Verify `set_potential` and `current` variables decoded correctly from `P` packets
+4. **CSV export** — Verify per-channel CSV has correct columns (`set_potential`, `potential`, `current`)
+5. **Compare to PalmSens4** — Run same SWV params on PalmSens4, compare peak potential and peak current (±5%)
+6. **Multi-channel SWV** — Run across 2-4 MUX channels, verify per-channel data separation and plot colors
+7. **.pssession export** — Verify SWV .pssession file opens in PSTrace (if PSTrace validation done by then)
+
+**Anticipated Bug Categories (from CMU.17.010 patterns):**
+
+| Category | Risk | What to Watch |
+|----------|------|---------------|
+| `meas_loop_swv` arg order | High | Verify args match MethodSCRIPT v1.6 spec exactly (p c e_begin e_end e_step amplitude frequency) |
+| SI prefix formatting | Medium | Zero values, very small amplitudes — `_format_si()` edge cases |
+| pck_add variable codes | Medium | SWV uses `_pck_voltammetry()` (p + c) — same as validated CV, lower risk |
+| Current range | Medium | May need different autoranging for SWV vs CV |
+| Data point count | Medium | SWV produces 1 point per step — verify loop/endloop markers parsed correctly |
+| Multi-channel timing | Low | MUX settle time (100ms) should be fine for SWV (not time-critical like CA) |
+
+**Code files likely to need changes:**
+- `src/techniques/scripts.py` — `_gen_swv()` arg order, SI formatting fixes
+- `src/engine/measurement_engine.py` — packet parsing edge cases
+- `src/gui/plot_widget.py` — axis labels or data mapping if SWV packets differ from CV
+- `src/data/exporters.py` — column ordering if SWV returns unexpected variables
+
 ---
 
 ## Completed
+
+### 2026-03-26: Session Signoff
+- [x | Session | 2026-03-26] CMU.17.011 completed, SWV validation planned
+  - Completed: Marked CMU.17.011 (PalmSens4 vs MUX16 Comparison) Done in registry + Notion. Created CMU.17.012 (SWV Hardware Validation) in registry + Notion with 7-step protocol and anticipated bug table. Scheduled Apr 13-17.
+  - Left off: SWV code exists but untested on hardware. Validation plan in action_log and Notion.
+  - Next: Run SWV on real EmStat Pico MUX16 (CMU.17.012) — single-channel smoke test first, then multi-channel + PalmSens4 comparison
 
 ### 2026-03-26: EIS Fixes, t_eq, ca_alt_mux Redesign (feature/eis_updates)
 - [x | Agent | 2026-03-26] src/techniques/scripts.py — Fixed EIS autoranging (locked min=max to prevent mid-sweep range switching that corrupted <80 Hz data); added t_eq equilibration time parameter to all techniques; redesigned ca_alt_mux as single self-looping MethodSCRIPT (eliminates e!4001/e!4004 timing races from continuous re-send)
