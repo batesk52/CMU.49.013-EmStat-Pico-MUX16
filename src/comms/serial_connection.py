@@ -411,8 +411,8 @@ class PicoConnection:
         """
         self._ensure_connected()
         deadline = time.monotonic() + timeout
-        with self._lock:
-            while time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            with self._lock:
                 try:
                     # Flush any residual data
                     self._serial.reset_input_buffer()
@@ -434,7 +434,7 @@ class PicoConnection:
                         return True
                 except serial.SerialException:
                     pass
-                time.sleep(0.1)
+            time.sleep(0.1)
         logger.warning("Timed out waiting for device idle.")
         return False
 

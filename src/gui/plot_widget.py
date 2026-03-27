@@ -58,6 +58,12 @@ CHANNEL_SYMBOLS: list[str] = [
 ]
 
 # -----------------------------------------------------------------------
+# EIS technique identifiers (single source of truth)
+# -----------------------------------------------------------------------
+
+EIS_TECHNIQUES: frozenset[str] = frozenset({"eis", "geis"})
+
+# -----------------------------------------------------------------------
 # Technique axis presets
 # -----------------------------------------------------------------------
 
@@ -171,7 +177,7 @@ class LivePlotWidget(pg.PlotWidget):
     @property
     def _is_eis(self) -> bool:
         """Return True if the current technique is EIS or GEIS."""
-        return self.technique in ("eis", "geis")
+        return self.technique in EIS_TECHNIQUES
 
     # ---- Public API ------------------------------------------------------
 

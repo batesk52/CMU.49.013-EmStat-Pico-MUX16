@@ -21,11 +21,9 @@ from PyQt6.QtWidgets import (
 
 from src.data.models import DataPoint
 from src.gui.bode_widget import BodePlotWidget
-from src.gui.plot_widget import LivePlotWidget
+from src.gui.plot_widget import EIS_TECHNIQUES, LivePlotWidget
 
 logger = logging.getLogger(__name__)
-
-_EIS_TECHNIQUES = {"eis", "geis"}
 
 
 class EISPlotContainer(QWidget):
@@ -87,7 +85,7 @@ class EISPlotContainer(QWidget):
             technique: Lowercase technique identifier.
         """
         self._technique = technique.lower()
-        is_eis = self._technique in _EIS_TECHNIQUES
+        is_eis = self._technique in EIS_TECHNIQUES
         self._selector_row.setVisible(is_eis)
         self.nyquist.set_technique(self._technique)
 
@@ -103,7 +101,7 @@ class EISPlotContainer(QWidget):
             data_point: The decoded data point from the engine.
         """
         self.nyquist.on_data_point(data_point)
-        if self._technique in _EIS_TECHNIQUES:
+        if self._technique in EIS_TECHNIQUES:
             self.bode.on_data_point(data_point)
 
     def on_measurement_finished(self) -> None:

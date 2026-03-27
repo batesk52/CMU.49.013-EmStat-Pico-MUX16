@@ -321,11 +321,11 @@ class MeasurementEngine(QThread):
             scan_counter = 0
             loops_this_round = 0
             # ca_alt_mux uses a self-looping script: total loops =
-            # n_rounds * n_channels, all in a single script run
+            # n_rounds * n_channels, all in a single script run.
+            # n_rounds is computed once by generate() and passed
+            # back via params["_n_rounds"] to avoid duplication.
             if technique == "ca_alt_mux":
-                t_run_val = float(params.get("t_run", 300.0))
-                t_int_val = float(params.get("t_interval", 0.1))
-                n_rounds = max(1, int(t_run_val / t_int_val))
+                n_rounds = int(params["_n_rounds"])
                 loops_expected = n_rounds * len(channels)
             else:
                 loops_expected = n_scans * len(channels)

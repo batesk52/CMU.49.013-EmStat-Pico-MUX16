@@ -739,13 +739,8 @@ _TECHNIQUE_REGISTRY: dict[str, tuple] = {
     "pad": (_gen_pad, _preamble),
     "lsp": (_gen_lsp, _preamble),
     "fcv": (_gen_fcv, _preamble),
-    # MUX round-robin (continuous mode — engine re-sends each round)
     "ca_alt_mux": (_gen_ca_alt_mux, _preamble),
 }
-
-# Round-robin techniques: engine re-sends the script each round.
-# ca_alt_mux now uses a self-looping script (single run, no re-sends).
-_CONTINUOUS_TECHNIQUES: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +822,10 @@ def generate(
         t_run = float(merged.get("t_run", 300.0))
         t_interval = float(merged.get("t_interval", 0.1))
         n_rounds = max(1, int(t_run / t_interval))
+        # Store n_rounds in the caller's params dict so the engine
+        # can read it instead of recomputing (avoids silent drift
+        # if defaults change independently).
+        params["_n_rounds"] = n_rounds
 
         # Add loop counter variable after existing var declarations
         insert_idx = 0
@@ -843,7 +842,7 @@ def generate(
             script_lines.append(f"wait {_format_si(t_eq)}")
 
         # Outer time loop: n_rounds iterations
-        script_lines.append(f"store_var n 0i ja")
+        script_lines.append("store_var n 0i aa")
         script_lines.append(f"loop n < {n_rounds}i")
 
         # For each channel: switch GPIO, settle, measure 1 point
@@ -907,11 +906,6 @@ def supported_techniques() -> list[str]:
         validated against real hardware.
     """
     return sorted(_VERIFIED_TECHNIQUES)
-
-
-def is_continuous_technique(technique: str) -> bool:
-    """Return True if the technique uses continuous round-robin mode."""
-    return technique.lower() in _CONTINUOUS_TECHNIQUES
 
 
 def technique_params(technique: str) -> dict[str, Any]:
