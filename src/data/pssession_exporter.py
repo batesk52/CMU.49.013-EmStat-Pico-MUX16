@@ -179,11 +179,11 @@ def build_method_string(
     # Add technique parameters in scientific notation
     for k, v in result.params.items():
         key_upper = k.upper()
-        if isinstance(v, float):
+        if isinstance(v, bool):
+            lines.append(f"{key_upper}={v}")
+        elif isinstance(v, float):
             lines.append(f"{key_upper}={v:.7E}")
         elif isinstance(v, int):
-            lines.append(f"{key_upper}={v}")
-        elif isinstance(v, bool):
             lines.append(f"{key_upper}={v}")
         else:
             lines.append(f"{key_upper}={v}")

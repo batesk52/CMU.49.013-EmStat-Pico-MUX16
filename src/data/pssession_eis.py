@@ -139,7 +139,7 @@ def build_eis_measurement(
     """
     measured = result.measured_channels
     eis_data_list: list[dict[str, Any]] = []
-    first_dataset: dict[str, Any] | None = None
+    last_dataset: dict[str, Any] | None = None
 
     for ch in measured:
         ch_data = result.channel_data(ch)
@@ -484,8 +484,7 @@ def build_eis_measurement(
         }
         eis_data_list.append(eis_entry)
 
-        if first_dataset is None:
-            first_dataset = dataset_eis
+        last_dataset = dataset_eis  # always assign — PSTrace uses last channel
 
     # Build timestamps
     ts = 0
@@ -494,8 +493,8 @@ def build_eis_measurement(
         ts = datetime_to_dotnet_ticks(result.start_time)
         utc_ts = datetime_to_dotnet_utc_ticks(result.start_time)
 
-    # Measurement-level DataSet is a copy of the first channel's
-    meas_dataset = first_dataset if first_dataset else {
+    # Measurement-level DataSet matches the last channel's DataSetEIS
+    meas_dataset = last_dataset if last_dataset else {
         "Type": "PalmSens.Data.DataSetEIS",
         "Values": [],
     }
