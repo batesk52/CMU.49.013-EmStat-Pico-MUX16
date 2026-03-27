@@ -52,6 +52,7 @@ from src.gui.controls import (
     MeasurementControlPanel,
     TechniquePanel,
 )
+from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,10 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_central_widget(self) -> None:
-        """Create the live plot as the central widget."""
-        self._plot = LivePlotWidget(parent=self)
-        self.setCentralWidget(self._plot)
+        """Create the EIS plot container as the central widget."""
+        self._plot_container = EISPlotContainer(parent=self)
+        self._plot = self._plot_container.nyquist
+        self.setCentralWidget(self._plot_container)
 
     def _build_control_dock(self) -> None:
         """Build left dock with stacked control panels."""
@@ -261,9 +263,9 @@ class MainWindow(QMainWindow):
             self._on_disconnect
         )
 
-        # Technique panel -> plot widget
+        # Technique panel -> plot container
         self._tech_panel.technique_changed.connect(
-            self._plot.set_technique
+            self._plot_container.set_technique
         )
 
         # Measurement controls -> engine actions
@@ -292,7 +294,7 @@ class MainWindow(QMainWindow):
 
         # Engine signals -> GUI updates
         self._engine.data_point_ready.connect(
-            self._plot.on_data_point
+            self._plot_container.on_data_point
         )
         self._engine.measurement_started.connect(
             self._on_measurement_started
@@ -393,19 +395,17 @@ class MainWindow(QMainWindow):
             )
             self._auto_save_active = True
 
-        from src.techniques.scripts import is_continuous_technique
-
         config = TechniqueConfig(
             technique=technique,
             params=params,
             channels=channels,
             auto_save=auto_save,
-            continuous=is_continuous_technique(technique),
+            continuous=False,
         )
 
         # Prepare the plot
-        self._plot.clear_plot()
-        self._plot.set_technique(technique)
+        self._plot_container.clear_plot()
+        self._plot_container.set_technique(technique)
 
         try:
             self._engine.start_measurement(self._connection, config)
@@ -457,7 +457,7 @@ class MainWindow(QMainWindow):
         self._meas_panel.set_idle()
         self._export_action.setEnabled(True)
         self._status_progress.setText("Idle")
-        self._plot.on_measurement_finished()
+        self._plot_container.on_measurement_finished()
 
         n_points = result.num_points
         n_channels = len(result.measured_channels)

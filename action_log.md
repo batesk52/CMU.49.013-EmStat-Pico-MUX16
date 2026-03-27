@@ -12,6 +12,18 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-03-26: EIS Fixes, t_eq, ca_alt_mux Redesign (feature/eis_updates)
+- [x | Agent | 2026-03-26] src/techniques/scripts.py — Fixed EIS autoranging (locked min=max to prevent mid-sweep range switching that corrupted <80 Hz data); added t_eq equilibration time parameter to all techniques; redesigned ca_alt_mux as single self-looping MethodSCRIPT (eliminates e!4001/e!4004 timing races from continuous re-send)
+- [x | Agent | 2026-03-26] src/engine/measurement_engine.py — Updated loops_expected for ca_alt_mux (n_rounds × n_channels), channel index wrap-around, global timestamps, removed ca_alt_mux from _CONTINUOUS_TECHNIQUES
+- [x | Agent | 2026-03-26] src/comms/serial_connection.py — Hardened script loading: pre-abort (Z), 50ms post-'e' delay, 2ms inter-line delay, added wait_until_idle()
+- [x | Agent | 2026-03-26] presets/presets.json — Added EIS_TCK_standard and CV_TCK_standard user presets
+
+### 2026-03-26: EIS Visualization Enhancements (feature/eis_updates)
+- [x | Agent | 2026-03-26] src/gui/plot_widget.py — Added CHANNEL_SYMBOLS (16 entries), _is_eis property, conditional EIS markers in _init_channel()
+- [x | Agent | 2026-03-26] src/gui/bode_widget.py — NEW. BodePlotWidget with dual |Z| (log-log) and Phase (log-linear) subplots, linked X axes, per-channel markers
+- [x | Agent | 2026-03-26] src/gui/eis_plot_container.py — NEW. EISPlotContainer with QComboBox Nyquist/Bode selector, QStackedWidget, data forwarding to both views
+- [x | Agent | 2026-03-26] src/gui/main_window.py — Wired EISPlotContainer as central widget, routed technique/data/lifecycle signals through container
+
 ### 2026-03-25: Session Signoff
 - [x | Session | 2026-03-25] Presentation generation for MUX16 validation update
   - Completed: Created 3-slide deck (CMU.49.013_MUX16_validation_2026-03-25.pptx) — title, CMU.17.010 validation results (8/9 passed, 15 bugs, 4 techniques), CMU.17.011 comparison plan with placeholder for tomorrow's data

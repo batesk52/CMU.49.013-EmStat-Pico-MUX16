@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Optional
 
 import serial
@@ -205,22 +206,28 @@ class PicoConnection:
 
         with self._lock:
             try:
-                # Drain any stale data before loading a new script
-                old_timeout = self._serial.timeout
-                self._serial.timeout = 0.1
-                while self._serial.readline():
-                    pass
-                self._serial.timeout = old_timeout
+                # Abort any running script, then clear stale data
+                self._serial.write(b"Z\n")
+                self._serial.flush()
+                time.sleep(0.3)
+                self._serial.reset_input_buffer()
 
                 # Enter script-loading mode
                 self._serial.write(b"e\n")
                 self._serial.flush()
+                # Give device time to transition to script-loading
+                # mode before sending lines — without this, early
+                # lines can arrive before the device is ready,
+                # causing e!4001 "unknown command" errors.
+                time.sleep(0.05)
                 logger.debug("Entered script-loading mode ('e' command).")
 
-                # Send each script line
+                # Send each script line with small inter-line
+                # delay to avoid USB serial buffer overrun
                 for line in lines:
                     self._serial.write(f"{line}\n".encode("ascii"))
                     self._serial.flush()
+                    time.sleep(0.002)
 
                 # Empty line terminates script and starts execution
                 self._serial.write(b"\n")
@@ -388,6 +395,48 @@ class PicoConnection:
             raise PicoConnectionError(
                 "Not connected. Call connect() first."
             )
+
+    def wait_until_idle(self, timeout: float = 5.0) -> bool:
+        """Block until the device is idle and ready for a new script.
+
+        Polls the device with the version command ('t') until it
+        responds, confirming it has finished any running script and
+        returned to command mode.
+
+        Args:
+            timeout: Maximum seconds to wait before giving up.
+
+        Returns:
+            True if the device is idle, False if timed out.
+        """
+        self._ensure_connected()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                try:
+                    # Flush any residual data
+                    self._serial.reset_input_buffer()
+                    # Send version query — device only responds in
+                    # command mode (idle), not during script execution
+                    self._serial.write(b"t\n")
+                    self._serial.flush()
+                    old_timeout = self._serial.timeout
+                    self._serial.timeout = 1.0
+                    response = self._serial.readline()
+                    self._serial.timeout = old_timeout
+                    if response and response.strip():
+                        # Drain any remaining response lines
+                        self._serial.timeout = 0.1
+                        while self._serial.readline():
+                            pass
+                        self._serial.timeout = old_timeout
+                        logger.debug("Device idle confirmed.")
+                        return True
+                except serial.SerialException:
+                    pass
+            time.sleep(0.1)
+        logger.warning("Timed out waiting for device idle.")
+        return False
 
     def _read_until_prompt(self) -> str:
         """Read lines from the device until an empty line or timeout.

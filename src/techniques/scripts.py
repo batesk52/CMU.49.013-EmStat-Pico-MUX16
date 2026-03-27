@@ -114,6 +114,7 @@ def _format_int(value: int) -> str:
 
 _DEFAULTS: dict[str, dict[str, Any]] = {
     "lsv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_end": 0.5,
         "e_step": 0.01,
@@ -121,6 +122,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "dpv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_end": 0.5,
         "e_step": 0.005,
@@ -130,6 +132,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "swv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_end": 0.5,
         "e_step": 0.005,
@@ -138,6 +141,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "npv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_end": 0.5,
         "e_step": 0.01,
@@ -147,6 +151,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "acv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_end": 0.5,
         "e_step": 0.005,
@@ -155,6 +160,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "cv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_vertex1": 0.5,
         "e_vertex2": -0.5,
@@ -164,28 +170,33 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "ca": {
+        "t_eq": 0.0,
         "e_dc": 0.2,
         "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
     },
     "fca": {
+        "t_eq": 0.0,
         "e_dc": 0.2,
         "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
     },
     "cp": {
+        "t_eq": 0.0,
         "i_dc": 0.0001,
         "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
     },
     "ocp": {
+        "t_eq": 0.0,
         "t_run": 60.0,
         "t_interval": 1.0,
     },
     "eis": {
+        "t_eq": 0.0,
         "e_dc": 0.0,
         "e_ac": 0.01,
         "freq_start": 100000.0,
@@ -194,6 +205,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "geis": {
+        "t_eq": 0.0,
         "i_dc": 0.0,
         "i_ac": 0.00001,
         "freq_start": 100000.0,
@@ -217,6 +229,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "lsp": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_end": 0.5,
         "e_step": 0.01,
@@ -224,6 +237,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "cr": "100u",
     },
     "fcv": {
+        "t_eq": 0.0,
         "e_begin": -0.5,
         "e_vertex1": 0.5,
         "e_vertex2": -0.5,
@@ -234,7 +248,9 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
     # MUX round-robin (continuous mode)
     "ca_alt_mux": {
+        "t_eq": 0.0,
         "e_dc": 0.2,
+        "t_run": 300.0,
         "t_interval": 0.1,
         "cr": "100u",
     },
@@ -310,7 +326,7 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 3")  # high speed for EIS
-    lines.append(f"set_autoranging 100n {cr}")
+    lines.append(f"set_autoranging {cr} {cr}")
     lines.append("cell_on")
     return lines
 
@@ -686,8 +702,9 @@ def _gen_ca_alt_mux(params: dict[str, Any]) -> list[str]:
     """Generate round-robin CA body (1 data point per channel per round).
 
     Uses standard meas_loop_ca with t_run = t_interval so each channel
-    gets exactly 1 data point. The engine re-sends this script each
-    round for continuous monitoring.
+    gets exactly 1 data point.  This is the per-channel measurement
+    body; the outer time loop and MUX switching are handled by
+    ``_gen_ca_alt_mux_full()`` in ``generate()``.
     """
     e_dc = _format_si(params.get("e_dc", 0.2))
     t_interval = _format_si(params.get("t_interval", 0.1))
@@ -722,13 +739,8 @@ _TECHNIQUE_REGISTRY: dict[str, tuple] = {
     "pad": (_gen_pad, _preamble),
     "lsp": (_gen_lsp, _preamble),
     "fcv": (_gen_fcv, _preamble),
-    # MUX round-robin (continuous mode — engine re-sends each round)
     "ca_alt_mux": (_gen_ca_alt_mux, _preamble),
 }
-
-# Round-robin techniques: engine re-sends the script each round
-# for continuous multi-channel monitoring
-_CONTINUOUS_TECHNIQUES = {"ca_alt_mux"}
 
 
 # ---------------------------------------------------------------------------
@@ -798,13 +810,59 @@ def generate(
 
     mux = MuxController()
 
+    # Pre-measurement equilibration wait (applied to all techniques
+    # except PAD which has its own internal equilibration sequence)
+    t_eq = float(merged.get("t_eq", 0.0))
+
     # Build technique body
     body = body_gen(merged)
 
-    if len(channels) == 1:
+    # -- ca_alt_mux: single self-looping script (no re-sends) -----------
+    if technique == "ca_alt_mux":
+        t_run = float(merged.get("t_run", 300.0))
+        t_interval = float(merged.get("t_interval", 0.1))
+        n_rounds = max(1, int(t_run / t_interval))
+        # Store n_rounds in the caller's params dict so the engine
+        # can read it instead of recomputing (avoids silent drift
+        # if defaults change independently).
+        params["_n_rounds"] = n_rounds
+
+        # Add loop counter variable after existing var declarations
+        insert_idx = 0
+        for idx, line in enumerate(script_lines):
+            if line.startswith("var "):
+                insert_idx = idx + 1
+        script_lines.insert(insert_idx, "var n")
+
+        # GPIO config
+        script_lines.extend(mux.gpio_config_script())
+
+        # Equilibration
+        if t_eq > 0:
+            script_lines.append(f"wait {_format_si(t_eq)}")
+
+        # Outer time loop: n_rounds iterations
+        script_lines.append("store_var n 0i aa")
+        script_lines.append(f"loop n < {n_rounds}i")
+
+        # For each channel: switch GPIO, settle, measure 1 point
+        for ch in channels:
+            addr = mux.channel_address(ch)
+            script_lines.append(f"  set_gpio 0x{addr:03X}i")
+            script_lines.append("  wait 50m")
+            for bline in body:
+                script_lines.append(f"  {bline}")
+
+        script_lines.append("  add_var n 1i")
+        script_lines.append("endloop")
+
+    # -- Normal techniques -----------------------------------------------
+    elif len(channels) == 1:
         # Single channel: configure GPIO, select channel, run technique
         script_lines.extend(mux.gpio_config_script())
         script_lines.extend(mux.select_channel_script(channels[0]))
+        if t_eq > 0 and technique != "pad":
+            script_lines.append(f"wait {_format_si(t_eq)}")
         script_lines.extend(body)
     else:
         # Multi-channel: add loop variables if using compact pattern
@@ -817,6 +875,8 @@ def generate(
                     insert_idx = idx + 1
             script_lines.insert(insert_idx, "var e")
             script_lines.insert(insert_idx, "var i")
+        if t_eq > 0 and technique != "pad":
+            script_lines.append(f"wait {_format_si(t_eq)}")
         script_lines.extend(
             mux.scan_channels_script_with_body(channels, body)
         )
@@ -846,11 +906,6 @@ def supported_techniques() -> list[str]:
         validated against real hardware.
     """
     return sorted(_VERIFIED_TECHNIQUES)
-
-
-def is_continuous_technique(technique: str) -> bool:
-    """Return True if the technique uses continuous round-robin mode."""
-    return technique.lower() in _CONTINUOUS_TECHNIQUES
 
 
 def technique_params(technique: str) -> dict[str, Any]:

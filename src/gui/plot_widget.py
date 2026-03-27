@@ -49,6 +49,21 @@ CHANNEL_COLORS: list[str] = [
 ]
 
 # -----------------------------------------------------------------------
+# 16-symbol palette for EIS per-channel markers
+# -----------------------------------------------------------------------
+
+CHANNEL_SYMBOLS: list[str] = [
+    "o", "s", "d", "t", "+", "x", "star", "p",
+    "h", "t1", "t2", "t3", "o", "s", "d", "t",
+]
+
+# -----------------------------------------------------------------------
+# EIS technique identifiers (single source of truth)
+# -----------------------------------------------------------------------
+
+EIS_TECHNIQUES: frozenset[str] = frozenset({"eis", "geis"})
+
+# -----------------------------------------------------------------------
 # Technique axis presets
 # -----------------------------------------------------------------------
 
@@ -156,6 +171,13 @@ class LivePlotWidget(pg.PlotWidget):
         self._legend = plot_item.addLegend(
             offset=(10, 10), labelTextSize="9pt"
         )
+
+    # ---- Properties --------------------------------------------------------
+
+    @property
+    def _is_eis(self) -> bool:
+        """Return True if the current technique is EIS or GEIS."""
+        return self.technique in EIS_TECHNIQUES
 
     # ---- Public API ------------------------------------------------------
 
@@ -309,13 +331,26 @@ class LivePlotWidget(pg.PlotWidget):
         color = CHANNEL_COLORS[color_idx]
         pen = pg.mkPen(color=color, width=2)
 
-        curve = self.plot(
-            [], [], pen=pen, name=f"CH{channel}"
-        )
+        plot_kwargs: dict = {
+            "pen": pen,
+            "name": f"CH{channel}",
+        }
+        if self._is_eis:
+            sym_idx = (channel - 1) % len(CHANNEL_SYMBOLS)
+            plot_kwargs["symbol"] = CHANNEL_SYMBOLS[sym_idx]
+            plot_kwargs["symbolSize"] = 8
+            plot_kwargs["symbolBrush"] = pg.mkBrush(color)
+            plot_kwargs["symbolPen"] = pg.mkPen(color)
+
+        curve = self.plot([], [], **plot_kwargs)
         self._curves[channel] = curve
         self._x_data[channel] = []
         self._y_data[channel] = []
-        logger.debug("Initialised curve for CH%d (color: %s)", channel, color)
+        logger.debug(
+            "Initialised curve for CH%d (color: %s)",
+            channel,
+            color,
+        )
 
     def _extract_x(self, dp: DataPoint) -> Optional[float]:
         """Extract the X-axis value from a data point.
