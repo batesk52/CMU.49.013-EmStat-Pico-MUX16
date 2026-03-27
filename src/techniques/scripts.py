@@ -325,7 +325,10 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 3")  # high speed for EIS
-    lines.append(f"set_autoranging {cr} {cr}")
+    lines.append("set_max_bandwidth 200k")
+    lines.append("set_range_minmax da 0 0")
+    lines.append(f"set_range ba {cr}")
+    lines.append(f"set_autoranging ba {cr} {cr}")
     lines.append("cell_on")
     return lines
 
@@ -344,7 +347,10 @@ def _preamble_galvano(params: dict[str, Any]) -> list[str]:
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 3")
-    lines.append(f"set_autoranging 100n {cr}")
+    lines.append("set_max_bandwidth 200k")
+    lines.append("set_range_minmax da 0 0")
+    lines.append(f"set_range ba {cr}")
+    lines.append(f"set_autoranging ba 100n {cr}")
     lines.append("cell_on")
     return lines
 
