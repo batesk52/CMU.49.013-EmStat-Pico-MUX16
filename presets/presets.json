@@ -101,5 +101,40 @@
     ],
     "auto_save": false,
     "description": "User preset: CV_TCK_standard"
+  },
+  "swv_validation": {
+    "name": "SWV Validation",
+    "technique": "swv",
+    "params": {
+      "e_begin": -0.2,
+      "e_end": 0.6,
+      "e_step": 0.005,
+      "amplitude": 0.025,
+      "frequency": 25.0,
+      "cr": "100u"
+    },
+    "channels": [
+      1
+    ],
+    "auto_save": false,
+    "description": "SWV validation: ferricyanide, Notion CMU.17.012 Step 1 params"
+  },
+  "dpv_validation": {
+    "name": "DPV Validation",
+    "technique": "dpv",
+    "params": {
+      "e_begin": -0.2,
+      "e_end": 0.6,
+      "e_step": 0.005,
+      "e_pulse": 0.05,
+      "t_pulse": 0.05,
+      "scan_rate": 0.02,
+      "cr": "100u"
+    },
+    "channels": [
+      1
+    ],
+    "auto_save": false,
+    "description": "DPV validation: ferricyanide, Notion CMU.17.012 Step 6 params"
   }
 }

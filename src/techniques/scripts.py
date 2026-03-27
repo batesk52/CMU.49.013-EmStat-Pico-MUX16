@@ -462,7 +462,7 @@ def _gen_swv(params: dict[str, Any]) -> list[str]:
     frequency = _format_si(params.get("frequency", 25.0))
     lines: list[str] = []
     lines.append(
-        f"meas_loop_swv p c {e_begin} {e_end} {e_step}"
+        f"meas_loop_swv p c f r {e_begin} {e_end} {e_step}"
         f" {amplitude} {frequency}"
     )
     lines.extend(_indent(_pck_voltammetry()))
@@ -808,6 +808,17 @@ def generate(
         for v in ("var j", "var r", "var h"):
             script_lines.insert(insert_idx, v)
 
+    # SWV requires 4 output vars: p (potential), c (net current),
+    # f (forward current), r (reverse current).  Only p and c are
+    # added to packets; f and r are needed by the command syntax.
+    if technique == "swv":
+        insert_idx = 0
+        for idx, line in enumerate(script_lines):
+            if line.startswith("var "):
+                insert_idx = idx + 1
+        for v in ("var r", "var f"):
+            script_lines.insert(insert_idx, v)
+
     mux = MuxController()
 
     # Pre-measurement equilibration wait (applied to all techniques
@@ -895,7 +906,7 @@ def generate(
 # Techniques verified against hardware during validation session.
 # Other techniques remain in the registry but are hidden from the GUI
 # until they are validated.
-_VERIFIED_TECHNIQUES = {"cv", "ca", "ca_alt_mux", "eis"}
+_VERIFIED_TECHNIQUES = {"cv", "ca", "ca_alt_mux", "eis", "dpv", "swv"}
 
 
 def supported_techniques() -> list[str]:
