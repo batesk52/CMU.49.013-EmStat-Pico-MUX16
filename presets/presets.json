@@ -136,5 +136,39 @@
     ],
     "auto_save": false,
     "description": "DPV validation: ferricyanide, Notion CMU.17.012 Step 6 params"
+  },
+  "cv_post_bond_check": {
+    "name": "CV_post_bond_check",
+    "technique": "cv",
+    "params": {
+      "t_eq": 3.0,
+      "e_begin": -0.85,
+      "e_vertex1": 0.65,
+      "e_vertex2": -0.85,
+      "e_step": 0.01,
+      "scan_rate": 0.1,
+      "n_scans": 3,
+      "cr": "100u"
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ],
+    "auto_save": false,
+    "description": "User preset: CV_post_bond_check"
   }
 }
