@@ -8,15 +8,25 @@ Project-specific task tracking and history.
 
 [Empty - no tasks currently in progress]
 
-### 2026-03-26: PsSessionExporter Rewrite for PSTrace Compatibility (feature/pssession_corrections)
-- [x | Agent | 2026-03-26] src/data/pssession_exporter.py — NEW. Main PsSessionExporter class with UTF-16 BOM encoding, minified JSON, trailing BOM, .NET DateTime ticks timestamps, unit constants (MicroAmpere, Volt, Time, MicroCoulomb), default Appearance/Hash helpers, method string builder with TECHNIQUE numbers
-- [x | Agent | 2026-03-26] src/data/pssession_curves.py — NEW. CV curves (1 per scan per channel), CA curves (1 per channel, zero-based time), full Curve structure (Appearance, Hash, Type, MeasType, XAxis/YAxis=int 0, CorrosionButlerVolmer/Tafel), DataSetCommon with time+potential+current+charge arrays, trapezoidal charge integration, current in MicroAmperes
-- [x | Agent | 2026-03-26] src/data/pssession_eis.py — NEW. EISDataList with ImpedimetricMeasurement type (Curves=[]), 22-array DataSetEIS per channel (Frequency, ZRe, ZIm, Z, Phase, Y, YRe, YIm, Capacitance, etc.), computed admittance and capacitance from raw impedance, AppearanceFrequencySubScanCurves
-- [x | Agent | 2026-03-26] src/data/exporters.py — Removed old PsSessionExporter (lines 248-624), added re-export from new module preserving import path
-- [x | Agent | 2026-03-26] claude_test_files/validate_pssession.py — 69-check structural validation (all pass)
-- [x | Agent | 2026-03-26] exports/exports_new/ — Re-exported real CV, EIS, CA data from lab session as .pssession files for PSTrace validation
+---
 
-### 2026-03-27: CMU.17.012 — SWV & DPV Hardware Validation (PASSED, feature/dpv_swv_updates)
+## Completed
+
+### 2026-03-27: Session Signoff
+- [x | Session | 2026-03-27] PsSessionExporter rewrite + SWV/DPV hardware validation — project complete
+  - Completed: Rewrote PsSessionExporter for full PSTrace compatibility (22 fixes, 3 new files, PR #2 merged). Validated SWV and DPV on hardware — both passed on first attempt with no code changes (PR #3 merged). Updated Notion pages (CMU.17.010 criterion #6 → PASS, CMU.17.012 → Done, .pssession task → Done). 6 techniques now hardware-validated: CV, CA, CA_alt_mux, EIS, SWV, DPV.
+  - Left off: All PRs merged to main (#1 eis_updates, #2 pssession_corrections, #3 dpv_swv_updates). Branches cleaned. Project functionally complete.
+  - Next: Remaining untested techniques (LSV, NPV, ACV, FCV, FCA, CP, OCP, GEIS, LSP, PAD) if needed for specific experiments. Otherwise project is done.
+
+### 2026-03-27: PsSessionExporter Rewrite for PSTrace Compatibility (feature/pssession_corrections, PR #2)
+- [x | Agent | 2026-03-27] src/data/pssession_exporter.py — NEW. Main PsSessionExporter class with UTF-16 BOM encoding, minified JSON, trailing BOM, .NET DateTime ticks timestamps, unit constants (MicroAmpere, Volt, Time, MicroCoulomb), default Appearance/Hash helpers, method string builder with TECHNIQUE numbers
+- [x | Agent | 2026-03-27] src/data/pssession_curves.py — NEW. CV curves (1 per scan per channel), CA curves (1 per channel, zero-based time), full Curve structure (Appearance, Hash, Type, MeasType, XAxis/YAxis=int 0, CorrosionButlerVolmer/Tafel), DataSetCommon with time+potential+current+charge arrays, trapezoidal charge integration, current in MicroAmperes
+- [x | Agent | 2026-03-27] src/data/pssession_eis.py — NEW. EISDataList with ImpedimetricMeasurement type (Curves=[]), 22-array DataSetEIS per channel (Frequency, ZRe, ZIm, Z, Phase, Y, YRe, YIm, Capacitance, etc.), computed admittance and capacitance from raw impedance, AppearanceFrequencySubScanCurves
+- [x | Agent | 2026-03-27] src/data/exporters.py — Removed old PsSessionExporter (lines 248-624), added re-export from new module preserving import path
+- [x | Agent | 2026-03-27] claude_test_files/validate_pssession.py — 69-check structural validation (all pass)
+- [x | Agent | 2026-03-27] exports/exports_new/ — Re-exported real CV, EIS, CA data from lab session as .pssession files for PSTrace validation
+
+### 2026-03-27: CMU.17.012 — SWV & DPV Hardware Validation (PASSED, feature/dpv_swv_updates, PR #3)
 - [x | Karl | 2026-03-27] SWV single-channel — Device accepted `meas_loop_swv`, peak-shaped voltammogram at ~0.22V with ferricyanide, live plot correct
 - [x | Karl | 2026-03-27] SWV multi-channel — CH1+CH4 multiplexed, per-channel data separation and plot colors correct
 - [x | Karl | 2026-03-27] SWV data export — CSV columns correct (set_potential, current), .pssession opens in PSTrace
@@ -26,10 +36,6 @@ Project-specific task tracking and history.
 - [x | Karl | 2026-03-27] DPV data export — CSV and .pssession export correct
 - [x | Karl | 2026-03-27] DPV PalmSens4 comparison — Results visually match PalmSens4 output
 - **No code changes needed** — SWV and DPV worked on first attempt. Existing `_gen_swv()` and `_gen_dpv()` implementations were correct.
-
----
-
-## Completed
 
 ### 2026-03-26: Session Signoff
 - [x | Session | 2026-03-26] CMU.17.011 completed, SWV validation planned
