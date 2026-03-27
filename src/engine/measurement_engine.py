@@ -290,6 +290,7 @@ class MeasurementEngine(QThread):
 
         # -- Run measurement (single or continuous) -------------------------
         continuous = config.continuous
+        t_run = float(params.get("t_run", 0.0))
         measurement_start_time = time.monotonic()
         parser = PacketParser()
         n_scans = int(params.get("n_scans", 1))
@@ -319,7 +320,15 @@ class MeasurementEngine(QThread):
 
             scan_counter = 0
             loops_this_round = 0
-            loops_expected = n_scans * len(channels)
+            # ca_alt_mux uses a self-looping script: total loops =
+            # n_rounds * n_channels, all in a single script run
+            if technique == "ca_alt_mux":
+                t_run_val = float(params.get("t_run", 300.0))
+                t_int_val = float(params.get("t_interval", 0.1))
+                n_rounds = max(1, int(t_run_val / t_int_val))
+                loops_expected = n_rounds * len(channels)
+            else:
+                loops_expected = n_scans * len(channels)
             consecutive_empty = 0
 
             # -- Read one round of responses ------------------------------
@@ -354,9 +363,9 @@ class MeasurementEngine(QThread):
                     continue
 
                 if isinstance(result, ParsedPacket):
-                    # Continuous: global time (data accumulates)
-                    # Single-run: per-channel time (each CH starts at 0)
-                    if continuous:
+                    # Use global time for continuous or self-looping
+                    # techniques (ca_alt_mux); per-channel for others
+                    if continuous or technique == "ca_alt_mux":
                         elapsed = time.monotonic() - measurement_start_time
                     else:
                         elapsed = time.monotonic() - channel_start_time
@@ -380,14 +389,18 @@ class MeasurementEngine(QThread):
                             scan_counter = 0
                             if current_channel_idx + 1 < len(channels):
                                 current_channel_idx += 1
-                                current_channel = channels[
-                                    current_channel_idx
-                                ]
-                                if not continuous:
-                                    channel_start_time = time.monotonic()
-                                self.channel_changed.emit(
-                                    current_channel
-                                )
+                            else:
+                                # Wrap to first channel (for self-
+                                # looping scripts like ca_alt_mux)
+                                current_channel_idx = 0
+                            current_channel = channels[
+                                current_channel_idx
+                            ]
+                            if not continuous:
+                                channel_start_time = time.monotonic()
+                            self.channel_changed.emit(
+                                current_channel
+                            )
                         if loops_this_round >= loops_expected:
                             break
 
@@ -411,9 +424,17 @@ class MeasurementEngine(QThread):
             if not continuous:
                 break
 
-            # Brief pause between rounds to let device settle
-            # and avoid CRC errors from residual serial data
-            time.sleep(0.2)
+            # Continuous mode: stop after t_run elapsed
+            elapsed = time.monotonic() - measurement_start_time
+            if t_run > 0 and elapsed >= t_run:
+                logger.info(
+                    "t_run reached (%.1fs). Stopping.", t_run
+                )
+                break
+
+            # Pause between rounds — send_script() handles buffer
+            # clearing and device readiness internally
+            time.sleep(0.5)
 
         # -- Cleanup -------------------------------------------------------
         self._flush_auto_save()

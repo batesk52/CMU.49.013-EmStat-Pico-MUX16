@@ -63,5 +63,43 @@
     ],
     "auto_save": true,
     "description": "User preset: NO_test"
+  },
+  "eis_tck_standard": {
+    "name": "EIS_TCK_standard",
+    "technique": "eis",
+    "params": {
+      "t_eq": 3.0,
+      "e_dc": 0.0,
+      "e_ac": 0.01,
+      "freq_start": 50000.0,
+      "freq_end": 5.0,
+      "n_freq": 41,
+      "cr": "100u"
+    },
+    "channels": [
+      1
+    ],
+    "auto_save": false,
+    "description": "User preset: EIS_TCK_standard"
+  },
+  "cv_tck_standard": {
+    "name": "CV_TCK_standard",
+    "technique": "cv",
+    "params": {
+      "t_eq": 3.0,
+      "e_begin": -0.85,
+      "e_vertex1": 0.65,
+      "e_vertex2": -0.85,
+      "e_step": 0.01,
+      "scan_rate": 0.1,
+      "n_scans": 3,
+      "cr": "100u"
+    },
+    "channels": [
+      1,
+      4
+    ],
+    "auto_save": false,
+    "description": "User preset: CV_TCK_standard"
   }
 }
