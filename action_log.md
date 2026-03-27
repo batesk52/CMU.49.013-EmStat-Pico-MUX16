@@ -16,36 +16,16 @@ Project-specific task tracking and history.
 - [x | Agent | 2026-03-26] claude_test_files/validate_pssession.py — 69-check structural validation (all pass)
 - [x | Agent | 2026-03-26] exports/exports_new/ — Re-exported real CV, EIS, CA data from lab session as .pssession files for PSTrace validation
 
-### Planned: CMU.17.012 — SWV Hardware Validation
-
-**Goal:** Validate SWV (Square Wave Voltammetry) on real EmStat Pico MUX16 hardware. Fix bugs as they emerge.
-
-**Validation Steps (in order):**
-
-1. **Single-channel SWV with ferricyanide** — Run on 1 channel, verify device accepts `meas_loop_swv` script without error
-2. **Check live plot** — Confirm I vs E curve renders correctly (peak-shaped voltammogram expected for ferricyanide)
-3. **Check data packet parsing** — Verify `set_potential` and `current` variables decoded correctly from `P` packets
-4. **CSV export** — Verify per-channel CSV has correct columns (`set_potential`, `potential`, `current`)
-5. **Compare to PalmSens4** — Run same SWV params on PalmSens4, compare peak potential and peak current (±5%)
-6. **Multi-channel SWV** — Run across 2-4 MUX channels, verify per-channel data separation and plot colors
-7. **.pssession export** — Verify SWV .pssession file opens in PSTrace (if PSTrace validation done by then)
-
-**Anticipated Bug Categories (from CMU.17.010 patterns):**
-
-| Category | Risk | What to Watch |
-|----------|------|---------------|
-| `meas_loop_swv` arg order | High | Verify args match MethodSCRIPT v1.6 spec exactly (p c e_begin e_end e_step amplitude frequency) |
-| SI prefix formatting | Medium | Zero values, very small amplitudes — `_format_si()` edge cases |
-| pck_add variable codes | Medium | SWV uses `_pck_voltammetry()` (p + c) — same as validated CV, lower risk |
-| Current range | Medium | May need different autoranging for SWV vs CV |
-| Data point count | Medium | SWV produces 1 point per step — verify loop/endloop markers parsed correctly |
-| Multi-channel timing | Low | MUX settle time (100ms) should be fine for SWV (not time-critical like CA) |
-
-**Code files likely to need changes:**
-- `src/techniques/scripts.py` — `_gen_swv()` arg order, SI formatting fixes
-- `src/engine/measurement_engine.py` — packet parsing edge cases
-- `src/gui/plot_widget.py` — axis labels or data mapping if SWV packets differ from CV
-- `src/data/exporters.py` — column ordering if SWV returns unexpected variables
+### 2026-03-27: CMU.17.012 — SWV & DPV Hardware Validation (PASSED, feature/dpv_swv_updates)
+- [x | Karl | 2026-03-27] SWV single-channel — Device accepted `meas_loop_swv`, peak-shaped voltammogram at ~0.22V with ferricyanide, live plot correct
+- [x | Karl | 2026-03-27] SWV multi-channel — CH1+CH4 multiplexed, per-channel data separation and plot colors correct
+- [x | Karl | 2026-03-27] SWV data export — CSV columns correct (set_potential, current), .pssession opens in PSTrace
+- [x | Karl | 2026-03-27] SWV PalmSens4 comparison — Results visually match PalmSens4 output (no mathematical comparison, eyeball pass)
+- [x | Karl | 2026-03-27] DPV single-channel — Device accepted `meas_loop_dpv`, peak-shaped voltammogram correct
+- [x | Karl | 2026-03-27] DPV multi-channel — CH1+CH4 multiplexed, per-channel separation correct
+- [x | Karl | 2026-03-27] DPV data export — CSV and .pssession export correct
+- [x | Karl | 2026-03-27] DPV PalmSens4 comparison — Results visually match PalmSens4 output
+- **No code changes needed** — SWV and DPV worked on first attempt. Existing `_gen_swv()` and `_gen_dpv()` implementations were correct.
 
 ---
 
