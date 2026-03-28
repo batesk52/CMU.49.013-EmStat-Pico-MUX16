@@ -170,5 +170,39 @@
     ],
     "auto_save": false,
     "description": "User preset: CV_post_bond_check"
+  },
+  "pt_black_chu_2023": {
+    "name": "Pt_black_Chu_2023",
+    "technique": "cv",
+    "params": {
+      "t_eq": 1.0,
+      "e_begin": -0.4,
+      "e_vertex1": 0.8,
+      "e_vertex2": -0.4,
+      "e_step": 0.01,
+      "scan_rate": 0.05,
+      "n_scans": 10,
+      "cr": "1m"
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ],
+    "auto_save": false,
+    "description": "User preset: Pt_black_Chu_2023"
   }
 }
