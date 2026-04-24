@@ -703,19 +703,25 @@ def _gen_fcv(params: dict[str, Any]) -> list[str]:
 # --- MUX-alternating techniques ---
 
 
-def _gen_ca_alt_mux(params: dict[str, Any]) -> list[str]:
-    """Generate round-robin CA body (1 data point per channel per round).
+# Per-channel burst time in ca_alt_mux: 50 ms GPIO settle (emitted in
+# generate()) plus one 10 ms meas_loop_ca sample.  Used to pace the
+# outer time loop so rounds land every t_interval seconds, matching
+# PSTrace/MUX8-R2 (all channels sampled in rapid succession, then
+# wait until the next interval).
+_CA_ALT_MUX_SAMPLE_TIME = "10m"
+_CA_ALT_MUX_PER_CHANNEL_BURST_S = 0.050 + 0.010
 
-    Uses standard meas_loop_ca with t_run = t_interval so each channel
-    gets exactly 1 data point.  This is the per-channel measurement
-    body; the outer time loop and MUX switching are handled by
-    ``_gen_ca_alt_mux_full()`` in ``generate()``.
+
+def _gen_ca_alt_mux(params: dict[str, Any]) -> list[str]:
+    """Generate round-robin CA body (1 fast sample per channel per round).
+
+    The outer time loop and round pacing are added by ``generate()``.
     """
     e_dc = _format_si(params.get("e_dc", 0.2))
-    t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
     lines.append(
-        f"meas_loop_ca p c {e_dc} {t_interval} {t_interval}"
+        f"meas_loop_ca p c {e_dc} "
+        f"{_CA_ALT_MUX_SAMPLE_TIME} {_CA_ALT_MUX_SAMPLE_TIME}"
     )
     lines.extend(_indent(_pck_amperometry()))
     lines.append("endloop")
@@ -868,6 +874,12 @@ def generate(
             script_lines.append("  wait 50m")
             for bline in body:
                 script_lines.append(f"  {bline}")
+
+        # Pace rounds to t_interval; skip if the burst already exceeds it.
+        burst_s = len(channels) * _CA_ALT_MUX_PER_CHANNEL_BURST_S
+        pace_ms = int(round((t_interval - burst_s) * 1000))
+        if pace_ms > 0:
+            script_lines.append(f"  wait {pace_ms}m")
 
         script_lines.append("  add_var n 1i")
         script_lines.append("endloop")
