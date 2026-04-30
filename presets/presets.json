@@ -204,5 +204,25 @@
     ],
     "auto_save": false,
     "description": "User preset: Pt_black_Chu_2023"
+  },
+  "ca_gaba_glu_h2o2_sensing": {
+    "name": "CA_GABA_GLU_H2O2_sensing",
+    "technique": "ca_alt_mux",
+    "params": {
+      "t_eq": 5.0,
+      "e_dc": 0.7,
+      "t_run": 3600.0,
+      "t_interval": 2.0,
+      "settle_time": 0.2,
+      "cr": "2u"
+    },
+    "channels": [
+      1,
+      3,
+      5,
+      7
+    ],
+    "auto_save": false,
+    "description": "User preset: CA_GABA_GLU_H2O2_sensing"
   }
 }

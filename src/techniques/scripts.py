@@ -252,40 +252,10 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "e_dc": 0.2,
         "t_run": 300.0,
         "t_interval": 0.1,
+        "settle_time": 0.1,
         "cr": "100u",
     },
 }
-
-# ---------------------------------------------------------------------------
-# Current range helper
-# ---------------------------------------------------------------------------
-
-_CR_MAP: dict[str, str] = {
-    "100n": "0",
-    "2u": "1",
-    "4u": "2",
-    "8u": "3",
-    "16u": "4",
-    "32u": "5",
-    "63u": "6",
-    "100u": "7",
-    "1m": "8",
-    "10m": "9",
-    "100m": "10",
-}
-
-
-def _cr_index(cr: str) -> str:
-    """Convert a current range string to its MethodSCRIPT index.
-
-    Args:
-        cr: Current range string (e.g., '100u', '1m').
-
-    Returns:
-        Index string for ``set_cr``.
-    """
-    return _CR_MAP.get(cr, "7")  # default 100uA
-
 
 # ---------------------------------------------------------------------------
 # Technique script builders
@@ -302,13 +272,15 @@ def _preamble(params: dict[str, Any]) -> list[str]:
     lines: list[str] = []
     lines.append("e")
     cr = params.get("cr", "100u")
-    cr_idx = _cr_index(cr)
     lines.append("var p")
     lines.append("var c")
     lines.append("set_pgstat_chan 1")
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 2")
+    lines.append("set_max_bandwidth 400")
+    lines.append("set_pot_range -1 1")
+    lines.append(f"set_cr {cr}")
     lines.append(f"set_autoranging 100n {cr}")
     lines.append("cell_on")
     return lines
@@ -862,10 +834,11 @@ def generate(
         script_lines.append(f"loop n < {n_rounds}i")
 
         # For each channel: switch GPIO, settle, measure 1 point
+        settle = _format_si(float(merged.get("settle_time", 0.1)))
         for ch in channels:
             addr = mux.channel_address(ch)
             script_lines.append(f"  set_gpio 0x{addr:03X}i")
-            script_lines.append("  wait 50m")
+            script_lines.append(f"  wait {settle}")
             for bline in body:
                 script_lines.append(f"  {bline}")
 

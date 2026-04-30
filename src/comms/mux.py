@@ -248,7 +248,7 @@ class MuxController:
         lines.append("    wait 100m")
         for body_line in body_lines:
             lines.append(f"    {body_line}")
-        lines.append("    add_var i 0b01")
+        lines.append("    add_var i 1i")
         lines.append("endloop")
         return lines
 

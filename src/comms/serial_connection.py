@@ -7,7 +7,9 @@ and reading device responses.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -177,7 +179,11 @@ class PicoConnection:
                     f"Communication error sending '{cmd}': {exc}"
                 ) from exc
 
-    def send_script(self, lines: list[str]) -> None:
+    def send_script(
+        self,
+        lines: list[str],
+        save_to: Optional[str] = None,
+    ) -> None:
         """Load a MethodSCRIPT onto the device for execution.
 
         Sends the 'e' command to enter script mode, then sends each
@@ -190,6 +196,10 @@ class PicoConnection:
         Args:
             lines: MethodSCRIPT lines to send. Must not contain empty
                 strings (use the returned lines from script generators).
+            save_to: Optional path to persist the exact script bytes
+                sent to the device (one line per file line, LF-terminated).
+                Useful for diagnostics — diff against the expected
+                template to rule out transport-layer mutation.
 
         Raises:
             PicoConnectionError: If not connected or communication fails.
@@ -202,6 +212,27 @@ class PicoConnection:
                 raise ValueError(
                     f"Empty line at index {i} — empty lines terminate "
                     "MethodSCRIPT; remove or fix the script generator."
+                )
+
+        # Digest the exact bytes we'll transmit so the log can be
+        # cross-referenced with a saved copy or captured serial dump.
+        joined = "".join(f"{line}\n" for line in lines)
+        digest = hashlib.sha256(joined.encode("ascii")).hexdigest()[:16]
+        logger.info(
+            "Script digest=%s lines=%d bytes=%d",
+            digest,
+            len(lines),
+            len(joined),
+        )
+        if save_to is not None:
+            try:
+                os.makedirs(os.path.dirname(save_to), exist_ok=True)
+                with open(save_to, "w", encoding="ascii", newline="") as fh:
+                    fh.write(joined)
+                logger.info("Script persisted to %s", save_to)
+            except OSError as exc:
+                logger.warning(
+                    "Could not persist script to %s: %s", save_to, exc
                 )
 
         with self._lock:

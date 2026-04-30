@@ -23,6 +23,7 @@ Typical usage from the GUI layer::
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Optional
@@ -273,6 +274,7 @@ class MeasurementEngine(QThread):
         # -- Initialise auto-save writer if enabled -------------------------
         self._writer = None
         self._last_flush_index = 0
+        script_save_path: Optional[str] = None
         if (
             config.auto_save is not None
             and config.auto_save.enabled
@@ -287,6 +289,7 @@ class MeasurementEngine(QThread):
                 output_dir=config.auto_save.output_dir,
             )
             logger.info("Auto-save enabled: %s", auto_dir)
+            script_save_path = os.path.join(auto_dir, "_script.mscr")
 
         # -- Run measurement (single or continuous) -------------------------
         continuous = config.continuous
@@ -298,8 +301,13 @@ class MeasurementEngine(QThread):
 
         while not self._abort_requested:
             # -- Send script to device ------------------------------------
+            # Persist the script only on the first round so we don't
+            # overwrite the diagnostic copy during continuous runs.
             try:
-                connection.send_script(script_lines)
+                connection.send_script(
+                    script_lines,
+                    save_to=script_save_path if round_num == 0 else None,
+                )
             except (PicoConnectionError, ValueError) as exc:
                 self._finish_writer()
                 self.measurement_error.emit(
@@ -317,6 +325,10 @@ class MeasurementEngine(QThread):
             self.channel_changed.emit(current_channel)
             channel_start_time = time.monotonic()
             parser.reset()  # reset loop_depth between rounds
+            # Diagnostic: log the first raw packet for each channel so
+            # the CH1-8-all-zero pattern can be distinguished between
+            # device-side zero vs missing packet vs decode artefact.
+            logged_first_packet: set[int] = set()
 
             scan_counter = 0
             loops_this_round = 0
@@ -369,6 +381,14 @@ class MeasurementEngine(QThread):
                         elapsed = time.monotonic() - measurement_start_time
                     else:
                         elapsed = time.monotonic() - channel_start_time
+                    if current_channel not in logged_first_packet:
+                        logged_first_packet.add(current_channel)
+                        logger.debug(
+                            "First packet CH%02d raw=%r decoded=%s",
+                            current_channel,
+                            line,
+                            dict(result.values),
+                        )
                     data_point = DataPoint(
                         timestamp=elapsed,
                         channel=current_channel,

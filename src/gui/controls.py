@@ -94,6 +94,7 @@ _PARAM_LABELS: dict[str, tuple[str, str]] = {
     "i_ac": ("I AC", "A"),
     "n_scans": ("# Scans", ""),
     "n_freq": ("# Frequencies", ""),
+    "settle_time": ("Settle time", "s"),
     "cr": ("Current range", ""),
 }
 
