@@ -304,11 +304,24 @@ class PacketParser:
 
         name = self.parse_var_type(var_type)
 
-        # PalmSens sends "     nan" for NaN/overload conditions
-        if hex_str.strip() == "nan":
+        # PalmSens emits "nan" (sometimes whitespace-padded) for overload /
+        # out-of-range readings. The literal can land entirely in hex_str or
+        # straddle hex_str+prefix depending on padding, so check the combined
+        # field. Treat any unparseable hex as NaN rather than crashing — the
+        # device's channel loop will advance regardless.
+        combined = (hex_str + prefix).strip().lower()
+        if combined == "nan" or "nan" in combined:
             value = float("nan")
         else:
-            value = self.decode_value(hex_str, prefix)
+            try:
+                value = self.decode_value(hex_str, prefix)
+            except ValueError as exc:
+                logger.warning(
+                    "Unparseable variable %r (%s); treating as NaN",
+                    var_str,
+                    exc,
+                )
+                value = float("nan")
 
         # Parse optional metadata fields
         status = None
