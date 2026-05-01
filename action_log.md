@@ -12,6 +12,12 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-04-30: Session Signoff
+- [x | Session | 2026-04-30 22:53] Synced remote branches, fetched open PR #4 ca_alt_mux fix
+  - Completed: Fast-forwarded main 4427b95→ee53830 (5 commits the lab pushed remotely: MUX diagnostics + settle_time control, NaN/overload sentinel parser fix, preset updates, EIS preamble hardening, multiplexer_limitations doc). Created local branch `claude/fix-mux-chronoamperometry-VWZ2p` tracking origin (PR #4, single commit 7b871b3 by remote Claude on 2026-04-24).
+  - Left off: Currently checked out on `claude/fix-mux-chronoamperometry-VWZ2p`. PR #4 is OPEN — fixes ca_alt_mux pacing so each channel emits a 10ms fast sample and the outer loop waits the remainder of t_interval (matches PSTrace/MUX8-R2 burst behavior).
+  - Next: Review PR #4 diff in src/techniques/scripts.py, decide merge vs changes, hardware-validate new ca_alt_mux timing on real EmStat Pico MUX16.
+
 ### 2026-03-27: Session Signoff
 - [x | Session | 2026-03-27] PsSessionExporter rewrite + SWV/DPV hardware validation — project complete
   - Completed: Rewrote PsSessionExporter for full PSTrace compatibility (22 fixes, 3 new files, PR #2 merged). Validated SWV and DPV on hardware — both passed on first attempt with no code changes (PR #3 merged). Updated Notion pages (CMU.17.010 criterion #6 → PASS, CMU.17.012 → Done, .pssession task → Done). 6 techniques now hardware-validated: CV, CA, CA_alt_mux, EIS, SWV, DPV.
