@@ -485,8 +485,13 @@ def _gen_acv(params: dict[str, Any]) -> list[str]:
 def _gen_cv(params: dict[str, Any]) -> list[str]:
     """Generate meas_loop_cv script body.
 
-    Note: ``nscans`` is a separate command before the measurement loop,
-    NOT a trailing argument to ``meas_loop_cv`` (which causes ``!4005``).
+    For ``n_scans > 1``, wraps the CV block in a device-side ``loop n``
+    construct rather than unrolling in Python. Unrolling 100 scans across
+    multiple channels overflows the Pico's script buffer and triggers a
+    parser error (``!4005``) mid-script.
+
+    The loop counter ``var n`` must be declared in the preamble — handled
+    by ``generate()`` for CV when ``n_scans > 1``.
     """
     e_begin = _format_si(params.get("e_begin", -0.5))
     e_vertex1 = _format_si(params.get("e_vertex1", 0.5))
@@ -494,16 +499,21 @@ def _gen_cv(params: dict[str, Any]) -> list[str]:
     e_step = _format_si(params.get("e_step", 0.01))
     scan_rate = _format_si(params.get("scan_rate", 0.1))
     n_scans = int(params.get("n_scans", 1))
-    scan_body = [
+    scan_block = [
         f"meas_loop_cv p c {e_begin} {e_vertex1} {e_vertex2}"
         f" {e_step} {scan_rate}",
         *_indent(_pck_voltammetry()),
         "endloop",
     ]
-    lines: list[str] = []
-    for _ in range(n_scans):
-        lines.extend(scan_body)
-    return lines
+    if n_scans <= 1:
+        return scan_block
+    return [
+        "store_var n 0i aa",
+        f"loop n < {n_scans}i",
+        *_indent(scan_block),
+        "  add_var n 1i",
+        "endloop",
+    ]
 
 
 def _gen_ca(params: dict[str, Any]) -> list[str]:
@@ -795,6 +805,14 @@ def generate(
                 insert_idx = idx + 1
         for v in ("var r", "var f"):
             script_lines.insert(insert_idx, v)
+
+    # CV with n_scans > 1 uses a device-side loop counter (see _gen_cv).
+    if technique == "cv" and int(merged.get("n_scans", 1)) > 1:
+        insert_idx = 0
+        for idx, line in enumerate(script_lines):
+            if line.startswith("var "):
+                insert_idx = idx + 1
+        script_lines.insert(insert_idx, "var n")
 
     mux = MuxController()
 

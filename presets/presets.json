@@ -224,5 +224,59 @@
     ],
     "auto_save": false,
     "description": "User preset: CA_GABA_GLU_H2O2_sensing"
+  },
+  "eis_quality_check": {
+    "name": "EIS_quality_check",
+    "technique": "eis",
+    "params": {
+      "t_eq": 3.0,
+      "e_dc": 0.0,
+      "e_ac": 0.01,
+      "freq_start": 50000.0,
+      "freq_end": 5.0,
+      "n_freq": 41,
+      "cr": "100u"
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ],
+    "auto_save": false,
+    "description": "User preset: EIS_quality_check"
+  },
+  "chu_2023_mpd": {
+    "name": "Chu_2023_mPD",
+    "technique": "cv",
+    "params": {
+      "t_eq": 1.0,
+      "e_begin": 0.2,
+      "e_vertex1": 0.8,
+      "e_vertex2": 0.2,
+      "e_step": 0.005,
+      "scan_rate": 0.05,
+      "n_scans": 100,
+      "cr": "2u"
+    },
+    "channels": [
+      4,
+      9,
+      11
+    ],
+    "auto_save": false,
+    "description": "User preset: Chu_2023_mPD"
   }
 }
