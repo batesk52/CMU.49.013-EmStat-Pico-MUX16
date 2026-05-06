@@ -421,7 +421,25 @@ class MeasurementEngine(QThread):
                             self.channel_changed.emit(
                                 current_channel
                             )
-                        if loops_this_round >= loops_expected:
+                        # Device emits END_MEAS ('+') after on_finished:
+                        # runs — that's the authoritative terminator.
+                        # We previously broke on a counted-marker check
+                        # (loops_this_round >= loops_expected) but that
+                        # is fragile when scripts use device-side loops
+                        # whose marker count doesn't match Python-side
+                        # n_scans (e.g., wrapped CV with n_scans > 1).
+                        # The count below is a 4x-headroom safety net
+                        # for the case where '+' never arrives — much
+                        # higher than the natural count to avoid early
+                        # termination when an extra '*' slips through.
+                        if loops_this_round >= loops_expected * 4 + 8:
+                            logger.warning(
+                                "Safety-net break after %d markers "
+                                "(expected %d) — device did not emit "
+                                "END_MEAS.",
+                                loops_this_round,
+                                loops_expected,
+                            )
                             break
 
                     elif result == LoopMarker.END_MEAS:
