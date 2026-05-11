@@ -12,6 +12,12 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-05-11: Session Signoff
+- [x | Session | 2026-05-11] Phase 7 BW sweep — implementation, task, PR all shipped
+  - Completed: Plan written (`~/.claude/plans/what-is-multi-burst-snug-scroll.md`) and Phase 7 blueprint added to README. Code-team tournament (2 coders) implemented `bw_hz` parameterization across scripts.py / controls.py / presets.json / test_scripts.py + 10 new regression tests (full suite 15/15 green). Coder-1 selected for `_BUILTIN_PRESETS` sync. CMU.17.022 minted in `_tasks/registry.yaml` and pushed to Notion (page `35d5fc7c-379a-81d2-8ee4-c682fd8c3d16`) with full TRR. Branch `feature/bw-sweep-mode2` pushed to origin; PR #5 opened against main (https://github.com/batesk52/CMU.49.013-EmStat-Pico-MUX16/pull/5).
+  - Left off: PR #5 OPEN, code-level validation complete (preamble gates pass, pytest 15/15 green, offscreen Qt smoke OK); hardware validation NOT YET run. PR #4 (`claude/fix-mux-chronoamperometry-VWZ2p`, burst-pacing fix) also OPEN and unvalidated on hardware. Both PRs cut from independent branches; combined sweep is a follow-up after both merge.
+  - Next: Lab session today — validate both PRs on real EmStat Pico MUX16. For PR #5: launch GUI, confirm "Max Bandwidth" dropdown defaults to 400 Hz with all 7 values, run 4-ch ferricyanide CA at BW ∈ {400, 40, 4, 0.4} Hz per CMU.17.022 TRR, log std dev per channel per BW, find mode-2 stability boundary, verify `set_max_bandwidth 400m` is accepted by firmware v1.6. Document in CMU.17.022 TRA + append rows to `docs/multiplexer_limitations_and_lessons.md`.
+
 ### 2026-05-11: Phase 7 — Mode-2 Bandwidth Sweep Implementation (Tournament, 2 coders)
 - [x | Agent | 2026-05-11] src/techniques/scripts.py — Added `bw_hz: 400` to `_DEFAULTS` for 14 mode-2 techniques (ca, ca_alt_mux, cv, lsv, dpv, swv, npv, acv, fca, pad, lsp, fcv, cp, ocp); parameterized `_preamble()` to emit `set_max_bandwidth {_format_si(params.get("bw_hz", 400))}`. `_preamble_eis()` and `_preamble_galvano()` left hardcoded at 200k (mode-3 stability lock).
 - [x | Agent | 2026-05-11] src/gui/controls.py — Added `bw_hz` to `_PARAM_LABELS` as `("Max Bandwidth", "Hz")`; `_create_param_widget()` renders `bw_hz` as `QComboBox` over `[0.4, 4, 40, 400, 4000, 40000, 200000]` Hz; combobox stores numeric Hz via `setItemData` so `get_params()` recovers float/int via `currentData()`.
