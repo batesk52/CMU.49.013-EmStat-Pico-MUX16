@@ -60,6 +60,7 @@ _BUILTIN_PRESETS: dict[str, Preset] = {
             "e_dc": 0.85,
             "t_run": 10.0,
             "t_interval": 0.1,
+            "bw_hz": 400,
         },
         channels=list(range(1, 9)),
         auto_save=True,

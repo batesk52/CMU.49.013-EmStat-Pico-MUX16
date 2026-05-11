@@ -120,6 +120,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "e_step": 0.01,
         "scan_rate": 0.1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "dpv": {
         "t_eq": 0.0,
@@ -130,6 +131,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_pulse": 0.05,
         "scan_rate": 0.05,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "swv": {
         "t_eq": 0.0,
@@ -139,6 +141,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "amplitude": 0.025,
         "frequency": 25.0,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "npv": {
         "t_eq": 0.0,
@@ -149,6 +152,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_pulse": 0.05,
         "t_base": 0.5,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "acv": {
         "t_eq": 0.0,
@@ -158,6 +162,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "amplitude": 0.01,
         "frequency": 50.0,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "cv": {
         "t_eq": 0.0,
@@ -168,6 +173,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "scan_rate": 0.1,
         "n_scans": 1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "ca": {
         "t_eq": 0.0,
@@ -175,6 +181,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "fca": {
         "t_eq": 0.0,
@@ -182,6 +189,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "cp": {
         "t_eq": 0.0,
@@ -189,11 +197,13 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_run": 10.0,
         "t_interval": 0.1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "ocp": {
         "t_eq": 0.0,
         "t_run": 60.0,
         "t_interval": 1.0,
+        "bw_hz": 400,
     },
     "eis": {
         "t_eq": 0.0,
@@ -227,6 +237,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_pulse": 0.05,
         "scan_rate": 0.05,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "lsp": {
         "t_eq": 0.0,
@@ -235,6 +246,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "e_step": 0.01,
         "scan_rate": 0.1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     "fcv": {
         "t_eq": 0.0,
@@ -245,6 +257,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "scan_rate": 1.0,
         "n_scans": 1,
         "cr": "100u",
+        "bw_hz": 400,
     },
     # MUX round-robin (continuous mode)
     "ca_alt_mux": {
@@ -254,6 +267,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "t_interval": 0.1,
         "settle_time": 0.1,
         "cr": "100u",
+        "bw_hz": 400,
     },
 }
 
@@ -268,17 +282,24 @@ def _preamble(params: dict[str, Any]) -> list[str]:
     Configures both potentiostat channels (chan 1 off, chan 0 in
     potentiostatic mode), sets current range, then turns cell on.
     The dual-channel setup is required for MUX16 operation.
+
+    The ``set_max_bandwidth`` line is parameterised via ``bw_hz``
+    (default 400 Hz) so callers can sweep the mode-2 bandwidth
+    setting without code edits. Mode-3 preambles (``_preamble_eis``
+    and ``_preamble_galvano``) remain hardcoded at 200 kHz for
+    control-loop stability and must NOT use this parameter.
     """
     lines: list[str] = []
     lines.append("e")
     cr = params.get("cr", "100u")
+    bw = _format_si(params.get("bw_hz", 400))
     lines.append("var p")
     lines.append("var c")
     lines.append("set_pgstat_chan 1")
     lines.append("set_pgstat_mode 0")
     lines.append("set_pgstat_chan 0")
     lines.append("set_pgstat_mode 2")
-    lines.append("set_max_bandwidth 400")
+    lines.append(f"set_max_bandwidth {bw}")
     lines.append("set_pot_range -1 1")
     lines.append(f"set_cr {cr}")
     lines.append(f"set_autoranging 100n {cr}")

@@ -195,29 +195,28 @@ CMU.49.013-EmStat-Pico-MUX16/
 **Branch:** `feature/bw-sweep-mode2` (cut from main, independent of PR #4)
 
 #### src/techniques/
-- [ ] **scripts.py** - Add `bw_hz` to mode-2 technique defaults; parameterize `_preamble()` (closes BW hardcoding)
-  * Add `"bw_hz": 400` to `_DEFAULTS["ca"]`, `_DEFAULTS["ca_alt_mux"]`, plus cv, lsv, dpv, swv, npv, acv, fca, pad, lsp, fcv, cp, ocp
-  * Modify `_preamble()` (line 265) to use `_format_si(params.get("bw_hz", 400))` for `set_max_bandwidth` (line 281)
-  * Leave `_preamble_eis()` and `_preamble_galvano()` hardcoded at 200 kHz (mode-3 stability lock)
-  * Validate: `python -c "from src.techniques.scripts import _preamble; assert 'set_max_bandwidth 4' in '\n'.join(_preamble({'cr':'2u','bw_hz':4}))"`
+- **scripts.py** - `bw_hz` added to mode-2 technique defaults; `_preamble()` parameterised (closes BW hardcoding)
+  * `"bw_hz": 400` added to `_DEFAULTS` for ca, ca_alt_mux, cv, lsv, dpv, swv, npv, acv, fca, pad, lsp, fcv, cp, ocp (14 techniques)
+  * `_preamble()` now emits `f"set_max_bandwidth {_format_si(params.get('bw_hz', 400))}"`; default 400 Hz preserves legacy behaviour when `bw_hz` is absent
+  * `_preamble_eis()` and `_preamble_galvano()` remain hardcoded at 200 kHz (mode-3 control-loop stability lock); EIS/GEIS defaults intentionally have no `bw_hz` key
+  * The `bw_hz` key on `cp` / `ocp` defaults is inert (their preambles are `_preamble_galvano` / `_preamble_ocp`) but kept for uniform preset surface
 
 #### src/gui/
-- [ ] **controls.py** - Expose `bw_hz` as GUI combobox in technique panel (per-run BW selection without code edit)
-  * Add `"bw_hz": ("Max Bandwidth", "Hz")` to `_PARAM_LABELS` (line 69)
-  * In `_create_param_widget()` (line 493), render `bw_hz` as `QComboBox` with values `[0.4, 4, 40, 400, 4000, 40000, 200000]` Hz (model on existing `cr` combobox at lines 102-105)
-  * Validate: `python -m src.gui.main_window` — CA panel shows Max Bandwidth dropdown defaulting to 400
+- **controls.py** - `bw_hz` exposed as GUI combobox in technique panel (per-run BW selection without code edit)
+  * `"bw_hz": ("Max Bandwidth", "Hz")` added to `_PARAM_LABELS`
+  * `_create_param_widget()` renders `bw_hz` as a `QComboBox` populated from `_BANDWIDTH_HZ = [0.4, 4, 40, 400, 4000, 40000, 200000]`; numeric Hz value stored via `setItemData()` so `get_params()` returns float/int (not the visible label string) for downstream `_format_si()` consumption
+  * Default selection tracks the technique's `bw_hz` default (400 Hz for mode-2 techniques)
 
 #### presets/
-- [ ] **presets.json** - Add `bw_hz: 400` to built-in `no_sensing` preset (explicit declaration, backwards-compat)
-  * Edit `no_sensing.params` to include `"bw_hz": 400`
-  * Validate: `python -c "from src.data.presets import PresetManager; assert PresetManager().get('no_sensing').params['bw_hz']==400"`
+- **presets.json** - `bw_hz: 400` declared on built-in `no_sensing` preset (explicit declaration, backwards-compat)
+  * `no_sensing.params` extended with `"bw_hz": 400`; matching change in `src/data/presets.py::_BUILTIN_PRESETS` keeps the in-memory built-in consistent with the JSON
 
 #### tests/techniques/
-- [ ] **test_scripts.py** - NEW. Assert preamble respects `bw_hz`; regression guard
-  * Parametrize: `_preamble({'cr':'2u','bw_hz':bw})` emits `set_max_bandwidth {expected}` for bw ∈ [0.4, 4, 40, 400, 4000]
-  * Default (no `bw_hz`) still emits `set_max_bandwidth 400`
-  * `_preamble_eis()` and `_preamble_galvano()` emit `set_max_bandwidth 200k` regardless of params
-  * Validate: `pytest tests/techniques/test_scripts.py -v`
+- **test_scripts.py** - NEW. Regression guard for preamble bandwidth handling
+  * Parametrised over `(0.4 → '400m', 4 → '4', 40 → '40', 400 → '400', 4000 → '4k', 40000 → '40k', 200000 → '200k')`; each `_preamble({'cr':'2u','bw_hz':bw})` is asserted to contain the expected `set_max_bandwidth` line
+  * Default-path test: `_preamble({'cr':'2u'})` still emits `set_max_bandwidth 400`
+  * Mode-3 lock tests: `_preamble_eis()` and `_preamble_galvano()` emit `set_max_bandwidth 200k` regardless of any `bw_hz` passed in
+  * `tests/techniques/__init__.py` added (empty marker)
 
 #### Milestone task
 - [ ] **CMU.17.022** - Mode-2 BW sweep protocol + analysis (tracks lab execution and results)
