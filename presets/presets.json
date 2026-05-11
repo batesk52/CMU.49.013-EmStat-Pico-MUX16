@@ -5,7 +5,8 @@
     "params": {
       "e_dc": 0.85,
       "t_run": 10.0,
-      "t_interval": 0.1
+      "t_interval": 0.1,
+      "bw_hz": 400
     },
     "channels": [
       1,

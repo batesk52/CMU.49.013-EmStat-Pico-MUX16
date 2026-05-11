@@ -96,6 +96,7 @@ _PARAM_LABELS: dict[str, tuple[str, str]] = {
     "n_freq": ("# Frequencies", ""),
     "settle_time": ("Settle time", "s"),
     "cr": ("Current range", ""),
+    "bw_hz": ("Max Bandwidth", "Hz"),
 }
 
 # Current range options for combo box
@@ -103,6 +104,10 @@ _CURRENT_RANGES = [
     "100n", "2u", "4u", "8u", "16u",
     "32u", "63u", "100u", "1m", "10m", "100m",
 ]
+
+# Max bandwidth options for combo box (Hz).
+# Mode-2 sweep range; default 400 preserves legacy behavior.
+_BANDWIDTH_HZ = [0.4, 4, 40, 400, 4000, 40000, 200000]
 
 
 # =======================================================================
@@ -380,7 +385,19 @@ class TechniquePanel(QGroupBox):
             elif isinstance(widget, QSpinBox):
                 params[name] = widget.value()
             elif isinstance(widget, QComboBox):
-                params[name] = widget.currentText()
+                # bw_hz stores numeric Hz value in itemData; recover
+                # it as float/int so _format_si() formats it correctly.
+                if name == "bw_hz":
+                    data = widget.currentData()
+                    if data is None:
+                        # Fallback: try to parse the visible text
+                        try:
+                            data = float(widget.currentText())
+                        except (TypeError, ValueError):
+                            data = 400
+                    params[name] = data
+                else:
+                    params[name] = widget.currentText()
         return params
 
     def set_technique(self, technique: str) -> None:
@@ -509,6 +526,36 @@ class TechniquePanel(QGroupBox):
                 combo.addItem(cr)
             # Set to default
             idx = combo.findText(str(default))
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            combo.currentIndexChanged.connect(
+                lambda: self.params_changed.emit()
+            )
+            return combo
+
+        if name == "bw_hz":
+            # Max bandwidth uses a combo box of Hz values.
+            # Each item stores the numeric Hz value as itemData so
+            # callers can recover a float/int rather than a string.
+            combo = QComboBox()
+            for hz in _BANDWIDTH_HZ:
+                # Use int label when value is integer, else float repr
+                label = (
+                    str(int(hz))
+                    if float(hz).is_integer()
+                    else str(hz)
+                )
+                combo.addItem(label, hz)
+            # Default selection (matches no_sensing preset / scripts default)
+            try:
+                default_hz = float(default)
+            except (TypeError, ValueError):
+                default_hz = 400.0
+            idx = combo.findText(
+                str(int(default_hz))
+                if default_hz.is_integer()
+                else str(default_hz)
+            )
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             combo.currentIndexChanged.connect(

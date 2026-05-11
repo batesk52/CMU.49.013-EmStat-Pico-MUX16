@@ -187,3 +187,60 @@ CMU.49.013-EmStat-Pico-MUX16/
 - **main_window.py** - .pssession export in GUI export flow (Req 7)
   * `_do_export()` calls `PsSessionExporter.export_pssession()` alongside per-channel CSV export
   * Output directory contains both per-channel CSVs and a single `.pssession` file per run
+
+### Phase 7: Mode-2 Bandwidth Sweep (CMU.17.022)
+
+**Goal:** Make `bw_hz` user-controllable to characterize the unexplored mode-2 BW < 400 Hz region. PSTrace benchmark runs at ~5 Hz on the same MUX architecture (36–55 nA std dev on 4-ch); current code is hardcoded to 400 Hz (40–70 nA). Theory predicts 3–5× noise reduction; mode 2's well-damped loop should stay stable below 400 Hz unlike mode 3 (which oscillates at 10 Hz).
+
+**Branch:** `feature/bw-sweep-mode2` (cut from main, independent of PR #4)
+
+#### src/techniques/
+- **scripts.py** - `bw_hz` added to mode-2 technique defaults; `_preamble()` parameterised (closes BW hardcoding)
+  * `"bw_hz": 400` added to `_DEFAULTS` for ca, ca_alt_mux, cv, lsv, dpv, swv, npv, acv, fca, pad, lsp, fcv, cp, ocp (14 techniques)
+  * `_preamble()` now emits `f"set_max_bandwidth {_format_si(params.get('bw_hz', 400))}"`; default 400 Hz preserves legacy behaviour when `bw_hz` is absent
+  * `_preamble_eis()` and `_preamble_galvano()` remain hardcoded at 200 kHz (mode-3 control-loop stability lock); EIS/GEIS defaults intentionally have no `bw_hz` key
+  * The `bw_hz` key on `cp` / `ocp` defaults is inert (their preambles are `_preamble_galvano` / `_preamble_ocp`) but kept for uniform preset surface
+
+#### src/gui/
+- **controls.py** - `bw_hz` exposed as GUI combobox in technique panel (per-run BW selection without code edit)
+  * `"bw_hz": ("Max Bandwidth", "Hz")` added to `_PARAM_LABELS`
+  * `_create_param_widget()` renders `bw_hz` as a `QComboBox` populated from `_BANDWIDTH_HZ = [0.4, 4, 40, 400, 4000, 40000, 200000]`; numeric Hz value stored via `setItemData()` so `get_params()` returns float/int (not the visible label string) for downstream `_format_si()` consumption
+  * Default selection tracks the technique's `bw_hz` default (400 Hz for mode-2 techniques)
+
+#### presets/
+- **presets.json** - `bw_hz: 400` declared on built-in `no_sensing` preset (explicit declaration, backwards-compat)
+  * `no_sensing.params` extended with `"bw_hz": 400`; matching change in `src/data/presets.py::_BUILTIN_PRESETS` keeps the in-memory built-in consistent with the JSON
+
+#### tests/techniques/
+- **test_scripts.py** - NEW. Regression guard for preamble bandwidth handling
+  * Parametrised over `(0.4 → '400m', 4 → '4', 40 → '40', 400 → '400', 4000 → '4k', 40000 → '40k', 200000 → '200k')`; each `_preamble({'cr':'2u','bw_hz':bw})` is asserted to contain the expected `set_max_bandwidth` line
+  * Default-path test: `_preamble({'cr':'2u'})` still emits `set_max_bandwidth 400`
+  * Mode-3 lock tests: `_preamble_eis()` and `_preamble_galvano()` emit `set_max_bandwidth 200k` regardless of any `bw_hz` passed in
+  * `tests/techniques/__init__.py` added (empty marker)
+
+#### Milestone task
+- [ ] **CMU.17.022** - Mode-2 BW sweep protocol + analysis (tracks lab execution and results)
+  * TRR: 4-ch ferricyanide CA, e_dc=0.2 V, cr=2u, t_run=120 s, t_interval=0.5 s, settle=200 ms, t_eq=60 s, BW ∈ {400, 40, 4, 0.4} Hz on same electrode set
+  * Abort criterion: current swing > 10× cr → control-loop instability → log, step BW up
+  * Use `/task` skill to scaffold; increments `_tasks/registry.yaml` `next_ids.CMU` 22→23
+  * Validate: `/task list` shows CMU.17.022 with status=Planned
+
+#### Hardware execution (Karl, lab)
+- [ ] **Run sweep** - Execute CMU.17.022 protocol on real EmStat Pico MUX16
+  * 4 sequential runs at each BW value; rinse electrode between
+  * Output: 4 timestamped export folders in `exports/` named `*_ca_alt_mux_bw{N}Hz_*`
+  * Validate: `ls exports/*_bw*` shows ≥4 folders from sweep date
+
+#### docs/
+- [ ] **multiplexer_limitations_and_lessons.md** - Append sweep results to comparison table; update recommended settings
+  * Add 4 rows to table (lines 99-113) — one per BW setting with std dev, resolution, notes
+  * Update §5.3 recommended settings with optimal BW
+  * Add TRA to `_tasks/CMU.17.022.md`: results, conclusions, gap-to-MUX8 reassessment
+  * Action log signoff with Completed / Left off / Next
+  * Validate: TRA section populated, doc table has 4 new rows, action_log entry exists
+
+#### Combined-config follow-up (after PR #4 merges)
+- [ ] **Rebased sweep** - One additional sweep run at optimal BW × PR #4 burst pacing (production-baseline number)
+  * Rebase `feature/bw-sweep-mode2` onto post-merge main
+  * Run 4-ch CA at optimal BW found in sweep; document combined effect
+  * Validate: TRA addendum in CMU.17.022.md with combined-config std dev
