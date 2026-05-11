@@ -685,13 +685,12 @@ def _gen_fcv(params: dict[str, Any]) -> list[str]:
 # --- MUX-alternating techniques ---
 
 
-# Per-channel burst time in ca_alt_mux: 50 ms GPIO settle (emitted in
+# Per-channel burst time in ca_alt_mux: settle_time GPIO settle (emitted in
 # generate()) plus one 10 ms meas_loop_ca sample.  Used to pace the
 # outer time loop so rounds land every t_interval seconds, matching
 # PSTrace/MUX8-R2 (all channels sampled in rapid succession, then
 # wait until the next interval).
 _CA_ALT_MUX_SAMPLE_TIME = "10m"
-_CA_ALT_MUX_PER_CHANNEL_BURST_S = 0.050 + 0.010
 
 
 def _gen_ca_alt_mux(params: dict[str, Any]) -> list[str]:
@@ -858,7 +857,8 @@ def generate(
         script_lines.append(f"loop n < {n_rounds}i")
 
         # For each channel: switch GPIO, settle, measure 1 point
-        settle = _format_si(float(merged.get("settle_time", 0.1)))
+        settle_s = float(merged.get("settle_time", 0.1))
+        settle = _format_si(settle_s)
         for ch in channels:
             addr = mux.channel_address(ch)
             script_lines.append(f"  set_gpio 0x{addr:03X}i")
@@ -867,7 +867,7 @@ def generate(
                 script_lines.append(f"  {bline}")
 
         # Pace rounds to t_interval; skip if the burst already exceeds it.
-        burst_s = len(channels) * _CA_ALT_MUX_PER_CHANNEL_BURST_S
+        burst_s = len(channels) * (settle_s + 0.010)
         pace_ms = int(round((t_interval - burst_s) * 1000))
         if pace_ms > 0:
             script_lines.append(f"  wait {pace_ms}m")
