@@ -12,6 +12,16 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-05-11: Phase 7 — Mode-2 Bandwidth Sweep Implementation (Tournament, 2 coders)
+- [x | Agent | 2026-05-11] src/techniques/scripts.py — Added `bw_hz: 400` to `_DEFAULTS` for 14 mode-2 techniques (ca, ca_alt_mux, cv, lsv, dpv, swv, npv, acv, fca, pad, lsp, fcv, cp, ocp); parameterized `_preamble()` to emit `set_max_bandwidth {_format_si(params.get("bw_hz", 400))}`. `_preamble_eis()` and `_preamble_galvano()` left hardcoded at 200k (mode-3 stability lock).
+- [x | Agent | 2026-05-11] src/gui/controls.py — Added `bw_hz` to `_PARAM_LABELS` as `("Max Bandwidth", "Hz")`; `_create_param_widget()` renders `bw_hz` as `QComboBox` over `[0.4, 4, 40, 400, 4000, 40000, 200000]` Hz; combobox stores numeric Hz via `setItemData` so `get_params()` recovers float/int via `currentData()`.
+- [x | Agent | 2026-05-11] presets/presets.json + src/data/presets.py — Added `bw_hz: 400` to built-in `no_sensing.params` in both the JSON and the `_BUILTIN_PRESETS` Python fallback (keeps in-memory + on-disk preset in sync).
+- [x | Agent | 2026-05-11] tests/techniques/test_scripts.py — NEW. 10 regression tests: parametrized bw_hz ∈ [0.4, 4, 40, 400, 4000, 40000, 200000] with SI-prefix expected outputs + default-400 + EIS/galvano 200k locks. Suite 15/15 green.
+- Tournament: 2 coders, near-identical implementations, both passed 4/4 validation. Coder-1 selected — deciding factor was sync of `_BUILTIN_PRESETS` in presets.py (coder-2 only edited the JSON, leaving the in-memory fallback drifting).
+- Branch: `feature/bw-sweep-mode2` (cut from main, independent of PR #4)
+- Left off: Implementation merged to feature branch (fb48c53). Worktrees cleaned. Branch unpushed.
+- Next: Create CMU.17.022 milestone via `/task`, then run the 4-point BW sweep (400/40/4/0.4 Hz) on hardware per Phase 7 blueprint.
+
 ### 2026-04-30: Session Signoff
 - [x | Session | 2026-04-30 22:53] Synced remote branches, fetched open PR #4 ca_alt_mux fix
   - Completed: Fast-forwarded main 4427b95→ee53830 (5 commits the lab pushed remotely: MUX diagnostics + settle_time control, NaN/overload sentinel parser fix, preset updates, EIS preamble hardening, multiplexer_limitations doc). Created local branch `claude/fix-mux-chronoamperometry-VWZ2p` tracking origin (PR #4, single commit 7b871b3 by remote Claude on 2026-04-24).
