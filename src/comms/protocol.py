@@ -230,9 +230,14 @@ class PacketParser:
         body = line[1:] if line.startswith("P") else line
         packet = ParsedPacket()
 
-        # Variables are separated by ';'
+        # Variables are separated by ';'. Do NOT use bare .strip() here:
+        # the SI prefix can be a literal space character (unity, 10^0),
+        # so stripping the trailing space silently truncates the field
+        # and corrupts every reading whose value lands on the unity-prefix
+        # scale (e.g., set_potential exactly 0 V in CV zero-crossings).
+        # Strip only line endings.
         for var_str in body.split(";"):
-            var_str = var_str.strip()
+            var_str = var_str.strip("\r\n")
             if not var_str:
                 continue
             parsed = self._parse_variable(var_str)

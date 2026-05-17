@@ -787,7 +787,7 @@ class MainWindow(QMainWindow):
 def main() -> None:
     """Launch the EmStat Pico MUX16 Controller application."""
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 

@@ -506,35 +506,29 @@ def _gen_acv(params: dict[str, Any]) -> list[str]:
 def _gen_cv(params: dict[str, Any]) -> list[str]:
     """Generate meas_loop_cv script body.
 
-    For ``n_scans > 1``, wraps the CV block in a device-side ``loop n``
-    construct rather than unrolling in Python. Unrolling 100 scans across
-    multiple channels overflows the Pico's script buffer and triggers a
-    parser error (``!4005``) mid-script.
-
-    The loop counter ``var n`` must be declared in the preamble — handled
-    by ``generate()`` for CV when ``n_scans > 1``.
+    For ``n_scans > 1`` we unroll the scans in Python (N copies of the
+    meas_loop_cv block) rather than wrapping in a device-side ``loop n``.
+    Why: firmware espico1601 does not iterate the outer compact MUX loop
+    (``loop i <= e``) when a nested counted ``loop n < Ni`` sits inside
+    it — only the first channel runs, then the script ends. Diagnosed
+    2026-05-17 via marker-log capture. The compact MUX wrap folds the
+    channel dimension into a single device-side loop, so script length
+    scales with N only (not N × channels) and the buffer-overflow
+    concern that originally motivated the device-side wrap is avoided.
     """
     e_begin = _format_si(params.get("e_begin", -0.5))
     e_vertex1 = _format_si(params.get("e_vertex1", 0.5))
     e_vertex2 = _format_si(params.get("e_vertex2", -0.5))
     e_step = _format_si(params.get("e_step", 0.01))
     scan_rate = _format_si(params.get("scan_rate", 0.1))
-    n_scans = int(params.get("n_scans", 1))
+    n_scans = max(1, int(params.get("n_scans", 1)))
     scan_block = [
         f"meas_loop_cv p c {e_begin} {e_vertex1} {e_vertex2}"
         f" {e_step} {scan_rate}",
         *_indent(_pck_voltammetry()),
         "endloop",
     ]
-    if n_scans <= 1:
-        return scan_block
-    return [
-        "store_var n 0i aa",
-        f"loop n < {n_scans}i",
-        *_indent(scan_block),
-        "  add_var n 1i",
-        "endloop",
-    ]
+    return scan_block * n_scans
 
 
 def _gen_ca(params: dict[str, Any]) -> list[str]:
@@ -831,14 +825,6 @@ def generate(
                 insert_idx = idx + 1
         for v in ("var r", "var f"):
             script_lines.insert(insert_idx, v)
-
-    # CV with n_scans > 1 uses a device-side loop counter (see _gen_cv).
-    if technique == "cv" and int(merged.get("n_scans", 1)) > 1:
-        insert_idx = 0
-        for idx, line in enumerate(script_lines):
-            if line.startswith("var "):
-                insert_idx = idx + 1
-        script_lines.insert(insert_idx, "var n")
 
     mux = MuxController()
 

@@ -332,6 +332,11 @@ class MeasurementEngine(QThread):
 
             scan_counter = 0
             loops_this_round = 0
+            # DIAGNOSTIC (CV multi-channel bug): track packets between
+            # markers so we can see the exact marker sequence emitted
+            # by the device. Remove once the CV regression is fixed.
+            packets_since_marker = 0
+            markers_seen: list[str] = []
             # ca_alt_mux uses a self-looping script: total loops =
             # n_rounds * n_channels, all in a single script run.
             # n_rounds is computed once by generate() and passed
@@ -375,6 +380,7 @@ class MeasurementEngine(QThread):
                     continue
 
                 if isinstance(result, ParsedPacket):
+                    packets_since_marker += 1
                     # Use global time for continuous or self-looping
                     # techniques (ca_alt_mux); per-channel for others
                     if continuous or technique == "ca_alt_mux":
@@ -398,6 +404,21 @@ class MeasurementEngine(QThread):
                     self.data_point_ready.emit(data_point)
 
                 elif isinstance(result, LoopMarker):
+                    # Per-marker DEBUG log shows the device's exact marker
+                    # sequence — invaluable for diagnosing multi-channel
+                    # script bugs. Bump root logger to DEBUG to capture.
+                    marker_name = result.name
+                    markers_seen.append(marker_name)
+                    logger.debug(
+                        "MARKER %-9s (#%d total, +%d packets since last, "
+                        "engine thinks CH%02d)",
+                        marker_name,
+                        len(markers_seen),
+                        packets_since_marker,
+                        current_channel,
+                    )
+                    packets_since_marker = 0
+
                     if result == LoopMarker.SUB_BEGIN:
                         pass  # compact loop marker, ignore
 
@@ -405,6 +426,16 @@ class MeasurementEngine(QThread):
                         scan_counter += 1
                         loops_this_round += 1
                         self._flush_auto_save()
+                        # Per-cycle progress log. Skipped for ca_alt_mux
+                        # because that technique can run thousands of
+                        # rounds × n_channels markers — the log would
+                        # drown out everything else.
+                        if technique != "ca_alt_mux":
+                            logger.info(
+                                "Channel %d cycle %d complete",
+                                current_channel,
+                                scan_counter,
+                            )
                         if scan_counter >= n_scans:
                             scan_counter = 0
                             if current_channel_idx + 1 < len(channels):
