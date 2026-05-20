@@ -279,5 +279,39 @@
     ],
     "auto_save": false,
     "description": "User preset: Chu_2023_mPD"
+  },
+  "ca_16ch_stirred_optimal": {
+    "name": "CA 16ch Stirred Optimal",
+    "technique": "ca_alt_mux",
+    "params": {
+      "t_eq": 0.0,
+      "e_dc": 0.7,
+      "t_run": 600.0,
+      "t_interval": 11.0,
+      "settle_time": 0.2,
+      "samples_per_visit": 11,
+      "cr": "2u",
+      "bw_hz": 0.4
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
+    ],
+    "auto_save": true,
+    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period — recompute N if stirrer changes."
   }
 }

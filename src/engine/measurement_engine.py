@@ -332,9 +332,9 @@ class MeasurementEngine(QThread):
 
             scan_counter = 0
             loops_this_round = 0
-            # DIAGNOSTIC (CV multi-channel bug): track packets between
-            # markers so we can see the exact marker sequence emitted
-            # by the device. Remove once the CV regression is fixed.
+            # Per-marker DEBUG log shows the device's exact marker
+            # sequence — invaluable for script-flow debugging. Bump
+            # root logger to DEBUG to capture.
             packets_since_marker = 0
             markers_seen: list[str] = []
             # ca_alt_mux uses a self-looping script: total loops =
@@ -346,6 +346,15 @@ class MeasurementEngine(QThread):
                 loops_expected = n_rounds * len(channels)
             else:
                 loops_expected = n_scans * len(channels)
+            # Per-channel-visit averaging buffer. When ca_alt_mux runs
+            # with samples_per_visit > 1, the device emits N packets per
+            # channel between channel switches; we buffer them and emit a
+            # single averaged DataPoint on END_LOOP. Acts as a built-in
+            # box-car anti-alias filter for stirrer-modulated noise.
+            samples_per_visit = max(
+                1, int(params.get("samples_per_visit", 1))
+            )
+            avg_buffer: list[tuple[float, dict[str, float]]] = []
             consecutive_empty = 0
 
             # -- Read one round of responses ------------------------------
@@ -395,13 +404,23 @@ class MeasurementEngine(QThread):
                             line,
                             dict(result.values),
                         )
-                    data_point = DataPoint(
-                        timestamp=elapsed,
-                        channel=current_channel,
-                        variables=dict(result.values),
-                    )
-                    self.result.add_point(data_point)
-                    self.data_point_ready.emit(data_point)
+                    values = dict(result.values)
+                    # ca_alt_mux with samples_per_visit > 1: buffer the
+                    # N packets per visit and emit a single averaged
+                    # DataPoint on END_LOOP. Otherwise emit immediately.
+                    if (
+                        technique == "ca_alt_mux"
+                        and samples_per_visit > 1
+                    ):
+                        avg_buffer.append((elapsed, values))
+                    else:
+                        data_point = DataPoint(
+                            timestamp=elapsed,
+                            channel=current_channel,
+                            variables=values,
+                        )
+                        self.result.add_point(data_point)
+                        self.data_point_ready.emit(data_point)
 
                 elif isinstance(result, LoopMarker):
                     # Per-marker DEBUG log shows the device's exact marker
@@ -423,6 +442,27 @@ class MeasurementEngine(QThread):
                         pass  # compact loop marker, ignore
 
                     elif result == LoopMarker.END_LOOP:
+                        # Flush per-visit averaging buffer (ca_alt_mux
+                        # with samples_per_visit > 1). One averaged
+                        # DataPoint per channel visit.
+                        if avg_buffer:
+                            ts_mean = sum(t for t, _ in avg_buffer) / len(
+                                avg_buffer
+                            )
+                            keys = avg_buffer[0][1].keys()
+                            vmean = {
+                                k: sum(v[k] for _, v in avg_buffer)
+                                / len(avg_buffer)
+                                for k in keys
+                            }
+                            data_point = DataPoint(
+                                timestamp=ts_mean,
+                                channel=current_channel,
+                                variables=vmean,
+                            )
+                            self.result.add_point(data_point)
+                            self.data_point_ready.emit(data_point)
+                            avg_buffer.clear()
                         scan_counter += 1
                         loops_this_round += 1
                         self._flush_auto_save()
