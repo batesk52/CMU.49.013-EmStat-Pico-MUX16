@@ -329,6 +329,6 @@
       1
     ],
     "auto_save": true,
-    "description": "Cathodic CeOx deposition for CMU.87.052 per SOP CMU.73.043 (Jingxun protocol): -2 mA/cm^2 x 5 min in 25 mM Ce(NO3)3 at 70 C. i_dc=-200nA assumes 100x100 um BLADE-18 pad — RECOMPUTE for your actual pad area before running. SINGLE-CHANNEL ONLY pending CMU.17.032: multi-channel CP currently holds cell_on across MUX switches (no cell_off in scan_channels_script_with_body), which is unsafe for galvanostatic mode. For n>=3 pads, run this preset three times with the channel number changed each time."
+    "description": "Cathodic CeOx deposition for CMU.87.052 per SOP CMU.73.043 (Jingxun protocol): -2 mA/cm^2 x 5 min in 25 mM Ce(NO3)3 at 70 C. i_dc=-200nA assumes 100x100 um BLADE-18 pad — RECOMPUTE for your actual pad area before running. Single-channel pending CMU.17.032 hardware verification. For n>=3 pads: run sequentially, changing the channel number between runs (each pad needs its full 5-min current dose uninterrupted)."
   }
 }
