@@ -1,70 +1,4 @@
 {
-  "no_sensing": {
-    "name": "NO Sensing (DARPA IV&V)",
-    "technique": "ca",
-    "params": {
-      "e_dc": 0.85,
-      "t_run": 10.0,
-      "t_interval": 0.1,
-      "bw_hz": 400
-    },
-    "channels": [
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8
-    ],
-    "auto_save": true,
-    "description": "NO biosensor: CA at 0.85V, channels 1-8, auto-save enabled"
-  },
-  "test": {
-    "name": "Test",
-    "technique": "ca",
-    "params": {
-      "e_dc": 1.0,
-      "t_run": 10.0,
-      "t_interval": 0.1,
-      "cr": "100u"
-    },
-    "channels": [
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8
-    ],
-    "auto_save": true,
-    "description": "User preset: Test"
-  },
-  "no_test": {
-    "name": "NO_test",
-    "technique": "ca",
-    "params": {
-      "e_dc": 0.85,
-      "t_run": 50.0,
-      "t_interval": 2.0,
-      "cr": "100u"
-    },
-    "channels": [
-      1,
-      2,
-      3,
-      4,
-      5,
-      6,
-      7,
-      8
-    ],
-    "auto_save": true,
-    "description": "User preset: NO_test"
-  },
   "eis_tck_standard": {
     "name": "EIS_TCK_standard",
     "technique": "eis",
@@ -234,7 +168,7 @@
       "e_dc": 0.0,
       "e_ac": 0.01,
       "freq_start": 50000.0,
-      "freq_end": 5.0,
+      "freq_end": 50.0,
       "n_freq": 41,
       "cr": "100u"
     },
@@ -312,23 +246,6 @@
       16
     ],
     "auto_save": true,
-    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period — recompute N if stirrer changes."
-  },
-  "ceox_deposit_single": {
-    "name": "CeOx Deposition (Jingxun, single-channel)",
-    "technique": "cp",
-    "params": {
-      "t_eq": 0.0,
-      "i_dc": -2e-7,
-      "t_run": 300.0,
-      "t_interval": 0.1,
-      "cr": "1u",
-      "bw_hz": 400
-    },
-    "channels": [
-      1
-    ],
-    "auto_save": true,
-    "description": "Cathodic CeOx deposition for CMU.87.052 per SOP CMU.73.043 (Jingxun protocol): -2 mA/cm^2 x 5 min in 25 mM Ce(NO3)3 at 70 C. i_dc=-200nA assumes 100x100 um BLADE-18 pad — RECOMPUTE for your actual pad area before running. Single-channel pending CMU.17.032 hardware verification. For n>=3 pads: run sequentially, changing the channel number between runs (each pad needs its full 5-min current dose uninterrupted)."
+    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period \u2014 recompute N if stirrer changes."
   }
 }
