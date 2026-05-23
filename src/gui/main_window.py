@@ -127,6 +127,10 @@ class MainWindow(QMainWindow):
         self._build_central_widget()
         self._build_control_dock()
         self._build_log_dock()
+        # Tab the Log dock behind the Controls dock so Settings is the
+        # default view; user clicks "Log" tab when a measurement runs.
+        self.tabifyDockWidget(self._control_dock, self._log_dock)
+        self._control_dock.raise_()
         self._build_menu_bar()
         self._build_status_bar()
 
@@ -151,11 +155,12 @@ class MainWindow(QMainWindow):
 
     def _build_control_dock(self) -> None:
         """Build left dock with stacked control panels."""
-        dock = QDockWidget("Controls", self)
+        dock = QDockWidget("Settings", self)
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
+        self._control_dock = dock
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -191,7 +196,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_log_dock(self) -> None:
-        """Build bottom dock with a log console."""
+        """Build left dock with a log console, tabbed behind Settings."""
         dock = QDockWidget("Log", self)
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
@@ -202,7 +207,8 @@ class MainWindow(QMainWindow):
         self._log_text.setReadOnly(True)
         self._log_text.setMaximumBlockCount(2000)
         dock.setWidget(self._log_text)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self._log_dock = dock
 
         # Attach a logging handler to the root logger
         handler = _LogHandler(self._log_text)
