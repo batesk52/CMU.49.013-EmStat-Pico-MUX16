@@ -59,6 +59,22 @@ def build_curves_measurement(
     technique = result.technique.lower()
     measured = result.measured_channels
 
+    # Per-channel RE/CE lookup so each curve records the wiring that
+    # produced it.  Backward compat: when re_ce_channels is absent or
+    # shorter than channels, fall back to RE/CE = 1 (legacy "shared
+    # reference" assumption).
+    electrode_mode = (
+        getattr(result, "electrode_config_mode", "") or "external"
+    )
+    re_ce_list = getattr(result, "re_ce_channels", []) or []
+    re_ce_by_channel: dict[int, int] = {}
+    for cfg_idx, ch in enumerate(result.channels):
+        if cfg_idx < len(re_ce_list):
+            re_ce_by_channel[ch] = re_ce_list[cfg_idx]
+
+    def _re_ce_for(ch: int) -> int:
+        return re_ce_by_channel.get(ch, 1)
+
     curves: list[dict[str, Any]] = []
     dataset_values: list[dict[str, Any]] = []
     color_idx = 0
@@ -137,6 +153,9 @@ def build_curves_measurement(
                     "XAxis": 0,
                     "YAxis": 0,
                     "MeasType": 1 if len(curves) == 0 else 0,
+                    "MUXChannel": ch,
+                    "ReCeChannel": _re_ce_for(ch),
+                    "ElectrodeConfigMode": electrode_mode,
                     "CorrosionButlerVolmer": [0, 0],
                     "CorrosionTafel": [0, 0, 0, 0],
                     "XAxisDataArray": {
@@ -269,6 +288,9 @@ def build_curves_measurement(
                 "XAxis": 0,
                 "YAxis": 0,
                 "MeasType": 1 if len(curves) == 0 else 0,
+                "MUXChannel": ch,
+                "ReCeChannel": _re_ce_for(ch),
+                "ElectrodeConfigMode": electrode_mode,
                 "CorrosionButlerVolmer": [0, 0],
                 "CorrosionTafel": [0, 0, 0, 0],
                 "XAxisDataArray": {

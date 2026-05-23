@@ -155,3 +155,112 @@ def test_pssession_method_string_omits_re_ce_when_empty() -> None:
     method_str = build_method_string("cv", res)
     assert "ELECTRODE_CONFIG_MODE=external" in method_str
     assert "RE_CE_CHANNELS=" not in method_str
+
+
+# ---------------------------------------------------------------------------
+# Per-Curve / per-EISData / session-level electrode-config metadata
+# ---------------------------------------------------------------------------
+
+
+def _result_with_ca_data(
+    channels: list[int],
+    mode: str,
+    re_ce: list[int],
+) -> MeasurementResult:
+    """Build a CA result with two samples per channel for curve export."""
+    res = MeasurementResult(
+        technique="ca",
+        start_time=datetime(2026, 5, 23, 12, 0, 0),
+        params={},
+        channels=channels,
+        re_ce_channels=re_ce,
+        electrode_config_mode=mode,
+    )
+    for ch in channels:
+        for t in (0.0, 0.1):
+            res.add_point(
+                DataPoint(
+                    timestamp=t,
+                    channel=ch,
+                    variables={"current": 1e-6, "potential": 0.2},
+                )
+            )
+    return res
+
+
+def test_curve_metadata_carries_mux_and_re_ce_per_channel() -> None:
+    """Each CA curve carries MUXChannel + ReCeChannel + mode."""
+    from src.data.pssession_curves import build_curves_measurement
+
+    res = _result_with_ca_data(
+        channels=[1, 3], mode="manual", re_ce=[13, 1]
+    )
+    meas = build_curves_measurement(res, "Chronoamperometry", "method")
+    curves = meas["Curves"]
+    assert len(curves) == 2
+    by_we = {c["MUXChannel"]: c for c in curves}
+    assert by_we[1]["ReCeChannel"] == 13
+    assert by_we[3]["ReCeChannel"] == 1
+    assert all(c["ElectrodeConfigMode"] == "manual" for c in curves)
+
+
+def test_curve_metadata_falls_back_when_re_ce_absent() -> None:
+    """Legacy results without re_ce_channels record RE/CE = 1."""
+    from src.data.pssession_curves import build_curves_measurement
+
+    res = _result_with_ca_data(
+        channels=[1, 2], mode="", re_ce=[]
+    )
+    meas = build_curves_measurement(res, "Chronoamperometry", "method")
+    curves = meas["Curves"]
+    assert all(c["ReCeChannel"] == 1 for c in curves)
+    # Empty mode collapses to "external" backward-compat default
+    assert all(c["ElectrodeConfigMode"] == "external" for c in curves)
+
+
+def test_eis_entry_metadata_carries_mux_and_re_ce() -> None:
+    """Each EISData entry carries MUXChannel + ReCeChannel + mode."""
+    from src.data.pssession_eis import build_eis_measurement
+
+    res = MeasurementResult(
+        technique="eis",
+        start_time=datetime(2026, 5, 23, 12, 0, 0),
+        params={},
+        channels=[1, 4],
+        re_ce_channels=[15, 15],
+        electrode_config_mode="external",
+    )
+    for ch in (1, 4):
+        for f in (1000.0, 100.0):
+            res.add_point(
+                DataPoint(
+                    timestamp=0.0,
+                    channel=ch,
+                    variables={
+                        "set_frequency": f,
+                        "zreal": 1.0,
+                        "zimag": -1.0,
+                    },
+                )
+            )
+    meas = build_eis_measurement(res, "EIS", "method")
+    entries = meas["EISDataList"]
+    assert len(entries) == 2
+    by_we = {e["MUXChannel"]: e for e in entries}
+    assert by_we[1]["ReCeChannel"] == 15
+    assert by_we[4]["ReCeChannel"] == 15
+    assert all(e["ElectrodeConfigMode"] == "external" for e in entries)
+
+
+def test_session_dict_carries_session_level_metadata(tmp_path) -> None:
+    """Top-level session dict surfaces mode + ReCeChannels for re-imports."""
+    from src.data.pssession_exporter import PsSessionExporter
+
+    res = _result_with_ca_data(
+        channels=[1, 3], mode="manual", re_ce=[13, 1]
+    )
+    exporter = PsSessionExporter()
+    # Use the internal builder so we can inspect the dict before encoding.
+    session = exporter._build_session(res)
+    assert session["ElectrodeConfigMode"] == "manual"
+    assert session["ReCeChannels"] == [13, 1]

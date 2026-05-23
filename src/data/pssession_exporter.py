@@ -303,10 +303,23 @@ class PsSessionExporter:
                 result, title, method_str
             )
 
+        # Electrode-config metadata at session level — backward-compat
+        # defaults mirror the METHOD string fields above.  Per-channel
+        # RE/CE assignment is encoded in the ``MUXChannel`` /
+        # ``ReCeChannel`` fields on each Curve / EISData entry.
+        electrode_mode = (
+            getattr(result, "electrode_config_mode", "") or "external"
+        )
+        re_ce_list = (
+            getattr(result, "re_ce_channels", None) or []
+        )
+
         session: dict[str, Any] = {
             "Type": "PalmSens.DataFiles.SessionFile",
             "CoreVersion": "5.12.1031.0",
             "MethodForMeasurement": method_str,
             "Measurements": [measurement],
+            "ElectrodeConfigMode": electrode_mode,
+            "ReCeChannels": list(re_ce_list),
         }
         return session
