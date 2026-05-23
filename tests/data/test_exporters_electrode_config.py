@@ -1,0 +1,157 @@
+"""Tests for electrode-config provenance in CSV + .pssession exports.
+
+Batch 2 of WS-electrode-config-modes adds two new lines to per-channel
+CSV headers (``# Electrode config:`` and ``# RE/CE channel:``) and two
+new METHOD entries inside the .pssession method string
+(``ELECTRODE_CONFIG_MODE`` and ``RE_CE_CHANNELS``). These tests pin
+the header content and backward-compat defaults when the model fields
+are empty.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime
+
+import pytest
+
+from src.data.exporters import CSVExporter
+from src.data.models import DataPoint, MeasurementResult
+from src.data.pssession_exporter import build_method_string
+
+
+# ---------------------------------------------------------------------------
+# CSV header
+# ---------------------------------------------------------------------------
+
+
+def _make_result(
+    channels: list[int],
+    mode: str,
+    re_ce: list[int] | None = None,
+) -> MeasurementResult:
+    """Build a minimal MeasurementResult for header inspection."""
+    res = MeasurementResult(
+        technique="cv",
+        start_time=datetime(2026, 5, 23, 12, 0, 0),
+        params={"e_step": 0.01},
+        channels=channels,
+        re_ce_channels=re_ce or [],
+        electrode_config_mode=mode,
+    )
+    for ch in channels:
+        res.add_point(
+            DataPoint(
+                timestamp=0.0,
+                channel=ch,
+                variables={"current": 1e-6, "set_potential": 0.0},
+            )
+        )
+    return res
+
+
+def _read_header(path: str) -> list[str]:
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.rstrip("\n") for line in f if line.startswith("#")]
+
+
+def test_csv_header_emits_external_mode_with_ch15(tmp_path) -> None:
+    """External-mode runs report mode + CH15 in every per-channel CSV."""
+    result = _make_result(
+        channels=[1, 2],
+        mode="external",
+        re_ce=[15, 15],
+    )
+    CSVExporter().export_csv(result, str(tmp_path))
+
+    header = _read_header(str(tmp_path / "ch01.csv"))
+    assert "# Electrode config: external" in header
+    assert "# RE/CE channel: 15" in header
+
+
+def test_csv_header_emits_manual_pair_per_channel(tmp_path) -> None:
+    """Manual mode pairs WE -> RE/CE by index into result.channels."""
+    result = _make_result(
+        channels=[3, 7, 11],
+        mode="manual",
+        re_ce=[1, 7, 13],
+    )
+    CSVExporter().export_csv(result, str(tmp_path))
+
+    h3 = _read_header(str(tmp_path / "ch03.csv"))
+    h7 = _read_header(str(tmp_path / "ch07.csv"))
+    h11 = _read_header(str(tmp_path / "ch11.csv"))
+
+    assert "# Electrode config: manual" in h3
+    assert "# RE/CE channel: 1" in h3
+    assert "# Electrode config: manual" in h7
+    assert "# RE/CE channel: 7" in h7
+    assert "# Electrode config: manual" in h11
+    assert "# RE/CE channel: 13" in h11
+
+
+def test_csv_header_defaults_when_metadata_absent(tmp_path) -> None:
+    """Legacy results (empty mode + empty re_ce list) default cleanly."""
+    # Don't pass electrode_config_mode kwarg — accept dataclass default
+    # but blank the value to simulate an older pickle.
+    res = MeasurementResult(
+        technique="cv",
+        params={},
+        channels=[5],
+        re_ce_channels=[],
+        electrode_config_mode="",
+    )
+    res.add_point(
+        DataPoint(
+            timestamp=0.0,
+            channel=5,
+            variables={"current": 0.0},
+        )
+    )
+    CSVExporter().export_csv(res, str(tmp_path))
+    header = _read_header(str(tmp_path / "ch05.csv"))
+    assert "# Electrode config: external" in header
+    assert "# RE/CE channel: 1" in header
+
+
+# ---------------------------------------------------------------------------
+# .pssession method string
+# ---------------------------------------------------------------------------
+
+
+def test_pssession_method_string_carries_external_mode() -> None:
+    """build_method_string emits ELECTRODE_CONFIG_MODE for external."""
+    res = _make_result(
+        channels=[1, 2],
+        mode="external",
+        re_ce=[15, 15],
+    )
+    method_str = build_method_string("cv", res)
+    assert "ELECTRODE_CONFIG_MODE=external" in method_str
+    assert "RE_CE_CHANNELS=1:15,2:15" in method_str
+
+
+def test_pssession_method_string_carries_manual_pairs() -> None:
+    """Manual mode emits per-channel WE:RE_CE pairs in order."""
+    res = _make_result(
+        channels=[2, 4, 6],
+        mode="manual",
+        re_ce=[2, 4, 6],
+    )
+    method_str = build_method_string("cv", res)
+    assert "ELECTRODE_CONFIG_MODE=manual" in method_str
+    assert "RE_CE_CHANNELS=2:2,4:4,6:6" in method_str
+
+
+def test_pssession_method_string_omits_re_ce_when_empty() -> None:
+    """No RE_CE_CHANNELS line when re_ce_channels list is empty."""
+    res = MeasurementResult(
+        technique="cv",
+        params={},
+        channels=[1],
+        re_ce_channels=[],
+        electrode_config_mode="external",
+    )
+    method_str = build_method_string("cv", res)
+    assert "ELECTRODE_CONFIG_MODE=external" in method_str
+    assert "RE_CE_CHANNELS=" not in method_str

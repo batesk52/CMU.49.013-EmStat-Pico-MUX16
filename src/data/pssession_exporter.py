@@ -193,6 +193,26 @@ def build_method_string(
         ch_bits = sum(1 << (ch - 1) for ch in result.channels)
         lines.append(f"USE_MUX_CH={ch_bits}")
 
+    # Electrode-config provenance — emits the wiring mode + a
+    # per-channel WE->RE/CE mapping so downstream re-imports can
+    # tell which RE/CE position was active for each curve.  Back-compat:
+    # an absent or empty mode falls back to "external" with RE/CE=1.
+    mode = (
+        getattr(result, "electrode_config_mode", "") or "external"
+    )
+    lines.append(f"ELECTRODE_CONFIG_MODE={mode}")
+    re_ce_list = getattr(result, "re_ce_channels", None) or []
+    if result.channels and re_ce_list:
+        # Pair WE -> RE/CE positions in declaration order; truncate at
+        # the shorter list so we never index past either edge.
+        pairs = [
+            f"{we}:{re_ce}"
+            for we, re_ce in zip(result.channels, re_ce_list)
+        ]
+        lines.append(
+            "RE_CE_CHANNELS=" + ",".join(pairs)
+        )
+
     return "\r\n".join(lines) + "\r\n"
 
 

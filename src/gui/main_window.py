@@ -43,12 +43,20 @@ from PyQt6.QtWidgets import (
 
 from src.comms.serial_connection import PicoConnection, PicoConnectionError
 from src.data.exporters import PsSessionExporter
-from src.data.models import AutoSaveConfig, MeasurementResult, TechniqueConfig
+from src.data.models import (
+    EXTERNAL_RE_CE_CHANNEL,
+    ON_BOARD_RE_CE_CHANNEL,
+    AutoSaveConfig,
+    MeasurementResult,
+    TechniqueConfig,
+)
 from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
     ChannelPanel,
     ConnectionPanel,
+    ElectrodeConfigPanel,
+    ManualChannelPanel,
     MeasurementControlPanel,
     TechniquePanel,
 )
@@ -159,8 +167,21 @@ class MainWindow(QMainWindow):
         self._tech_panel = TechniquePanel()
         layout.addWidget(self._tech_panel)
 
+        # Electrode-config radio sits between Technique and Channels so
+        # the user picks the wiring mode before configuring channels.
+        self._electrode_config_panel = ElectrodeConfigPanel()
+        layout.addWidget(self._electrode_config_panel)
+
+        # Channel grid (modes A and B: 16-WE workflow).
         self._chan_panel = ChannelPanel()
         layout.addWidget(self._chan_panel)
+
+        # Manual channel pairing (mode C: 14-row per-WE table).  Hidden
+        # by default; shown when the electrode-config panel switches to
+        # "manual".
+        self._manual_channel_panel = ManualChannelPanel()
+        self._manual_channel_panel.setVisible(False)
+        layout.addWidget(self._manual_channel_panel)
 
         self._meas_panel = MeasurementControlPanel()
         layout.addWidget(self._meas_panel)
@@ -268,6 +289,11 @@ class MainWindow(QMainWindow):
             self._plot_container.set_technique
         )
 
+        # Electrode-config panel -> swap visible channel panel
+        self._electrode_config_panel.mode_changed.connect(
+            self._on_electrode_mode_changed
+        )
+
         # Measurement controls -> engine actions
         self._meas_panel.start_requested.connect(
             self._on_start_measurement
@@ -370,15 +396,40 @@ class MainWindow(QMainWindow):
 
         technique = self._tech_panel.selected_technique()
         params = self._tech_panel.get_params()
-        channels = self._chan_panel.selected_channels()
 
-        if not channels:
-            QMessageBox.warning(
-                self,
-                "No Channels",
-                "Select at least one channel before starting.",
+        # Resolve WE + RE/CE channels from the electrode-config mode.
+        mode = self._electrode_config_panel.selected_mode()
+        re_ce_channels: list[int] = []
+        if mode == "manual":
+            channels, re_ce_channels = (
+                self._manual_channel_panel.selected_pairs()
             )
-            return
+            if not channels:
+                QMessageBox.warning(
+                    self,
+                    "No Channels",
+                    "Enable at least one CH1-CH14 row before starting "
+                    "in manual mode.",
+                )
+                self.statusBar().showMessage(
+                    "No channels enabled in manual mode."
+                )
+                return
+        else:
+            channels = self._chan_panel.selected_channels()
+            if not channels:
+                QMessageBox.warning(
+                    self,
+                    "No Channels",
+                    "Select at least one channel before starting.",
+                )
+                return
+            # Mirror TechniqueConfig.__post_init__ defaulting so the
+            # GUI side intent is explicit and visible.
+            if mode == "external":
+                re_ce_channels = [EXTERNAL_RE_CE_CHANNEL] * len(channels)
+            else:  # on_board
+                re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
 
         # Build auto-save config if enabled
         auto_save = None
@@ -395,13 +446,26 @@ class MainWindow(QMainWindow):
             )
             self._auto_save_active = True
 
-        config = TechniqueConfig(
-            technique=technique,
-            params=params,
-            channels=channels,
-            auto_save=auto_save,
-            continuous=False,
-        )
+        try:
+            config = TechniqueConfig(
+                technique=technique,
+                params=params,
+                channels=channels,
+                auto_save=auto_save,
+                continuous=False,
+                re_ce_channels=re_ce_channels,
+                electrode_config_mode=mode,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(
+                self,
+                "Invalid Electrode Configuration",
+                str(exc),
+            )
+            self.statusBar().showMessage(
+                f"Invalid electrode config: {exc}"
+            )
+            return
 
         # Prepare the plot
         self._plot_container.clear_plot()
@@ -509,6 +573,22 @@ class MainWindow(QMainWindow):
     def _on_channel_changed(self, channel: int) -> None:
         """Update status bar with the current MUX channel."""
         self._status_channel.setText(f"CH: {channel}")
+
+    @pyqtSlot(str)
+    def _on_electrode_mode_changed(self, mode: str) -> None:
+        """Swap which channel panel is visible based on wiring mode.
+
+        Modes ``external`` and ``on_board`` use the 4x4 grid panel
+        because all 16 WE channels are valid.  Mode ``manual``
+        switches to the 14-row pairing table because CH15+CH16 are
+        infrastructure-reserved.
+        """
+        if mode == "manual":
+            self._chan_panel.setVisible(False)
+            self._manual_channel_panel.setVisible(True)
+        else:
+            self._chan_panel.setVisible(True)
+            self._manual_channel_panel.setVisible(False)
 
     # ------------------------------------------------------------------
     # Export

@@ -15,7 +15,9 @@
       1
     ],
     "auto_save": false,
-    "description": "User preset: EIS_TCK_standard"
+    "description": "User preset: EIS_TCK_standard",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "cv_tck_standard": {
     "name": "CV_TCK_standard",
@@ -35,7 +37,9 @@
       4
     ],
     "auto_save": false,
-    "description": "User preset: CV_TCK_standard"
+    "description": "User preset: CV_TCK_standard",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "swv_validation": {
     "name": "SWV Validation",
@@ -52,7 +56,9 @@
       1
     ],
     "auto_save": false,
-    "description": "SWV validation: ferricyanide, Notion CMU.17.012 Step 1 params"
+    "description": "SWV validation: ferricyanide, Notion CMU.17.012 Step 1 params",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "dpv_validation": {
     "name": "DPV Validation",
@@ -70,7 +76,9 @@
       1
     ],
     "auto_save": false,
-    "description": "DPV validation: ferricyanide, Notion CMU.17.012 Step 6 params"
+    "description": "DPV validation: ferricyanide, Notion CMU.17.012 Step 6 params",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "cv_post_bond_check": {
     "name": "CV_post_bond_check",
@@ -104,7 +112,9 @@
       16
     ],
     "auto_save": false,
-    "description": "User preset: CV_post_bond_check"
+    "description": "User preset: CV_post_bond_check",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "pt_black_chu_2023": {
     "name": "Pt_black_Chu_2023",
@@ -138,7 +148,9 @@
       16
     ],
     "auto_save": false,
-    "description": "User preset: Pt_black_Chu_2023"
+    "description": "User preset: Pt_black_Chu_2023",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "ca_gaba_glu_h2o2_sensing": {
     "name": "CA_GABA_GLU_H2O2_sensing",
@@ -158,7 +170,9 @@
       7
     ],
     "auto_save": false,
-    "description": "User preset: CA_GABA_GLU_H2O2_sensing"
+    "description": "User preset: CA_GABA_GLU_H2O2_sensing",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "eis_quality_check": {
     "name": "EIS_quality_check",
@@ -191,7 +205,9 @@
       16
     ],
     "auto_save": false,
-    "description": "User preset: EIS_quality_check"
+    "description": "User preset: EIS_quality_check",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "chu_2023_mpd": {
     "name": "Chu_2023_mPD",
@@ -212,7 +228,9 @@
       11
     ],
     "auto_save": false,
-    "description": "User preset: Chu_2023_mPD"
+    "description": "User preset: Chu_2023_mPD",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   },
   "ca_16ch_stirred_optimal": {
     "name": "CA 16ch Stirred Optimal",
@@ -246,6 +264,8 @@
       16
     ],
     "auto_save": true,
-    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period \u2014 recompute N if stirrer changes."
+    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period — recompute N if stirrer changes.",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   }
 }

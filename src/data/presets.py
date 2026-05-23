@@ -38,6 +38,16 @@ class Preset:
         channels: 1-indexed MUX channel list.
         auto_save: Whether auto-save should be enabled.
         description: Human-readable description.
+        electrode_config_mode: Wiring mode (``"external"`` /
+            ``"on_board"`` / ``"manual"``).  Defaults to
+            ``"external"`` for backward compatibility with presets
+            written before batch 2 of WS-electrode-config-modes.
+        re_ce_channels: Per-WE RE/CE channel list.  When empty (the
+            common case for external / on_board presets),
+            :class:`TechniqueConfig.__post_init__` populates the
+            default at run time.  Manual-mode presets MUST supply
+            a list that matches ``channels`` length and stays within
+            CH1-CH14.
     """
 
     name: str
@@ -46,6 +56,8 @@ class Preset:
     channels: list[int] = field(default_factory=list)
     auto_save: bool = False
     description: str = ""
+    electrode_config_mode: str = "external"
+    re_ce_channels: list[int] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +80,8 @@ _BUILTIN_PRESETS: dict[str, Preset] = {
             "NO biosensor: CA at 0.85V, channels 1-8, "
             "auto-save enabled"
         ),
+        electrode_config_mode="external",
+        re_ce_channels=[],
     ),
 }
 
@@ -110,8 +124,19 @@ class PresetManager:
                     self._path, "r", encoding="utf-8"
                 ) as f:
                     data = json.load(f)
+                # Filter to the known Preset fields so older JSON files
+                # (pre-batch-2) and newer ones with unknown extras both
+                # load cleanly.  Missing new fields fall back to their
+                # dataclass defaults (electrode_config_mode="external",
+                # re_ce_channels=[]).
+                allowed = set(Preset.__dataclass_fields__.keys())
                 for key, obj in data.items():
-                    self._presets[key] = Preset(**obj)
+                    filtered = {
+                        k: v
+                        for k, v in obj.items()
+                        if k in allowed
+                    }
+                    self._presets[key] = Preset(**filtered)
                 logger.info(
                     "Loaded %d presets from %s",
                     len(data),
