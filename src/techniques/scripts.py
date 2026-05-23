@@ -771,6 +771,7 @@ def generate(
     technique: str,
     params: dict[str, Any],
     channels: list[int],
+    re_ce_channels: list[int] | None = None,
 ) -> list[str]:
     """Generate a complete MethodSCRIPT for the given technique.
 
@@ -787,15 +788,22 @@ def generate(
             ``'cv'``, ``'dpv'``, ``'eis'``, ``'ca_alt_mux'``.
         params: Technique-specific parameters. Missing keys fall back
             to built-in defaults.
-        channels: 1-indexed MUX channel numbers (e.g., ``[1, 2, 5]``).
+        channels: 1-indexed MUX WE channel numbers (e.g., ``[1, 2, 5]``).
+        re_ce_channels: Optional parallel list of 1-indexed RE/CE
+            positions, one per entry in ``channels``. When ``None``
+            (legacy callers), RE/CE position 1 is used for every step
+            — preserving the historical "shared RE/CE on position 1"
+            behaviour. Electrode-config modes (external / on-board /
+            manual) populate this list via ``TechniqueConfig``.
 
     Returns:
         List of MethodSCRIPT lines (no trailing newlines, no empty
         lines) ready to be sent via ``PicoConnection.send_script()``.
 
     Raises:
-        ValueError: If the technique is not supported or channels
-            is empty.
+        ValueError: If the technique is not supported, ``channels`` is
+            empty, or ``re_ce_channels`` length does not match
+            ``channels``.
     """
     technique = technique.lower()
     if technique not in _TECHNIQUE_REGISTRY:
@@ -805,6 +813,19 @@ def generate(
         )
     if not channels:
         raise ValueError("At least one channel must be specified.")
+
+    # Normalise RE/CE list — None means "legacy single-channel RE/CE 1
+    # for every step". Length is validated here so callers that build
+    # bad lists fail loudly before script assembly.
+    if re_ce_channels is None:
+        re_ce_list = [1] * len(channels)
+    else:
+        if len(re_ce_channels) != len(channels):
+            raise ValueError(
+                "re_ce_channels length must match channels length "
+                f"(got {len(re_ce_channels)} vs {len(channels)})."
+            )
+        re_ce_list = list(re_ce_channels)
 
     body_gen, preamble_fn = _TECHNIQUE_REGISTRY[technique]
 
@@ -878,8 +899,8 @@ def generate(
         # For each channel: switch GPIO, settle, measure 1 point
         settle_s = float(merged.get("settle_time", 0.1))
         settle = _format_si(settle_s)
-        for ch in channels:
-            addr = mux.channel_address(ch)
+        for ch, re_ce in zip(channels, re_ce_list):
+            addr = mux.channel_address(ch, re_ce_channel=re_ce)
             script_lines.append(f"  set_gpio 0x{addr:03X}i")
             script_lines.append(f"  wait {settle}")
             for bline in body:
@@ -901,13 +922,19 @@ def generate(
     elif len(channels) == 1:
         # Single channel: configure GPIO, select channel, run technique
         script_lines.extend(mux.gpio_config_script())
-        script_lines.extend(mux.select_channel_script(channels[0]))
+        script_lines.extend(
+            mux.select_channel_script(
+                channels[0], re_ce_channel=re_ce_list[0]
+            )
+        )
         if t_eq > 0 and technique != "pad":
             script_lines.append(f"wait {_format_si(t_eq)}")
         script_lines.extend(body)
     else:
-        # Multi-channel: add loop variables if using compact pattern
-        if mux._is_consecutive(channels):
+        # Multi-channel: compact pattern requires both consecutive WE
+        # channels and constant RE/CE (varying RE/CE forces sequential).
+        re_ce_constant = len(set(re_ce_list)) == 1
+        if mux._is_consecutive(channels) and re_ce_constant:
             # Insert var i / var e after the existing var declarations
             # Find insertion point (after last 'var' line)
             insert_idx = 0
@@ -919,7 +946,9 @@ def generate(
         if t_eq > 0 and technique != "pad":
             script_lines.append(f"wait {_format_si(t_eq)}")
         script_lines.extend(
-            mux.scan_channels_script_with_body(channels, body)
+            mux.scan_channels_script_with_body(
+                channels, body, re_ce_channels=re_ce_list
+            )
         )
 
     # Postamble (safety: cell_off on finish)

@@ -242,10 +242,16 @@ class MeasurementEngine(QThread):
         technique = config.technique
         params = config.params
         channels = config.channels
+        # config.re_ce_channels is populated by TechniqueConfig.__post_init__
+        # from electrode_config_mode; legacy callers without the attribute
+        # fall back to None so generate() uses the historical default.
+        re_ce_channels = getattr(config, "re_ce_channels", None) or None
 
         # -- Generate MethodSCRIPT -----------------------------------------
         try:
-            script_lines = generate(technique, params, channels)
+            script_lines = generate(
+                technique, params, channels, re_ce_channels=re_ce_channels
+            )
         except (ValueError, Exception) as exc:
             self.measurement_error.emit(
                 f"Script generation failed: {exc}"
@@ -269,6 +275,12 @@ class MeasurementEngine(QThread):
             },
             params=dict(params),
             channels=list(channels),
+            re_ce_channels=list(re_ce_channels)
+            if re_ce_channels is not None
+            else [],
+            electrode_config_mode=getattr(
+                config, "electrode_config_mode", "external"
+            ),
         )
 
         # -- Initialise auto-save writer if enabled -------------------------

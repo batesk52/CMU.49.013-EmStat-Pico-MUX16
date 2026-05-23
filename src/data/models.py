@@ -13,6 +13,28 @@ from datetime import datetime
 from typing import Any, Optional
 
 
+# ---------------------------------------------------------------------------
+# Electrode configuration constants
+# ---------------------------------------------------------------------------
+
+# Default RE/CE position for the "external" wiring mode: the external
+# reference and counter electrodes are wired into MUX RE/CE position 15
+# so the user-facing CH1–CH14 stay free for working electrodes.
+EXTERNAL_RE_CE_CHANNEL = 15
+
+# Default RE/CE position for the "on-board" wiring mode: the on-board
+# RE/CE shorting is routed via MUX RE/CE position 16.
+ON_BOARD_RE_CE_CHANNEL = 16
+
+# In "manual" (Mode C) wiring, both WE and RE/CE must stay within
+# CH1–CH14 because CH15 and CH16 are reserved as infrastructure
+# positions for the external/on-board modes.
+MODE_C_MAX_CHANNEL = 14
+
+# Allowed electrode-config mode identifiers (lower-case canonical form).
+ELECTRODE_CONFIG_MODES = ("external", "on_board", "manual")
+
+
 @dataclass
 class AutoSaveConfig:
     """Configuration for incremental auto-save during measurement.
@@ -35,8 +57,8 @@ class AutoSaveConfig:
 class TechniqueConfig:
     """Configuration for an electrochemical technique.
 
-    Bundles the technique name, its parameters, and the list of MUX
-    channels to measure on.
+    Bundles the technique name, its parameters, the list of MUX
+    channels to measure on, and the electrode-config wiring policy.
 
     Attributes:
         technique: Lowercase technique identifier (e.g., 'cv', 'dpv',
@@ -48,6 +70,14 @@ class TechniqueConfig:
             measurement (e.g., ``[1, 2, 5]``).
         auto_save: Optional auto-save configuration. When provided and
             enabled, measurement data is written incrementally to CSV.
+        re_ce_channels: Optional parallel list of 1-indexed RE/CE
+            positions, one per entry in ``channels``. When empty, the
+            list is populated from ``electrode_config_mode`` in
+            ``__post_init__``.
+        electrode_config_mode: One of ``"external"`` (RE/CE on
+            position 15), ``"on_board"`` (RE/CE on position 16), or
+            ``"manual"`` (operator-supplied per-step RE/CE within
+            CH1–CH14).
     """
 
     technique: str
@@ -55,10 +85,85 @@ class TechniqueConfig:
     channels: list[int]
     auto_save: Optional[AutoSaveConfig] = None
     continuous: bool = False
+    re_ce_channels: list[int] = field(default_factory=list)
+    electrode_config_mode: str = "external"
 
     def __post_init__(self) -> None:
-        """Normalise technique name to lowercase."""
+        """Normalise technique + mode and populate / validate RE/CE.
+
+        Mode-driven defaults:
+            * ``external`` -> ``[EXTERNAL_RE_CE_CHANNEL] * N``
+            * ``on_board`` -> ``[ON_BOARD_RE_CE_CHANNEL] * N``
+            * ``manual``   -> caller must supply ``re_ce_channels``
+
+        Raises:
+            ValueError: If the mode is unknown, the RE/CE list length
+                does not match channels, or channel ranges violate
+                the mode's wiring rules.
+        """
         self.technique = self.technique.lower()
+        self.electrode_config_mode = self.electrode_config_mode.lower()
+
+        if self.electrode_config_mode not in ELECTRODE_CONFIG_MODES:
+            raise ValueError(
+                "electrode_config_mode must be one of "
+                f"'external'/'on_board'/'manual', "
+                f"got {self.electrode_config_mode!r}"
+            )
+
+        if not self.re_ce_channels:
+            if self.electrode_config_mode == "external":
+                self.re_ce_channels = [
+                    EXTERNAL_RE_CE_CHANNEL
+                ] * len(self.channels)
+            elif self.electrode_config_mode == "on_board":
+                self.re_ce_channels = [
+                    ON_BOARD_RE_CE_CHANNEL
+                ] * len(self.channels)
+            else:  # manual
+                raise ValueError(
+                    "Mode C (manual) requires explicit re_ce_channels; "
+                    "cannot be empty"
+                )
+
+        if len(self.re_ce_channels) != len(self.channels):
+            raise ValueError(
+                "re_ce_channels length must match channels length "
+                f"(got {len(self.re_ce_channels)} vs "
+                f"{len(self.channels)})"
+            )
+
+        if self.electrode_config_mode in ("external", "on_board"):
+            for ch in self.channels:
+                if not isinstance(ch, int) or ch < 1 or ch > 16:
+                    raise ValueError(
+                        f"WE channel {ch!r} not allowed in "
+                        f"{self.electrode_config_mode!r} mode; "
+                        "must be an integer in range 1-16"
+                    )
+        else:  # manual
+            for ch in self.channels:
+                if (
+                    not isinstance(ch, int)
+                    or ch < 1
+                    or ch > MODE_C_MAX_CHANNEL
+                ):
+                    raise ValueError(
+                        f"Mode C WE channel {ch} not allowed; must be "
+                        f"in range 1-{MODE_C_MAX_CHANNEL} "
+                        "(CH15+CH16 are infrastructure-reserved)"
+                    )
+            for ch in self.re_ce_channels:
+                if (
+                    not isinstance(ch, int)
+                    or ch < 1
+                    or ch > MODE_C_MAX_CHANNEL
+                ):
+                    raise ValueError(
+                        f"Mode C RE/CE channel {ch} not allowed; must "
+                        f"be in range 1-{MODE_C_MAX_CHANNEL} "
+                        "(CH15+CH16 are infrastructure-reserved)"
+                    )
 
 
 @dataclass
@@ -108,6 +213,12 @@ class MeasurementResult:
             ``{'firmware': '...', 'serial': '...'}``).
         params: Copy of the technique parameters used.
         channels: List of channels that were measured.
+        re_ce_channels: Parallel list of 1-indexed RE/CE positions, one
+            per entry in ``channels``. Empty when the run was performed
+            without explicit per-channel RE/CE addressing.
+        electrode_config_mode: Wiring mode in effect for the run
+            (``"external"`` / ``"on_board"`` / ``"manual"``). Defaults
+            to ``"external"`` to match ``TechniqueConfig``.
     """
 
     data_points: list[DataPoint] = field(default_factory=list)
@@ -116,6 +227,8 @@ class MeasurementResult:
     device_info: dict[str, str] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     channels: list[int] = field(default_factory=list)
+    re_ce_channels: list[int] = field(default_factory=list)
+    electrode_config_mode: str = "external"
 
     def add_point(self, point: DataPoint) -> None:
         """Append a data point to the result.
