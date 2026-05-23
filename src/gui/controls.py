@@ -935,7 +935,7 @@ class ElectrodeConfigPanel(QGroupBox):
         self._group.setExclusive(True)
 
         self._radio_external = QRadioButton(
-            f"Separate CE + RE (external) -> CH{EXTERNAL_RE_CE_CHANNEL}"
+            "Separate CE + RE (external)"
         )
         self._radio_external.setToolTip(
             "External Ag/AgCl + Pt wired into MUX position "
@@ -946,7 +946,7 @@ class ElectrodeConfigPanel(QGroupBox):
         layout.addWidget(self._radio_external)
 
         self._radio_on_board = QRadioButton(
-            f"On-board RE/CE (combined) -> CH{ON_BOARD_RE_CE_CHANNEL}"
+            "On-board RE/CE (combined)"
         )
         self._radio_on_board.setToolTip(
             "On-board combined RE+CE shorted at MUX position "
@@ -956,7 +956,7 @@ class ElectrodeConfigPanel(QGroupBox):
         layout.addWidget(self._radio_on_board)
 
         self._radio_manual = QRadioButton(
-            f"Manual (per-WE pairing) -> CH1-CH{MODE_C_MAX_CHANNEL}"
+            "Manual (per-WE pairing)"
         )
         self._radio_manual.setToolTip(
             "Operator-supplied per-WE RE/CE pairing. Both WE and "
