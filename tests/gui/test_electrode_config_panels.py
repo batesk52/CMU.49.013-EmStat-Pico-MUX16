@@ -103,30 +103,48 @@ def test_manual_panel_re_ce_options_exclude_ch15_ch16(qapp) -> None:
 
 
 def test_manual_panel_apply_same_position(qapp) -> None:
-    """Apply same-position sets RE/CE = WE channel per enabled row."""
+    """`Apply same-position` button sets RE/CE = WE channel per enabled row."""
     panel = ManualChannelPanel()
     # Enable CH1, CH3, CH7
     panel.set_pairs([1, 3, 7], [1, 1, 1])
 
-    panel._on_apply_same_position()
+    # Behavior-driven: exercise the actual button click path so a broken
+    # button.clicked -> slot wiring would be caught here.
+    panel._apply_same_btn.click()
     we, re_ce = panel.selected_pairs()
     assert we == [1, 3, 7]
     assert re_ce == [1, 3, 7]
 
 
 def test_manual_panel_apply_uniform_re_ce(qapp) -> None:
-    """Bulk-set CH13 maps every enabled row to RE/CE=13."""
+    """`Apply CH13 to all` button maps every enabled row to RE/CE=13."""
     panel = ManualChannelPanel()
     panel.set_pairs([2, 4, 6], [2, 4, 6])
 
-    panel._apply_uniform_re_ce(13)
+    panel._apply_ch13_btn.click()
     we, re_ce = panel.selected_pairs()
     assert we == [2, 4, 6]
     assert re_ce == [13, 13, 13]
 
 
+def test_manual_panel_apply_ch1_to_all(qapp) -> None:
+    """`Apply CH1 to all` button maps every enabled row to RE/CE=1."""
+    panel = ManualChannelPanel()
+    panel.set_pairs([2, 4, 6], [5, 7, 9])
+
+    panel._apply_ch1_btn.click()
+    we, re_ce = panel.selected_pairs()
+    assert we == [2, 4, 6]
+    assert re_ce == [1, 1, 1]
+
+
 def test_manual_panel_uniform_re_ce_rejects_out_of_range(qapp) -> None:
-    """Bulk-set with CH15 (out of Mode C range) is a no-op."""
+    """Bulk-set with CH15 (out of Mode C range) is a no-op.
+
+    No button maps to CH15 (only the in-range Apply CH1 / Apply CH13
+    buttons exist), so this test exercises the helper directly to pin
+    the validation guard.
+    """
     panel = ManualChannelPanel()
     panel.set_pairs([1, 2], [1, 1])
 
