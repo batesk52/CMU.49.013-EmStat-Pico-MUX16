@@ -37,6 +37,8 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -125,6 +127,12 @@ class MainWindow(QMainWindow):
 
         # Build UI
         self._build_central_widget()
+        # Put the dock tab bar at the TOP so it doesn't collide with the
+        # ManualChannelPanel's bulk-set buttons in Mode C.
+        self.setTabPosition(
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            QTabWidget.TabPosition.North,
+        )
         self._build_control_dock()
         self._build_log_dock()
         # Tab the Log dock behind the Controls dock so Settings is the
@@ -192,7 +200,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._meas_panel)
 
         layout.addStretch()
-        dock.setWidget(container)
+        # Wrap container in a scroll area so the panel stack (especially
+        # Mode C's 14-row ManualChannelPanel) doesn't overflow the dock.
+        scroll = QScrollArea()
+        scroll.setWidget(container)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        dock.setWidget(scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_log_dock(self) -> None:
