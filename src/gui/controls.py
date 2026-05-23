@@ -36,7 +36,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QRadioButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QVBoxLayout,
@@ -359,15 +358,11 @@ class TechniquePanel(QGroupBox):
         selector_row.addWidget(self._technique_combo, 1)
         layout.addLayout(selector_row)
 
-        # Scrollable parameter area
-        self._param_area = QScrollArea()
-        self._param_area.setWidgetResizable(True)
-        self._param_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        # Parameter area (flat — the outer Settings dock scrolls).
         self._param_container = QWidget()
         self._param_layout = QGridLayout(self._param_container)
         self._param_layout.setContentsMargins(0, 4, 0, 0)
-        self._param_area.setWidget(self._param_container)
-        layout.addWidget(self._param_area)
+        layout.addWidget(self._param_container)
 
         # Load params for the initial technique
         if self._technique_combo.count() > 0:
