@@ -38,6 +38,16 @@ class Preset:
         channels: 1-indexed MUX channel list.
         auto_save: Whether auto-save should be enabled.
         description: Human-readable description.
+        electrode_config_mode: Wiring mode (``"external"`` /
+            ``"on_board"`` / ``"manual"``).  Defaults to
+            ``"external"`` for backward compatibility with presets
+            written before batch 2 of WS-electrode-config-modes.
+        re_ce_channels: Per-WE RE/CE channel list.  When empty (the
+            common case for external / on_board presets),
+            :class:`TechniqueConfig.__post_init__` populates the
+            default at run time.  Manual-mode presets MUST supply
+            a list that matches ``channels`` length and stays within
+            CH1-CH14.
     """
 
     name: str
@@ -46,30 +56,18 @@ class Preset:
     channels: list[int] = field(default_factory=list)
     auto_save: bool = False
     description: str = ""
+    electrode_config_mode: str = "external"
+    re_ce_channels: list[int] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # Built-in presets
 # ---------------------------------------------------------------------------
 
-_BUILTIN_PRESETS: dict[str, Preset] = {
-    "no_sensing": Preset(
-        name="NO Sensing (DARPA IV&V)",
-        technique="ca",
-        params={
-            "e_dc": 0.85,
-            "t_run": 10.0,
-            "t_interval": 0.1,
-            "bw_hz": 400,
-        },
-        channels=list(range(1, 9)),
-        auto_save=True,
-        description=(
-            "NO biosensor: CA at 0.85V, channels 1-8, "
-            "auto-save enabled"
-        ),
-    ),
-}
+# Presets here are injected at load time and protected from deletion via
+# the GUI. Empty by default — all shipped presets live in presets.json
+# so users can manage them with Save/Delete without code changes.
+_BUILTIN_PRESETS: dict[str, Preset] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -110,8 +108,19 @@ class PresetManager:
                     self._path, "r", encoding="utf-8"
                 ) as f:
                     data = json.load(f)
+                # Filter to the known Preset fields so older JSON files
+                # (pre-batch-2) and newer ones with unknown extras both
+                # load cleanly.  Missing new fields fall back to their
+                # dataclass defaults (electrode_config_mode="external",
+                # re_ce_channels=[]).
+                allowed = set(Preset.__dataclass_fields__.keys())
                 for key, obj in data.items():
-                    self._presets[key] = Preset(**obj)
+                    filtered = {
+                        k: v
+                        for k, v in obj.items()
+                        if k in allowed
+                    }
+                    self._presets[key] = Preset(**filtered)
                 logger.info(
                     "Loaded %d presets from %s",
                     len(data),
@@ -180,3 +189,7 @@ class PresetManager:
             self._save()
             return True
         return False
+
+    def is_builtin(self, key: str) -> bool:
+        """Return True if ``key`` refers to an undeletable built-in preset."""
+        return key in _BUILTIN_PRESETS

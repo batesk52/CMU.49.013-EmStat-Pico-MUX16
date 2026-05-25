@@ -26,10 +26,12 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QInputDialog,
@@ -37,18 +39,28 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from src.comms.serial_connection import PicoConnection, PicoConnectionError
 from src.data.exporters import PsSessionExporter
-from src.data.models import AutoSaveConfig, MeasurementResult, TechniqueConfig
+from src.data.models import (
+    EXTERNAL_RE_CE_CHANNEL,
+    ON_BOARD_RE_CE_CHANNEL,
+    AutoSaveConfig,
+    MeasurementResult,
+    TechniqueConfig,
+)
 from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
     ChannelPanel,
     ConnectionPanel,
+    ElectrodeConfigPanel,
+    ManualChannelPanel,
     MeasurementControlPanel,
     TechniquePanel,
 )
@@ -60,6 +72,26 @@ logger = logging.getLogger(__name__)
 # Application metadata
 APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
+
+
+class _NoWheelScrollFilter(QObject):
+    """Swallow mouse-wheel events on combo boxes and spin boxes.
+
+    Without this, mouse-scrolling over a QComboBox or QSpinBox/
+    QDoubleSpinBox silently changes its value — easy to do by accident
+    while scrolling the surrounding panel, and impossible to notice
+    mid-experiment when the dropdown is on a preset or technique
+    selector. Installed application-wide so every existing and future
+    combo/spinbox is covered without per-widget plumbing.
+    """
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel and isinstance(
+            obj, (QComboBox, QAbstractSpinBox)
+        ):
+            event.ignore()
+            return True
+        return False
 
 
 class _LogSignalBridge(QObject):
@@ -115,10 +147,27 @@ class MainWindow(QMainWindow):
         self._preset_mgr = PresetManager()
         self._auto_save_active = False
 
+        # Install app-wide filter that blocks accidental wheel-scroll
+        # changes on combo boxes and spin boxes.
+        self._no_wheel_filter = _NoWheelScrollFilter(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._no_wheel_filter)
+
         # Build UI
         self._build_central_widget()
+        # Put the dock tab bar at the TOP so it doesn't collide with the
+        # ManualChannelPanel's bulk-set buttons in Mode C.
+        self.setTabPosition(
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            QTabWidget.TabPosition.North,
+        )
         self._build_control_dock()
         self._build_log_dock()
+        # Tab the Log dock behind the Controls dock so Settings is the
+        # default view; user clicks "Log" tab when a measurement runs.
+        self.tabifyDockWidget(self._control_dock, self._log_dock)
+        self._control_dock.raise_()
         self._build_menu_bar()
         self._build_status_bar()
 
@@ -143,11 +192,12 @@ class MainWindow(QMainWindow):
 
     def _build_control_dock(self) -> None:
         """Build left dock with stacked control panels."""
-        dock = QDockWidget("Controls", self)
+        dock = QDockWidget("Settings", self)
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
         )
+        self._control_dock = dock
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -159,18 +209,39 @@ class MainWindow(QMainWindow):
         self._tech_panel = TechniquePanel()
         layout.addWidget(self._tech_panel)
 
+        # Electrode-config radio sits between Technique and Channels so
+        # the user picks the wiring mode before configuring channels.
+        self._electrode_config_panel = ElectrodeConfigPanel()
+        layout.addWidget(self._electrode_config_panel)
+
+        # Channel grid (modes A and B: 16-WE workflow).
         self._chan_panel = ChannelPanel()
         layout.addWidget(self._chan_panel)
+
+        # Manual channel pairing (mode C: 14-row per-WE table).  Hidden
+        # by default; shown when the electrode-config panel switches to
+        # "manual".
+        self._manual_channel_panel = ManualChannelPanel()
+        self._manual_channel_panel.setVisible(False)
+        layout.addWidget(self._manual_channel_panel)
 
         self._meas_panel = MeasurementControlPanel()
         layout.addWidget(self._meas_panel)
 
         layout.addStretch()
-        dock.setWidget(container)
+        # Wrap container in a scroll area so the panel stack (especially
+        # Mode C's 14-row ManualChannelPanel) doesn't overflow the dock.
+        scroll = QScrollArea()
+        scroll.setWidget(container)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        dock.setWidget(scroll)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
 
     def _build_log_dock(self) -> None:
-        """Build bottom dock with a log console."""
+        """Build left dock with a log console, tabbed behind Settings."""
         dock = QDockWidget("Log", self)
         dock.setFeatures(
             QDockWidget.DockWidgetFeature.DockWidgetMovable
@@ -181,7 +252,8 @@ class MainWindow(QMainWindow):
         self._log_text.setReadOnly(True)
         self._log_text.setMaximumBlockCount(2000)
         dock.setWidget(self._log_text)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self._log_dock = dock
 
         # Attach a logging handler to the root logger
         handler = _LogHandler(self._log_text)
@@ -268,6 +340,11 @@ class MainWindow(QMainWindow):
             self._plot_container.set_technique
         )
 
+        # Electrode-config panel -> swap visible channel panel
+        self._electrode_config_panel.mode_changed.connect(
+            self._on_electrode_mode_changed
+        )
+
         # Measurement controls -> engine actions
         self._meas_panel.start_requested.connect(
             self._on_start_measurement
@@ -290,6 +367,9 @@ class MainWindow(QMainWindow):
         # Save preset button -> main window
         self._tech_panel.save_preset_requested.connect(
             self._on_save_preset
+        )
+        self._tech_panel.delete_preset_requested.connect(
+            self._on_delete_preset
         )
 
         # Engine signals -> GUI updates
@@ -370,15 +450,40 @@ class MainWindow(QMainWindow):
 
         technique = self._tech_panel.selected_technique()
         params = self._tech_panel.get_params()
-        channels = self._chan_panel.selected_channels()
 
-        if not channels:
-            QMessageBox.warning(
-                self,
-                "No Channels",
-                "Select at least one channel before starting.",
+        # Resolve WE + RE/CE channels from the electrode-config mode.
+        mode = self._electrode_config_panel.selected_mode()
+        re_ce_channels: list[int] = []
+        if mode == "manual":
+            channels, re_ce_channels = (
+                self._manual_channel_panel.selected_pairs()
             )
-            return
+            if not channels:
+                QMessageBox.warning(
+                    self,
+                    "No Channels",
+                    "Enable at least one CH1-CH14 row before starting "
+                    "in manual mode.",
+                )
+                self.statusBar().showMessage(
+                    "No channels enabled in manual mode."
+                )
+                return
+        else:
+            channels = self._chan_panel.selected_channels()
+            if not channels:
+                QMessageBox.warning(
+                    self,
+                    "No Channels",
+                    "Select at least one channel before starting.",
+                )
+                return
+            # Mirror TechniqueConfig.__post_init__ defaulting so the
+            # GUI side intent is explicit and visible.
+            if mode == "external":
+                re_ce_channels = [EXTERNAL_RE_CE_CHANNEL] * len(channels)
+            else:  # on_board
+                re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
 
         # Build auto-save config if enabled
         auto_save = None
@@ -395,13 +500,26 @@ class MainWindow(QMainWindow):
             )
             self._auto_save_active = True
 
-        config = TechniqueConfig(
-            technique=technique,
-            params=params,
-            channels=channels,
-            auto_save=auto_save,
-            continuous=False,
-        )
+        try:
+            config = TechniqueConfig(
+                technique=technique,
+                params=params,
+                channels=channels,
+                auto_save=auto_save,
+                continuous=False,
+                re_ce_channels=re_ce_channels,
+                electrode_config_mode=mode,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(
+                self,
+                "Invalid Electrode Configuration",
+                str(exc),
+            )
+            self.statusBar().showMessage(
+                f"Invalid electrode config: {exc}"
+            )
+            return
 
         # Prepare the plot
         self._plot_container.clear_plot()
@@ -513,6 +631,22 @@ class MainWindow(QMainWindow):
     def _on_channel_changed(self, channel: int) -> None:
         """Update status bar with the current MUX channel."""
         self._status_channel.setText(f"CH: {channel}")
+
+    @pyqtSlot(str)
+    def _on_electrode_mode_changed(self, mode: str) -> None:
+        """Swap which channel panel is visible based on wiring mode.
+
+        Modes ``external`` and ``on_board`` use the 4x4 grid panel
+        because all 16 WE channels are valid.  Mode ``manual``
+        switches to the 14-row pairing table because CH15+CH16 are
+        infrastructure-reserved.
+        """
+        if mode == "manual":
+            self._chan_panel.setVisible(False)
+            self._manual_channel_panel.setVisible(True)
+        else:
+            self._chan_panel.setVisible(True)
+            self._manual_channel_panel.setVisible(False)
 
     # ------------------------------------------------------------------
     # Export
@@ -659,7 +793,10 @@ class MainWindow(QMainWindow):
             k: p.name
             for k, p in self._preset_mgr.get_all().items()
         }
-        self._tech_panel.refresh_presets(presets)
+        deletable = {
+            k for k in presets if not self._preset_mgr.is_builtin(k)
+        }
+        self._tech_panel.refresh_presets(presets, deletable=deletable)
 
     @pyqtSlot()
     def _on_save_preset(self) -> None:
@@ -696,6 +833,38 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(f"Preset saved: {name}")
         logger.info("Saved preset: %s (key=%s)", name, key)
+
+    @pyqtSlot(str)
+    def _on_delete_preset(self, key: str) -> None:
+        """Confirm and delete a user preset."""
+        preset = self._preset_mgr.get_preset(key)
+        if preset is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f'Delete preset "{preset.name}"? This cannot be undone.',
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self._preset_mgr.delete_preset(key):
+            self._load_presets_into_ui()
+            self.statusBar().showMessage(
+                f"Deleted preset: {preset.name}"
+            )
+            logger.info(
+                "Deleted preset: %s (key=%s)", preset.name, key
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Delete Failed",
+                f"Could not delete '{preset.name}' "
+                "(built-in presets cannot be removed).",
+            )
 
     @pyqtSlot(str)
     def _on_preset_selected(self, key: str) -> None:

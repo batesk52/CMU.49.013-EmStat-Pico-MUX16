@@ -1,10 +1,15 @@
 """GUI control panels for connection, technique, channels, and measurement.
 
-Provides four panel widgets that compose together in the main window:
+Provides six panel widgets that compose together in the main window:
 
 - ``ConnectionPanel`` -- COM port selection, connect/disconnect, status
 - ``TechniquePanel`` -- technique dropdown with dynamic parameter fields
-- ``ChannelPanel`` -- 4x4 grid of channel checkboxes (CH1-CH16)
+- ``ElectrodeConfigPanel`` -- 3-way radio selector for wiring mode
+  (external CH15, on-board CH16, or manual per-WE pairing in CH1-CH14)
+- ``ChannelPanel`` -- 4x4 grid of channel checkboxes (CH1-CH16),
+  used in external + on-board modes
+- ``ManualChannelPanel`` -- 14-row per-WE table with RE/CE pairing,
+  used in manual mode only
 - ``MeasurementControlPanel`` -- Start, Stop, Halt, Resume buttons
 
 All panels emit signals for state changes. No panel performs serial I/O
@@ -19,6 +24,7 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -29,13 +35,19 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QScrollArea,
+    QRadioButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
 
+from src.data.models import (
+    EXTERNAL_RE_CE_CHANNEL,
+    MODE_C_MAX_CHANNEL,
+    ON_BOARD_RE_CE_CHANNEL,
+)
 from src.techniques.scripts import supported_techniques, technique_params
 
 logger = logging.getLogger(__name__)
@@ -291,10 +303,12 @@ class TechniquePanel(QGroupBox):
     params_changed = pyqtSignal()
     preset_selected = pyqtSignal(str)  # preset key
     save_preset_requested = pyqtSignal()
+    delete_preset_requested = pyqtSignal(str)  # preset key to delete
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Technique", parent)
         self._param_widgets: dict[str, QWidget] = {}
+        self._deletable_keys: set[str] = set()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -314,12 +328,32 @@ class TechniquePanel(QGroupBox):
         )
         preset_row.addWidget(self._preset_combo, 1)
 
-        self._save_preset_btn = QPushButton("Save...")
+        # Icon-only buttons to keep the preset row compact; tooltips
+        # carry the labels for discoverability.
+        style = self.style()
+
+        self._save_preset_btn = QPushButton()
+        self._save_preset_btn.setIcon(
+            style.standardIcon(
+                QStyle.StandardPixmap.SP_DialogSaveButton
+            )
+        )
         self._save_preset_btn.setToolTip("Save current settings as preset")
+        self._save_preset_btn.setFixedWidth(32)
         self._save_preset_btn.clicked.connect(
             self.save_preset_requested.emit
         )
         preset_row.addWidget(self._save_preset_btn)
+
+        self._delete_preset_btn = QPushButton()
+        self._delete_preset_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
+        self._delete_preset_btn.setToolTip("Delete the selected preset")
+        self._delete_preset_btn.setFixedWidth(32)
+        self._delete_preset_btn.setEnabled(False)
+        self._delete_preset_btn.clicked.connect(self._on_delete_clicked)
+        preset_row.addWidget(self._delete_preset_btn)
         layout.addLayout(preset_row)
 
         # Separator
@@ -347,15 +381,11 @@ class TechniquePanel(QGroupBox):
         selector_row.addWidget(self._technique_combo, 1)
         layout.addLayout(selector_row)
 
-        # Scrollable parameter area
-        self._param_area = QScrollArea()
-        self._param_area.setWidgetResizable(True)
-        self._param_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        # Parameter area (flat — the outer Settings dock scrolls).
         self._param_container = QWidget()
         self._param_layout = QGridLayout(self._param_container)
         self._param_layout.setContentsMargins(0, 4, 0, 0)
-        self._param_area.setWidget(self._param_container)
-        layout.addWidget(self._param_area)
+        layout.addWidget(self._param_container)
 
         # Load params for the initial technique
         if self._technique_combo.count() > 0:
@@ -435,27 +465,43 @@ class TechniquePanel(QGroupBox):
                     widget.setCurrentIndex(idx)
 
     def refresh_presets(
-        self, presets: dict[str, str]
+        self,
+        presets: dict[str, str],
+        deletable: Optional[set[str]] = None,
     ) -> None:
         """Reload the preset combo box.
 
         Args:
             presets: Dict mapping preset keys to display names.
+            deletable: Keys the user is allowed to delete (built-ins
+                excluded). If None, no preset is deletable.
         """
+        self._deletable_keys = deletable or set()
         self._preset_combo.blockSignals(True)
         self._preset_combo.clear()
         self._preset_combo.addItem("(No Preset)", "")
         for key, name in sorted(presets.items()):
             self._preset_combo.addItem(name, key)
         self._preset_combo.blockSignals(False)
+        # Selection resets to "(No Preset)" after a rebuild.
+        self._delete_preset_btn.setEnabled(False)
 
     # ---- Internal --------------------------------------------------------
 
     def _on_preset_selected(self, index: int) -> None:
         """Handle preset combo box selection change."""
         key = self._preset_combo.itemData(index)
+        self._delete_preset_btn.setEnabled(
+            bool(key) and key in self._deletable_keys
+        )
         if key:
             self.preset_selected.emit(key)
+
+    def _on_delete_clicked(self) -> None:
+        """Emit delete request for the currently selected preset."""
+        key = self._preset_combo.currentData()
+        if key:
+            self.delete_preset_requested.emit(key)
 
     def _on_technique_selected(self, index: int) -> None:
         """Handle technique combo box selection change."""
@@ -547,7 +593,7 @@ class TechniquePanel(QGroupBox):
                     else str(hz)
                 )
                 combo.addItem(label, hz)
-            # Default selection (matches no_sensing preset / scripts default)
+            # Default selection (matches scripts default bw_hz=400)
             try:
                 default_hz = float(default)
             except (TypeError, ValueError):
@@ -877,3 +923,349 @@ class MeasurementControlPanel(QGroupBox):
             )
             self._dir_label.setToolTip(path)
             self.auto_save_dir_changed.emit(path)
+
+
+# =======================================================================
+# ElectrodeConfigPanel
+# =======================================================================
+
+
+class ElectrodeConfigPanel(QGroupBox):
+    """Three-way radio selector for electrode wiring configuration.
+
+    Maps the user's physical wiring choice to one of three modes
+    consumed by :class:`src.data.models.TechniqueConfig`:
+
+    * **external** (default) -- separate external Ag/AgCl + Pt electrodes
+      wired into MUX RE/CE position 15 (``EXTERNAL_RE_CE_CHANNEL``).
+      All 16 WE channels (CH1-CH16) remain user-selectable.
+    * **on_board** -- on-board combined RE+CE on MUX position 16
+      (``ON_BOARD_RE_CE_CHANNEL``).  All 16 WE channels remain
+      user-selectable.
+    * **manual** -- operator-supplied per-WE RE/CE pairing, both
+      constrained to CH1-CH14 (``MODE_C_MAX_CHANNEL``).  CH15+CH16
+      are infrastructure-reserved in this mode.
+
+    See ``docs/enclosure_design.md`` for the physical wiring contract.
+
+    Signals:
+        mode_changed(str): Emitted with ``"external"``, ``"on_board"``,
+            or ``"manual"`` when the selected radio changes.
+    """
+
+    mode_changed = pyqtSignal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__("Electrode Configuration", parent)
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Build the radio panel."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(2)
+
+        # Mutually exclusive button group so only one mode is active.
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+
+        self._radio_external = QRadioButton(
+            "Separate CE + RE (external)"
+        )
+        self._radio_external.setToolTip(
+            "External Ag/AgCl + Pt wired into MUX position "
+            f"{EXTERNAL_RE_CE_CHANNEL}. All 16 WE channels selectable."
+        )
+        self._radio_external.setChecked(True)  # default mode
+        self._group.addButton(self._radio_external)
+        layout.addWidget(self._radio_external)
+
+        self._radio_on_board = QRadioButton(
+            "On-board RE/CE (combined)"
+        )
+        self._radio_on_board.setToolTip(
+            "On-board combined RE+CE shorted at MUX position "
+            f"{ON_BOARD_RE_CE_CHANNEL}. All 16 WE channels selectable."
+        )
+        self._group.addButton(self._radio_on_board)
+        layout.addWidget(self._radio_on_board)
+
+        self._radio_manual = QRadioButton(
+            "Manual (per-WE pairing)"
+        )
+        self._radio_manual.setToolTip(
+            "Operator-supplied per-WE RE/CE pairing. Both WE and "
+            f"RE/CE constrained to CH1-CH{MODE_C_MAX_CHANNEL} "
+            "(CH15+CH16 reserved as infrastructure)."
+        )
+        self._group.addButton(self._radio_manual)
+        layout.addWidget(self._radio_manual)
+
+        # Emit on any selection change.  Connect to toggled(True) only
+        # to fire once per user action (not twice for the un-checked +
+        # checked pair).
+        self._radio_external.toggled.connect(self._on_radio_toggled)
+        self._radio_on_board.toggled.connect(self._on_radio_toggled)
+        self._radio_manual.toggled.connect(self._on_radio_toggled)
+
+    # ---- Public API ------------------------------------------------------
+
+    def selected_mode(self) -> str:
+        """Return the currently selected wiring mode.
+
+        Returns:
+            One of ``"external"``, ``"on_board"``, or ``"manual"``.
+        """
+        if self._radio_manual.isChecked():
+            return "manual"
+        if self._radio_on_board.isChecked():
+            return "on_board"
+        return "external"
+
+    def set_mode(self, mode: str) -> None:
+        """Programmatically select a mode.
+
+        Args:
+            mode: One of ``"external"``, ``"on_board"``, ``"manual"``.
+                Unknown values are ignored.
+        """
+        mode = (mode or "").lower()
+        if mode == "external":
+            self._radio_external.setChecked(True)
+        elif mode == "on_board":
+            self._radio_on_board.setChecked(True)
+        elif mode == "manual":
+            self._radio_manual.setChecked(True)
+
+    # ---- Private slots ---------------------------------------------------
+
+    def _on_radio_toggled(self, checked: bool) -> None:
+        """Emit mode_changed once when a radio gets checked."""
+        if checked:
+            self.mode_changed.emit(self.selected_mode())
+
+
+# =======================================================================
+# ManualChannelPanel
+# =======================================================================
+
+
+class ManualChannelPanel(QGroupBox):
+    """14-row table for per-WE channel pairing in Mode C (manual).
+
+    Each row represents one of the manually-pairable channels
+    (CH1 through CH``MODE_C_MAX_CHANNEL`` == CH14).  CH15 and CH16
+    are infrastructure-reserved for the ``external`` / ``on_board``
+    modes and do NOT appear here.
+
+    Each row has:
+
+    * An ``Enable`` checkbox -- when checked, the row's WE channel
+      is included in the measurement.
+    * A ``RE/CE`` combo box listing CH1-CH``MODE_C_MAX_CHANNEL``.
+
+    Three bulk-set buttons below the table:
+
+    * **Apply same-position** -- for every enabled WE row N, set
+      RE/CE = N (each WE paired with its own physical position).
+    * **Apply CH1 to all** -- for every enabled WE row, set RE/CE = 1.
+    * **Apply CH13 to all** -- for every enabled WE row, set RE/CE = 13.
+
+    Signals:
+        pairs_changed(list, list): Emitted with two parallel lists
+            (enabled WE channels, matching RE/CE channels) whenever
+            any enable or RE/CE selection changes.  The lists are
+            sorted by WE channel number; lengths always match.
+    """
+
+    pairs_changed = pyqtSignal(list, list)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(
+            f"Manual Channel Pairing (CH1-CH{MODE_C_MAX_CHANNEL})",
+            parent,
+        )
+        self._enable_boxes: list[QCheckBox] = []
+        self._re_ce_combos: list[QComboBox] = []
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Build the 14-row pairing table and bulk-set buttons."""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+
+        # Header row
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        grid.addWidget(QLabel("<b>WE</b>"), 0, 0)
+        grid.addWidget(QLabel("<b>Enable</b>"), 0, 1)
+        grid.addWidget(QLabel("<b>RE/CE</b>"), 0, 2)
+
+        # Per-channel rows (CH1..CH14)
+        for ch in range(1, MODE_C_MAX_CHANNEL + 1):
+            row = ch  # row 0 is the header
+
+            grid.addWidget(QLabel(f"CH{ch}"), row, 0)
+
+            cb = QCheckBox()
+            # Default CH1 to checked, matching ChannelPanel behaviour
+            cb.setChecked(ch == 1)
+            cb.toggled.connect(self._on_state_changed)
+            grid.addWidget(cb, row, 1)
+            self._enable_boxes.append(cb)
+
+            combo = QComboBox()
+            for target in range(1, MODE_C_MAX_CHANNEL + 1):
+                combo.addItem(f"CH{target}", target)
+            # Default RE/CE = CH1 (combo index 0)
+            combo.setCurrentIndex(0)
+            combo.currentIndexChanged.connect(
+                lambda _: self._on_state_changed()
+            )
+            grid.addWidget(combo, row, 2)
+            self._re_ce_combos.append(combo)
+
+        layout.addLayout(grid)
+
+        # Bulk-set buttons
+        btn_row = QHBoxLayout()
+        self._apply_same_btn = QPushButton("Apply same-position")
+        self._apply_same_btn.setToolTip(
+            "For every enabled WE, set RE/CE = WE channel number"
+        )
+        self._apply_same_btn.clicked.connect(
+            self._on_apply_same_position
+        )
+        btn_row.addWidget(self._apply_same_btn)
+
+        self._apply_ch1_btn = QPushButton("Apply CH1 to all")
+        self._apply_ch1_btn.setToolTip(
+            "For every enabled WE, set RE/CE = CH1"
+        )
+        self._apply_ch1_btn.clicked.connect(
+            lambda: self._apply_uniform_re_ce(1)
+        )
+        btn_row.addWidget(self._apply_ch1_btn)
+
+        self._apply_ch13_btn = QPushButton("Apply CH13 to all")
+        self._apply_ch13_btn.setToolTip(
+            "For every enabled WE, set RE/CE = CH13"
+        )
+        self._apply_ch13_btn.clicked.connect(
+            lambda: self._apply_uniform_re_ce(13)
+        )
+        btn_row.addWidget(self._apply_ch13_btn)
+        layout.addLayout(btn_row)
+
+    # ---- Public API ------------------------------------------------------
+
+    def selected_pairs(self) -> tuple[list[int], list[int]]:
+        """Return the (WE, RE/CE) lists for currently enabled rows.
+
+        Returns:
+            ``(we_channels, re_ce_channels)`` -- two parallel lists
+            sorted by WE channel.  ``len(we) == len(re_ce)``.  An empty
+            tuple of lists is returned if no rows are enabled.
+        """
+        we: list[int] = []
+        re_ce: list[int] = []
+        for idx, (cb, combo) in enumerate(
+            zip(self._enable_boxes, self._re_ce_combos)
+        ):
+            if cb.isChecked():
+                we.append(idx + 1)  # 1-indexed channel
+                data = combo.currentData()
+                re_ce.append(
+                    int(data) if data is not None else 1
+                )
+        # zip-based collection is already in CH1..CH14 order, but be
+        # explicit so callers can rely on sortedness.
+        if we:
+            pairs = sorted(zip(we, re_ce))
+            we = [p[0] for p in pairs]
+            re_ce = [p[1] for p in pairs]
+        return we, re_ce
+
+    def set_pairs(
+        self, we_channels: list[int], re_ce_channels: list[int]
+    ) -> None:
+        """Programmatically set the enabled rows and their RE/CE.
+
+        Channels not present in *we_channels* are unchecked.  RE/CE
+        combos for unchecked rows retain their previous value.
+
+        Args:
+            we_channels: 1-indexed WE channels to enable
+                (1..``MODE_C_MAX_CHANNEL``).
+            re_ce_channels: Parallel RE/CE channel list.  If lengths
+                do not match, the shorter list wins and remaining
+                rows are left at their current RE/CE.
+        """
+        we_set = set(we_channels)
+        # Block signals to avoid an avalanche of pairs_changed during
+        # programmatic load.
+        for cb in self._enable_boxes:
+            cb.blockSignals(True)
+        for combo in self._re_ce_combos:
+            combo.blockSignals(True)
+
+        try:
+            for idx, cb in enumerate(self._enable_boxes):
+                cb.setChecked((idx + 1) in we_set)
+
+            for we, re_ce in zip(we_channels, re_ce_channels):
+                if 1 <= we <= MODE_C_MAX_CHANNEL:
+                    combo = self._re_ce_combos[we - 1]
+                    target_idx = combo.findData(int(re_ce))
+                    if target_idx >= 0:
+                        combo.setCurrentIndex(target_idx)
+        finally:
+            for cb in self._enable_boxes:
+                cb.blockSignals(False)
+            for combo in self._re_ce_combos:
+                combo.blockSignals(False)
+
+        self._emit_pairs_changed()
+
+    # ---- Internal --------------------------------------------------------
+
+    def _on_apply_same_position(self) -> None:
+        """For every enabled row, set RE/CE = WE channel number."""
+        for idx, (cb, combo) in enumerate(
+            zip(self._enable_boxes, self._re_ce_combos)
+        ):
+            if cb.isChecked():
+                we_channel = idx + 1
+                target_idx = combo.findData(we_channel)
+                if target_idx >= 0:
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(target_idx)
+                    combo.blockSignals(False)
+        self._emit_pairs_changed()
+
+    def _apply_uniform_re_ce(self, re_ce: int) -> None:
+        """For every enabled row, set RE/CE to a single channel.
+
+        Args:
+            re_ce: Target RE/CE channel (1..``MODE_C_MAX_CHANNEL``).
+        """
+        if not (1 <= re_ce <= MODE_C_MAX_CHANNEL):
+            return
+        for cb, combo in zip(
+            self._enable_boxes, self._re_ce_combos
+        ):
+            if cb.isChecked():
+                target_idx = combo.findData(re_ce)
+                if target_idx >= 0:
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(target_idx)
+                    combo.blockSignals(False)
+        self._emit_pairs_changed()
+
+    def _on_state_changed(self, *args: Any) -> None:
+        """Handle any enable-checkbox or RE/CE combo change."""
+        self._emit_pairs_changed()
+
+    def _emit_pairs_changed(self) -> None:
+        """Emit ``pairs_changed`` with the current selection."""
+        we, re_ce = self.selected_pairs()
+        self.pairs_changed.emit(we, re_ce)

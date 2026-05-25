@@ -220,6 +220,29 @@ class CSVExporter:
                     f"{k}={v}" for k, v in result.params.items()
                 )
                 f.write(f"# Parameters: {params_str}\n")
+
+            # Electrode-config provenance (per-channel; preserves the
+            # mode + RE/CE position that was active during this run).
+            # Back-compat: empty / missing fields default to "external"
+            # with RE/CE = 1 (legacy behaviour pre-WS-batch-2).
+            mode = (
+                getattr(result, "electrode_config_mode", "")
+                or "external"
+            )
+            f.write(f"# Electrode config: {mode}\n")
+            re_ce_list = (
+                getattr(result, "re_ce_channels", None) or []
+            )
+            re_ce_for_ch = 1
+            try:
+                idx = result.channels.index(ch_data.channel)
+                if 0 <= idx < len(re_ce_list):
+                    re_ce_for_ch = int(re_ce_list[idx])
+            except (ValueError, AttributeError):
+                # ch_data.channel not in result.channels OR result.
+                # channels missing: fall back to legacy default.
+                re_ce_for_ch = 1
+            f.write(f"# RE/CE channel: {re_ce_for_ch}\n")
             f.write("#\n")
 
             # Data rows

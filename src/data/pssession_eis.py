@@ -138,6 +138,20 @@ def build_eis_measurement(
         Measurement dict matching PSTrace EIS structure.
     """
     measured = result.measured_channels
+
+    # Per-channel RE/CE lookup for electrode-config metadata on each
+    # EISData entry.  Backward compat: legacy results without
+    # re_ce_channels fall back to RE/CE = 1 (the historical "shared
+    # reference" assumption).
+    electrode_mode = (
+        getattr(result, "electrode_config_mode", "") or "external"
+    )
+    re_ce_list = getattr(result, "re_ce_channels", []) or []
+    re_ce_by_channel: dict[int, int] = {}
+    for cfg_idx, cfg_ch in enumerate(result.channels):
+        if cfg_idx < len(re_ce_list):
+            re_ce_by_channel[cfg_ch] = re_ce_list[cfg_idx]
+
     eis_data_list: list[dict[str, Any]] = []
     last_dataset: dict[str, Any] | None = None
 
@@ -460,12 +474,17 @@ def build_eis_measurement(
             ],
         }
 
-        # EISDataList entry
+        # EISDataList entry.  ``MUXChannel`` / ``ReCeChannel`` /
+        # ``ElectrodeConfigMode`` record the wiring that produced this
+        # impedance spectrum (electrode-config metadata follow-up).
         eis_entry: dict[str, Any] = {
             "Appearance": default_appearance(),
             "Title": f"CH {ch}: {n_freq} freqs",
             "Hash": random_hash(),
             "Type": "PalmSens.Plottables.EISData",
+            "MUXChannel": ch,
+            "ReCeChannel": re_ce_by_channel.get(ch, 1),
+            "ElectrodeConfigMode": electrode_mode,
             "ScanType": 2,
             "FreqType": 1,
             "CDC": None,
