@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -327,15 +328,29 @@ class TechniquePanel(QGroupBox):
         )
         preset_row.addWidget(self._preset_combo, 1)
 
-        self._save_preset_btn = QPushButton("Save...")
+        # Icon-only buttons to keep the preset row compact; tooltips
+        # carry the labels for discoverability.
+        style = self.style()
+
+        self._save_preset_btn = QPushButton()
+        self._save_preset_btn.setIcon(
+            style.standardIcon(
+                QStyle.StandardPixmap.SP_DialogSaveButton
+            )
+        )
         self._save_preset_btn.setToolTip("Save current settings as preset")
+        self._save_preset_btn.setFixedWidth(32)
         self._save_preset_btn.clicked.connect(
             self.save_preset_requested.emit
         )
         preset_row.addWidget(self._save_preset_btn)
 
-        self._delete_preset_btn = QPushButton("Delete...")
+        self._delete_preset_btn = QPushButton()
+        self._delete_preset_btn.setIcon(
+            style.standardIcon(QStyle.StandardPixmap.SP_TrashIcon)
+        )
         self._delete_preset_btn.setToolTip("Delete the selected preset")
+        self._delete_preset_btn.setFixedWidth(32)
         self._delete_preset_btn.setEnabled(False)
         self._delete_preset_btn.clicked.connect(self._on_delete_clicked)
         preset_row.addWidget(self._delete_preset_btn)
