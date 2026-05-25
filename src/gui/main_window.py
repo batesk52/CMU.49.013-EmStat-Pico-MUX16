@@ -522,6 +522,10 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_measurement_started(self, technique: str) -> None:
         """Handle measurement_started signal from engine."""
+        # Prevent Export from silently writing the prior run's data
+        # if the user invokes it before this run completes.
+        self._last_result = None
+        self._export_action.setEnabled(False)
         self._meas_panel.set_running()
         self._status_progress.setText(
             f"Running: {technique.upper()}"
