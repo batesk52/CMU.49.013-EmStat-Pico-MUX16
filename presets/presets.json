@@ -1,4 +1,28 @@
 {
+  "no_sensing": {
+    "name": "NO Sensing (DARPA IV&V)",
+    "technique": "ca",
+    "params": {
+      "e_dc": 0.85,
+      "t_run": 10.0,
+      "t_interval": 0.1,
+      "bw_hz": 400
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "auto_save": true,
+    "description": "NO biosensor: CA at 0.85V, channels 1-8, auto-save enabled",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
+  },
   "eis_tck_standard": {
     "name": "EIS_TCK_standard",
     "technique": "eis",
@@ -38,25 +62,6 @@
     ],
     "auto_save": false,
     "description": "User preset: CV_TCK_standard",
-    "electrode_config_mode": "external",
-    "re_ce_channels": []
-  },
-  "swv_validation": {
-    "name": "SWV Validation",
-    "technique": "swv",
-    "params": {
-      "e_begin": -0.2,
-      "e_end": 0.6,
-      "e_step": 0.005,
-      "amplitude": 0.025,
-      "frequency": 25.0,
-      "cr": "100u"
-    },
-    "channels": [
-      1
-    ],
-    "auto_save": false,
-    "description": "SWV validation: ferricyanide, Notion CMU.17.012 Step 1 params",
     "electrode_config_mode": "external",
     "re_ce_channels": []
   },
@@ -264,7 +269,7 @@
       16
     ],
     "auto_save": true,
-    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period — recompute N if stirrer changes.",
+    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period \u2014 recompute N if stirrer changes.",
     "electrode_config_mode": "external",
     "re_ce_channels": []
   }
