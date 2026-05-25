@@ -205,3 +205,7 @@ class PresetManager:
             self._save()
             return True
         return False
+
+    def is_builtin(self, key: str) -> bool:
+        """Return True if ``key`` refers to an undeletable built-in preset."""
+        return key in _BUILTIN_PRESETS

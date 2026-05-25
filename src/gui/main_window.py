@@ -368,6 +368,9 @@ class MainWindow(QMainWindow):
         self._tech_panel.save_preset_requested.connect(
             self._on_save_preset
         )
+        self._tech_panel.delete_preset_requested.connect(
+            self._on_delete_preset
+        )
 
         # Engine signals -> GUI updates
         self._engine.data_point_ready.connect(
@@ -790,7 +793,10 @@ class MainWindow(QMainWindow):
             k: p.name
             for k, p in self._preset_mgr.get_all().items()
         }
-        self._tech_panel.refresh_presets(presets)
+        deletable = {
+            k for k in presets if not self._preset_mgr.is_builtin(k)
+        }
+        self._tech_panel.refresh_presets(presets, deletable=deletable)
 
     @pyqtSlot()
     def _on_save_preset(self) -> None:
@@ -827,6 +833,38 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(f"Preset saved: {name}")
         logger.info("Saved preset: %s (key=%s)", name, key)
+
+    @pyqtSlot(str)
+    def _on_delete_preset(self, key: str) -> None:
+        """Confirm and delete a user preset."""
+        preset = self._preset_mgr.get_preset(key)
+        if preset is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete Preset",
+            f'Delete preset "{preset.name}"? This cannot be undone.',
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self._preset_mgr.delete_preset(key):
+            self._load_presets_into_ui()
+            self.statusBar().showMessage(
+                f"Deleted preset: {preset.name}"
+            )
+            logger.info(
+                "Deleted preset: %s (key=%s)", preset.name, key
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Delete Failed",
+                f"Could not delete '{preset.name}' "
+                "(built-in presets cannot be removed).",
+            )
 
     @pyqtSlot(str)
     def _on_preset_selected(self, key: str) -> None:

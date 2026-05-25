@@ -302,10 +302,12 @@ class TechniquePanel(QGroupBox):
     params_changed = pyqtSignal()
     preset_selected = pyqtSignal(str)  # preset key
     save_preset_requested = pyqtSignal()
+    delete_preset_requested = pyqtSignal(str)  # preset key to delete
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Technique", parent)
         self._param_widgets: dict[str, QWidget] = {}
+        self._deletable_keys: set[str] = set()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -331,6 +333,12 @@ class TechniquePanel(QGroupBox):
             self.save_preset_requested.emit
         )
         preset_row.addWidget(self._save_preset_btn)
+
+        self._delete_preset_btn = QPushButton("Delete...")
+        self._delete_preset_btn.setToolTip("Delete the selected preset")
+        self._delete_preset_btn.setEnabled(False)
+        self._delete_preset_btn.clicked.connect(self._on_delete_clicked)
+        preset_row.addWidget(self._delete_preset_btn)
         layout.addLayout(preset_row)
 
         # Separator
@@ -442,27 +450,43 @@ class TechniquePanel(QGroupBox):
                     widget.setCurrentIndex(idx)
 
     def refresh_presets(
-        self, presets: dict[str, str]
+        self,
+        presets: dict[str, str],
+        deletable: Optional[set[str]] = None,
     ) -> None:
         """Reload the preset combo box.
 
         Args:
             presets: Dict mapping preset keys to display names.
+            deletable: Keys the user is allowed to delete (built-ins
+                excluded). If None, no preset is deletable.
         """
+        self._deletable_keys = deletable or set()
         self._preset_combo.blockSignals(True)
         self._preset_combo.clear()
         self._preset_combo.addItem("(No Preset)", "")
         for key, name in sorted(presets.items()):
             self._preset_combo.addItem(name, key)
         self._preset_combo.blockSignals(False)
+        # Selection resets to "(No Preset)" after a rebuild.
+        self._delete_preset_btn.setEnabled(False)
 
     # ---- Internal --------------------------------------------------------
 
     def _on_preset_selected(self, index: int) -> None:
         """Handle preset combo box selection change."""
         key = self._preset_combo.itemData(index)
+        self._delete_preset_btn.setEnabled(
+            bool(key) and key in self._deletable_keys
+        )
         if key:
             self.preset_selected.emit(key)
+
+    def _on_delete_clicked(self) -> None:
+        """Emit delete request for the currently selected preset."""
+        key = self._preset_combo.currentData()
+        if key:
+            self.delete_preset_requested.emit(key)
 
     def _on_technique_selected(self, index: int) -> None:
         """Handle technique combo box selection change."""
