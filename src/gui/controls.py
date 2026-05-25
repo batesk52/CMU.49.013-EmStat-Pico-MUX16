@@ -593,7 +593,7 @@ class TechniquePanel(QGroupBox):
                     else str(hz)
                 )
                 combo.addItem(label, hz)
-            # Default selection (matches no_sensing preset / scripts default)
+            # Default selection (matches scripts default bw_hz=400)
             try:
                 default_hz = float(default)
             except (TypeError, ValueError):

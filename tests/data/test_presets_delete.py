@@ -8,13 +8,8 @@ GUI can disable Delete on undeletable selections without trial-and-error.
 
 from __future__ import annotations
 
+from src.data import presets as presets_module
 from src.data.presets import Preset, PresetManager
-
-
-def test_is_builtin_true_for_no_sensing(tmp_path) -> None:
-    """The shipped built-in 'no_sensing' is reported as built-in."""
-    mgr = PresetManager(path=str(tmp_path / "presets.json"))
-    assert mgr.is_builtin("no_sensing") is True
 
 
 def test_is_builtin_false_for_user_key(tmp_path) -> None:
@@ -56,10 +51,20 @@ def test_delete_persists_across_manager_reload(tmp_path) -> None:
     assert reloaded.get_preset("tmp") is None
 
 
-def test_delete_builtin_refused_and_preset_survives(tmp_path) -> None:
-    """delete_preset returns False on built-ins and leaves them intact."""
-    mgr = PresetManager(path=str(tmp_path / "presets.json"))
-    assert mgr.get_preset("no_sensing") is not None
+def test_delete_builtin_refused_when_one_exists(
+    tmp_path, monkeypatch
+) -> None:
+    """delete_preset refuses to remove entries in _BUILTIN_PRESETS.
 
-    assert mgr.delete_preset("no_sensing") is False
-    assert mgr.get_preset("no_sensing") is not None
+    Injects a synthetic built-in so the mechanism stays covered even
+    though no presets ship as built-in by default.
+    """
+    monkeypatch.setitem(
+        presets_module._BUILTIN_PRESETS,
+        "_test_builtin",
+        Preset(name="Test Builtin", technique="cv"),
+    )
+    mgr = PresetManager(path=str(tmp_path / "presets.json"))
+    assert mgr.is_builtin("_test_builtin") is True
+    assert mgr.delete_preset("_test_builtin") is False
+    assert mgr.get_preset("_test_builtin") is not None

@@ -64,26 +64,10 @@ class Preset:
 # Built-in presets
 # ---------------------------------------------------------------------------
 
-_BUILTIN_PRESETS: dict[str, Preset] = {
-    "no_sensing": Preset(
-        name="NO Sensing (DARPA IV&V)",
-        technique="ca",
-        params={
-            "e_dc": 0.85,
-            "t_run": 10.0,
-            "t_interval": 0.1,
-            "bw_hz": 400,
-        },
-        channels=list(range(1, 9)),
-        auto_save=True,
-        description=(
-            "NO biosensor: CA at 0.85V, channels 1-8, "
-            "auto-save enabled"
-        ),
-        electrode_config_mode="external",
-        re_ce_channels=[],
-    ),
-}
+# Presets here are injected at load time and protected from deletion via
+# the GUI. Empty by default — all shipped presets live in presets.json
+# so users can manage them with Save/Delete without code changes.
+_BUILTIN_PRESETS: dict[str, Preset] = {}
 
 
 # ---------------------------------------------------------------------------
