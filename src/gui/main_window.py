@@ -26,10 +26,12 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
+    QComboBox,
     QDockWidget,
     QFileDialog,
     QInputDialog,
@@ -70,6 +72,26 @@ logger = logging.getLogger(__name__)
 # Application metadata
 APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
+
+
+class _NoWheelScrollFilter(QObject):
+    """Swallow mouse-wheel events on combo boxes and spin boxes.
+
+    Without this, mouse-scrolling over a QComboBox or QSpinBox/
+    QDoubleSpinBox silently changes its value — easy to do by accident
+    while scrolling the surrounding panel, and impossible to notice
+    mid-experiment when the dropdown is on a preset or technique
+    selector. Installed application-wide so every existing and future
+    combo/spinbox is covered without per-widget plumbing.
+    """
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.Wheel and isinstance(
+            obj, (QComboBox, QAbstractSpinBox)
+        ):
+            event.ignore()
+            return True
+        return False
 
 
 class _LogSignalBridge(QObject):
@@ -124,6 +146,13 @@ class MainWindow(QMainWindow):
         self._last_result: Optional[MeasurementResult] = None
         self._preset_mgr = PresetManager()
         self._auto_save_active = False
+
+        # Install app-wide filter that blocks accidental wheel-scroll
+        # changes on combo boxes and spin boxes.
+        self._no_wheel_filter = _NoWheelScrollFilter(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._no_wheel_filter)
 
         # Build UI
         self._build_central_widget()
