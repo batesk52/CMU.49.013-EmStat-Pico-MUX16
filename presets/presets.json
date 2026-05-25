@@ -1,4 +1,26 @@
 {
+  "no_sensing": {
+    "name": "NO Sensing (DARPA IV&V)",
+    "technique": "ca",
+    "params": {
+      "e_dc": 0.85,
+      "t_run": 10.0,
+      "t_interval": 0.1,
+      "bw_hz": 400
+    },
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "auto_save": true,
+    "description": "NO biosensor: CA at 0.85V, channels 1-8, auto-save enabled"
+  },
   "eis_tck_standard": {
     "name": "EIS_TCK_standard",
     "technique": "eis",
@@ -203,13 +225,27 @@
       "e_vertex2": 0.2,
       "e_step": 0.005,
       "scan_rate": 0.05,
-      "n_scans": 100,
-      "cr": "2u"
+      "n_scans": 5,
+      "cr": "32u",
+      "bw_hz": 400
     },
     "channels": [
+      1,
+      2,
+      3,
       4,
+      5,
+      6,
+      7,
+      8,
       9,
-      11
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16
     ],
     "auto_save": false,
     "description": "User preset: Chu_2023_mPD"
@@ -220,7 +256,7 @@
     "params": {
       "t_eq": 0.0,
       "e_dc": 0.7,
-      "t_run": 600.0,
+      "t_run": 5000.0,
       "t_interval": 11.0,
       "settle_time": 0.2,
       "samples_per_visit": 11,
@@ -246,6 +282,6 @@
       16
     ],
     "auto_save": true,
-    "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period \u2014 recompute N if stirrer changes."
+    "description": "User preset: CA 16ch Stirred Optimal"
   }
 }
