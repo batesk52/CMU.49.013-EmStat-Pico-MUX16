@@ -190,3 +190,31 @@ def test_generate_manual_re_ce_per_step_propagates_to_script() -> None:
     assert "set_gpio 0x002i" in script, (
         f"Missing manual-mode step-2 GPIO 0x002i in:\n{script}"
     )
+
+
+@pytest.mark.parametrize("technique", ["cv", "fcv"])
+def test_open_cycle_cv_rejected(technique: str) -> None:
+    """e_begin != e_vertex2 must raise before reaching the device.
+
+    Reproduces the 2026-05-31 hardware !0007 (begin=-0.2, vertex2=0.2)
+    so the cryptic device error surfaces as a clear ValueError instead.
+    """
+    with pytest.raises(ValueError, match="closed cycle"):
+        generate(
+            technique=technique,
+            params={"e_begin": -0.2, "e_vertex1": 0.8, "e_vertex2": 0.2},
+            channels=[1],
+        )
+
+
+@pytest.mark.parametrize("technique", ["cv", "fcv"])
+def test_closed_cycle_cv_accepted(technique: str) -> None:
+    """e_begin == e_vertex2 generates a script without error."""
+    script_lines = generate(
+        technique=technique,
+        params={"e_begin": -0.2, "e_vertex1": 0.8, "e_vertex2": -0.2},
+        channels=[1],
+    )
+    assert any(f"meas_loop_{technique} " in ln for ln in script_lines), (
+        f"Expected a meas_loop_{technique} line in:\n{script_lines}"
+    )

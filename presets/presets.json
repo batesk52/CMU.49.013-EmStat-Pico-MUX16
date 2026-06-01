@@ -286,5 +286,47 @@
     "description": "16-channel CA with Bar #1 (4.4 Hz) stirring. ~0.4 nA noise, ~10 s/round per channel. Validated 2026-05-17 (see exports/multiplexing_characterization/README.md). N=11 box-filter null at 2x stirrer period \u2014 recompute N if stirrer changes.",
     "electrode_config_mode": "external",
     "re_ce_channels": []
+  },
+  "tsc_eis_1": {
+    "name": "TSC_EIS_1",
+    "technique": "eis",
+    "params": {
+      "t_eq": 5.0,
+      "e_dc": 0.22,
+      "e_ac": 0.01,
+      "freq_start": 100000.0,
+      "freq_end": 0.1,
+      "n_freq": 50,
+      "cr": "100u"
+    },
+    "channels": [
+      1,
+      2
+    ],
+    "auto_save": false,
+    "description": "User preset: TSC_EIS_1",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
+  },
+  "tsc_eis_2": {
+    "name": "TSC_EIS_2",
+    "technique": "eis",
+    "params": {
+      "t_eq": 5.0,
+      "e_dc": 0.22,
+      "e_ac": 0.01,
+      "freq_start": 100000.0,
+      "freq_end": 10.0,
+      "n_freq": 50,
+      "cr": "100u"
+    },
+    "channels": [
+      2,
+      3
+    ],
+    "auto_save": false,
+    "description": "User preset: TSC_EIS_2",
+    "electrode_config_mode": "external",
+    "re_ce_channels": []
   }
 }

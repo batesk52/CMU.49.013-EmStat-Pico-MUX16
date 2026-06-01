@@ -507,6 +507,33 @@ def _gen_acv(params: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _validate_cv_cycle(params: dict[str, Any]) -> None:
+    """Validate that a CV sweep forms a closed cycle.
+
+    The EmStat Pico runs the cyclic sweep ``e_begin → e_vertex1 →
+    e_vertex2 → e_begin``, so the return vertex (``e_vertex2``) must
+    equal ``e_begin``. An open cycle is rejected by the firmware with
+    the generic ``!0007`` (invalid-parameter) error pointing only at
+    the ``meas_loop_cv`` line, which is hard to diagnose — so we fail
+    loudly here instead. Hardware-confirmed 2026-05-31.
+
+    Args:
+        params: Technique parameters; ``e_begin`` and ``e_vertex2``
+            fall back to the CV defaults if absent.
+
+    Raises:
+        ValueError: If ``e_begin`` and ``e_vertex2`` differ.
+    """
+    e_begin = float(params.get("e_begin", -0.5))
+    e_vertex2 = float(params.get("e_vertex2", -0.5))
+    if e_begin != e_vertex2:
+        raise ValueError(
+            f"CV must form a closed cycle: e_begin ({e_begin} V) must "
+            f"equal e_vertex2 ({e_vertex2} V). Open cycles are rejected "
+            "by the device with error !0007."
+        )
+
+
 def _gen_cv(params: dict[str, Any]) -> list[str]:
     """Generate meas_loop_cv script body.
 
@@ -520,6 +547,7 @@ def _gen_cv(params: dict[str, Any]) -> list[str]:
     scales with N only (not N × channels) and the buffer-overflow
     concern that originally motivated the device-side wrap is avoided.
     """
+    _validate_cv_cycle(params)
     e_begin = _format_si(params.get("e_begin", -0.5))
     e_vertex1 = _format_si(params.get("e_vertex1", 0.5))
     e_vertex2 = _format_si(params.get("e_vertex2", -0.5))
@@ -685,6 +713,7 @@ def _gen_lsp(params: dict[str, Any]) -> list[str]:
 
 def _gen_fcv(params: dict[str, Any]) -> list[str]:
     """Generate meas_loop_fcv (fast cyclic voltammetry) body."""
+    _validate_cv_cycle(params)
     e_begin = _format_si(params.get("e_begin", -0.5))
     e_vertex1 = _format_si(params.get("e_vertex1", 0.5))
     e_vertex2 = _format_si(params.get("e_vertex2", -0.5))
