@@ -176,9 +176,22 @@ def build_method_string(
         "NOTES=",
     ]
 
+    # PSTrace reads the amperometry (CA) DC potential under the key "E"
+    # and equilibration under "T_EQUIL" — not the generic uppercased
+    # E_DC/T_EQ our dump produced, which PSTrace ignored (showing its
+    # 0.5 V template default). Map to the keys PSTrace actually reads.
+    # Verified against a native PSTrace .pssession; see
+    # docs/references/pstrace_amperometry_method.md. (T_RUN/T_INTERVAL
+    # already match PSTrace, so they round-tripped correctly.)
+    key_overrides = (
+        {"e_dc": "E", "t_eq": "T_EQUIL"}
+        if technique in ("ca", "ca_alt_mux", "fca")
+        else {}
+    )
+
     # Add technique parameters in scientific notation
     for k, v in result.params.items():
-        key_upper = k.upper()
+        key_upper = key_overrides.get(k, k.upper())
         if isinstance(v, bool):
             lines.append(f"{key_upper}={v}")
         elif isinstance(v, float):
