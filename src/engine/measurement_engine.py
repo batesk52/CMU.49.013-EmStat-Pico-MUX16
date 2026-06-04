@@ -214,6 +214,12 @@ class MeasurementEngine(QThread):
             msg = f"Unexpected error: {exc}"
             logger.error(msg, exc_info=True)
             self.measurement_error.emit(msg)
+        except BaseException:
+            # Cover control-flow exceptions (KeyboardInterrupt/SystemExit)
+            # so the cell is de-energized even on an abnormal thread exit;
+            # re-raise — we must not swallow these.
+            self._ensure_cell_off()
+            raise
 
     # ---- Internal implementation -----------------------------------------
 

@@ -439,6 +439,13 @@ class PicoConnection:
 
         Args:
             timeout: New timeout in seconds.
+
+        Note:
+            Do not call this while a ``read_response`` is in flight on
+            another thread: that read restores the port's prior timeout in
+            its ``finally``, which would clobber the value set here. In
+            normal use only the engine thread reads during a measurement,
+            so this is not exercised concurrently.
         """
         self._ensure_connected()
         # Lock the shared-port mutation so it can't tear against a

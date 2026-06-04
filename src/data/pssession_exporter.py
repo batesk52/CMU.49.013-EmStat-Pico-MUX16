@@ -267,11 +267,13 @@ class PsSessionExporter:
             + json_str.encode("utf-16-le")
             + "\ufeff".encode("utf-16-le")  # trailing BOM
         )
-        # Write atomically: a single buffer to a temp file, then os.replace
-        # onto the destination. This guarantees a reader never sees a
-        # half-written file, and a crash mid-write can't destroy a prior
-        # good copy at output_path (the in-place "wb" open truncated it
-        # immediately before).
+        # Write to a temp file, then os.replace onto the destination. The
+        # replace is atomic on the same filesystem, so a reader sees either
+        # the old file or the fully-written new one — never a half-written
+        # file, and a crash mid-write can't destroy a prior good copy (the
+        # old in-place "wb" open truncated output_path immediately). Note:
+        # full crash durability of the new directory entry would also need
+        # an fsync of the parent directory, which is not done here.
         tmp_path = f"{output_path}.tmp"
         try:
             with open(tmp_path, "wb") as f:

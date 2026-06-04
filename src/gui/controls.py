@@ -267,13 +267,15 @@ class ConnectionPanel(QGroupBox):
     def set_connecting(self) -> None:
         """Show a busy state while the connect handshake runs off-thread.
 
-        Disables the connect controls so the user can't fire a second
-        connect while the first is in flight.
+        Disables both connect AND disconnect controls so the user can't
+        fire a second connect, or a disconnect, while a handshake is in
+        flight (which would race two operations on one connection).
         """
         self._connect_btn.setEnabled(False)
+        self._disconnect_btn.setEnabled(False)
         self._port_combo.setEnabled(False)
         self._refresh_btn.setEnabled(False)
-        self._status_label.setText("Connecting…")
+        self._status_label.setText("Connecting...")
         self._status_label.setStyleSheet(
             "color: #888; font-weight: bold;"
         )

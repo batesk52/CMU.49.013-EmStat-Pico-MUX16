@@ -29,18 +29,12 @@ from typing import Optional
 from PyQt6.QtCore import (
     QEvent,
     QObject,
-    QPropertyAnimation,
-    QRectF,
-    QSize,
     Qt,
-    QThread,
-    pyqtProperty,
     pyqtSignal,
     pyqtSlot,
 )
-from PyQt6.QtGui import QAction, QColor, QPainter
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QAbstractButton,
     QAbstractSpinBox,
     QApplication,
     QComboBox,
@@ -58,7 +52,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.comms.serial_connection import PicoConnection, PicoConnectionError
+from src.comms.serial_connection import PicoConnection
 from src.data.exporters import PsSessionExporter
 from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
@@ -79,6 +73,8 @@ from src.gui.controls import (
 )
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
+from src.gui.toggle_switch import ToggleSwitch
+from src.gui.workers import ConnectWorker
 
 logger = logging.getLogger(__name__)
 
@@ -145,105 +141,6 @@ class _LogHandler(logging.Handler):
         self._bridge.log_message.emit(msg)
 
 
-class _ConnectWorker(QThread):
-    """Runs the blocking connect handshake off the GUI thread.
-
-    ``PicoConnection.connect()`` opens the port and then performs blocking
-    firmware/serial-number queries (up to several seconds on a bad port).
-    Running it on the GUI thread freezes the event loop, so it is executed
-    here and the result is delivered back via signals.
-    """
-
-    succeeded = pyqtSignal(str)  # firmware version
-    failed = pyqtSignal(str)  # error message
-
-    def __init__(
-        self,
-        connection: PicoConnection,
-        port: str,
-        parent: Optional[QObject] = None,
-    ) -> None:
-        super().__init__(parent)
-        self._connection = connection
-        self._port = port
-
-    def run(self) -> None:
-        try:
-            self._connection.connect(self._port)
-        except Exception as exc:  # noqa: BLE001 - reported to the GUI
-            self.failed.emit(str(exc))
-            return
-        self.succeeded.emit(self._connection.firmware_version or "")
-
-
-class _ToggleSwitch(QAbstractButton):
-    """A small animated sliding on/off switch (checkable).
-
-    PyQt6 has no native switch widget, so this paints a rounded track
-    with a sliding thumb and animates between states. Emits the standard
-    ``toggled(bool)`` signal like any checkable button.
-    """
-
-    _OFF_COLOR = QColor("#5a5a5a")
-    _ON_COLOR = QColor("#e08a1e")  # amber — signals "verbose/diagnostic"
-    _THUMB_COLOR = QColor("#f5f5f5")
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self.setCheckable(True)
-        self._width = 52
-        self._height = 26
-        self._margin = 3
-        self.setFixedSize(self._width, self._height)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._thumb = 0.0  # 0.0 = off (left), 1.0 = on (right)
-        self._anim = QPropertyAnimation(self, b"thumbPosition", self)
-        self._anim.setDuration(120)
-        self.toggled.connect(self._animate)
-
-    def sizeHint(self) -> QSize:
-        return QSize(self._width, self._height)
-
-    def _animate(self, checked: bool) -> None:
-        self._anim.stop()
-        self._anim.setStartValue(self._thumb)
-        self._anim.setEndValue(1.0 if checked else 0.0)
-        self._anim.start()
-
-    def _get_thumb(self) -> float:
-        return self._thumb
-
-    def _set_thumb(self, value: float) -> None:
-        self._thumb = value
-        self.update()
-
-    thumbPosition = pyqtProperty(float, fget=_get_thumb, fset=_set_thumb)
-
-    def paintEvent(self, _event: QEvent) -> None:
-        t = self._thumb
-        track = QColor(
-            int(self._OFF_COLOR.red()
-                + (self._ON_COLOR.red() - self._OFF_COLOR.red()) * t),
-            int(self._OFF_COLOR.green()
-                + (self._ON_COLOR.green() - self._OFF_COLOR.green()) * t),
-            int(self._OFF_COLOR.blue()
-                + (self._ON_COLOR.blue() - self._OFF_COLOR.blue()) * t),
-        )
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        radius = self._height / 2
-        painter.setBrush(track)
-        painter.drawRoundedRect(
-            0, 0, self._width, self._height, radius, radius
-        )
-        diameter = self._height - 2 * self._margin
-        travel = self._width - 2 * self._margin - diameter
-        x = self._margin + t * travel
-        painter.setBrush(self._THUMB_COLOR)
-        painter.drawEllipse(QRectF(x, self._margin, diameter, diameter))
-
-
 class MainWindow(QMainWindow):
     """Main application window for the EmStat Pico MUX16 Controller.
 
@@ -274,7 +171,7 @@ class MainWindow(QMainWindow):
         self._preset_mgr = PresetManager()
         self._auto_save_active = False
         # Background worker for the (blocking) connect handshake.
-        self._connect_worker: Optional[_ConnectWorker] = None
+        self._connect_worker: Optional[ConnectWorker] = None
         self._connect_port: str = ""
 
         # Install app-wide filter that blocks accidental wheel-scroll
@@ -350,7 +247,7 @@ class MainWindow(QMainWindow):
         )
         self._info_label = QLabel("INFO")
         self._debug_label = QLabel("DEBUG")
-        self._log_switch = _ToggleSwitch()
+        self._log_switch = ToggleSwitch()
         self._log_switch.setToolTip(
             "Set logging to DEBUG. Shows the device's raw marker stream "
             "and end-of-measurement diagnostics. Verbose — leave off for "
@@ -614,18 +511,19 @@ class MainWindow(QMainWindow):
         # block the GUI event loop.
         self._conn_panel.set_connecting()
         self._connect_port = port
-        self._connect_worker = _ConnectWorker(
-            self._connection, port, self
-        )
-        self._connect_worker.succeeded.connect(
-            self._on_connect_succeeded
-        )
-        self._connect_worker.failed.connect(self._on_connect_failed)
-        self._connect_worker.start()
+        worker = ConnectWorker(self._connection, port, self)
+        worker.succeeded.connect(self._on_connect_succeeded)
+        worker.failed.connect(self._on_connect_failed)
+        # Free the QThread once it finishes so workers don't accumulate as
+        # MainWindow children across repeated connect attempts.
+        worker.finished.connect(worker.deleteLater)
+        self._connect_worker = worker
+        worker.start()
 
     @pyqtSlot(str)
     def _on_connect_succeeded(self, firmware: str) -> None:
         """Handle a successful connect handshake (GUI thread)."""
+        self._connect_worker = None
         self._conn_panel.set_connected(firmware)
         self._update_ui_connected()
         logger.info(
@@ -637,6 +535,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_connect_failed(self, message: str) -> None:
         """Handle a failed connect handshake (GUI thread)."""
+        self._connect_worker = None
         self._conn_panel.set_error(message)
         logger.error("Connection failed: %s", message)
 

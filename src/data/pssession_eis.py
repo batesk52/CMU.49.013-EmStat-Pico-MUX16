@@ -208,10 +208,12 @@ def build_eis_measurement(
             cap_re.append(yr / omega)
             cap_im.append(yi_val / omega)
 
-        # Build the 22-array DataSetEIS. Use comprehensions (not
-        # ``[{...}] * n``) so each row is a distinct dict — list-multiply
-        # aliases one dict n times, which would make any future per-row
-        # mutation silently change every row (and every array reusing it).
+        # Placeholder zero-rows for unused DataSetEIS arrays. These are
+        # templates: every consumer below copies them per-row via
+        # ``[dict(r) for r in ...]`` so no dict instance is shared either
+        # within an array or across the (many) arrays that reuse a
+        # template — avoids the ``[{...}] * n`` / ``list(...)`` aliasing
+        # trap where a future per-row mutation would change every row.
         n = n_freq
         zeros_generic = [{"V": 0.0} for _ in range(n)]
         zeros_current = [{"V": 0.0, "C": 7, "S": 0} for _ in range(n)]
@@ -229,7 +231,7 @@ def build_eis_measurement(
                         "PalmSens.Data.CurrentReading"
                     ),
                     "Unit": UNIT_MICRO_AMPERE,
-                    "DataValues": list(zeros_current),
+                    "DataValues": [dict(r) for r in zeros_current],
                 },
                 # [1] potential
                 {
@@ -240,7 +242,7 @@ def build_eis_measurement(
                         "PalmSens.Data.VoltageReading"
                     ),
                     "Unit": UNIT_VOLT,
-                    "DataValues": list(zeros_voltage),
+                    "DataValues": [dict(r) for r in zeros_voltage],
                 },
                 # [2] time
                 {
@@ -251,7 +253,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": UNIT_TIME,
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [3] Frequency
                 {
@@ -317,7 +319,7 @@ def build_eis_measurement(
                         "PalmSens.Data.CurrentReading"
                     ),
                     "Unit": UNIT_MICRO_AMPERE,
-                    "DataValues": list(zeros_current),
+                    "DataValues": [dict(r) for r in zeros_current],
                 },
                 # [9] miDC
                 {
@@ -328,7 +330,7 @@ def build_eis_measurement(
                         "PalmSens.Data.CurrentReading"
                     ),
                     "Unit": UNIT_MICRO_AMPERE,
-                    "DataValues": list(zeros_current),
+                    "DataValues": [dict(r) for r in zeros_current],
                 },
                 # [10] mEdc
                 {
@@ -339,7 +341,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": UNIT_VOLT,
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [11] Eac
                 {
@@ -350,7 +352,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": UNIT_VOLT,
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [12] nPointsAC
                 {
@@ -361,7 +363,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": _fixed_unit("npoints"),
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [13] realtintac
                 {
@@ -372,7 +374,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": _fixed_unit("tint"),
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [14] ymean
                 {
@@ -383,7 +385,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": _fixed_unit("ymean"),
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [15] debugtext
                 {
@@ -394,7 +396,7 @@ def build_eis_measurement(
                         "PalmSens.Data.GenericValue"
                     ),
                     "Unit": _fixed_unit(""),
-                    "DataValues": list(zeros_generic),
+                    "DataValues": [dict(r) for r in zeros_generic],
                 },
                 # [16] Y (admittance magnitude)
                 {

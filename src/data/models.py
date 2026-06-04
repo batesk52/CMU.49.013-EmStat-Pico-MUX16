@@ -44,12 +44,18 @@ def default_re_ce_channel(electrode_config_mode: str) -> int:
     exported provenance stays consistent with the wiring the mode
     implies, instead of the historical hardcoded ``1``.
 
+    Note: ``manual`` mode has no single mode-implied RE/CE position (it
+    is per-channel), so it falls through to the external default (15).
+    A manual result should always carry an explicit ``re_ce_channels``
+    list, so this fallback is only a last resort for malformed/legacy
+    inputs and is not expected on the normal engine path.
+
     Args:
         electrode_config_mode: One of ``ELECTRODE_CONFIG_MODES``.
 
     Returns:
-        The RE/CE MUX channel for that mode (external/manual -> 15,
-        on_board -> 16).
+        The RE/CE MUX channel for that mode (on_board -> 16, otherwise
+        -> 15).
     """
     if electrode_config_mode == "on_board":
         return ON_BOARD_RE_CE_CHANNEL

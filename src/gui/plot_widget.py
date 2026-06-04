@@ -372,12 +372,12 @@ class LivePlotWidget(pg.PlotWidget):
             plot_kwargs["symbolPen"] = pg.mkPen(color)
 
         curve = self.plot([], [], **plot_kwargs)
-        # Auto-downsample + clip-to-view so render cost is bounded by the
-        # visible pixel count rather than the full point count on long runs
-        # (line plots only — keep every marker for EIS scatter plots).
-        if not self._is_eis:
-            curve.setDownsampling(auto=True, method="peak")
-            curve.setClipToView(True)
+        # NOTE: deliberately no setClipToView/setDownsampling here.
+        # clip-to-view requires monotonically-increasing X, which holds for
+        # time-series techniques but NOT for CV/FCV (X = swept potential,
+        # forward+reverse) — enabling it there renders a wedge. The ~30 Hz
+        # render throttle (see __init__) is the actual O(N^2) fix; render
+        # cost per frame is acceptable for the point counts seen here.
         self._curves[channel] = curve
         self._x_data[channel] = []
         self._y_data[channel] = []

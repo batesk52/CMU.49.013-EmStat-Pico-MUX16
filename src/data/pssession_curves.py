@@ -60,9 +60,10 @@ def build_curves_measurement(
     measured = result.measured_channels
 
     # Per-channel RE/CE lookup so each curve records the wiring that
-    # produced it.  Backward compat: when re_ce_channels is absent or
-    # shorter than channels, fall back to RE/CE = 1 (legacy "shared
-    # reference" assumption).
+    # produced it.  When re_ce_channels is absent or shorter than
+    # channels, fall back to the RE/CE position implied by the electrode
+    # mode (external/manual -> 15, on_board -> 16) via
+    # default_re_ce_channel().
     electrode_mode = (
         getattr(result, "electrode_config_mode", "") or "external"
     )
@@ -92,10 +93,13 @@ def build_curves_measurement(
         first_ch_data = result.channel_data(first_ch)
         n_total = len(first_ch_data.data_points)
         pts_per_scan = n_total // n_scans if n_scans > 0 else n_total
-        # The last scan absorbs any remainder when n_total is not evenly
-        # divisible by n_scans, so no trailing points are dropped from the
-        # .pssession (the CSV keeps every point — the two must agree).
-        last_scan_len = n_total - (n_scans - 1) * pts_per_scan
+        # NOTE: when n_total is not evenly divisible by n_scans the trailing
+        # (n_total % n_scans) points are not written to the .pssession (the
+        # CSV keeps every point). Recovering them naively makes the last
+        # scan longer than the others, which leaves the shared DataSet time
+        # array and the per-scan arrays mismatched in length — PSTrace may
+        # reject that. Proper fix is deferred until it can be validated by
+        # opening an uneven-split CV in PSTrace (bench item).
 
         # Time DataArray for DataSet (zero-based)
         time_values = first_ch_data.timestamps()
@@ -118,9 +122,7 @@ def build_curves_measurement(
             "DataValueType": "PalmSens.Data.GenericValue",
             "IntervalTime": interval,
             "Unit": UNIT_TIME,
-            "DataValues": [
-                {"V": t} for t in time_zeroed[:last_scan_len]
-            ],
+            "DataValues": [{"V": t} for t in time_zeroed[:pts_per_scan]],
         }
         dataset_values.append(time_arr)
 
@@ -133,12 +135,7 @@ def build_curves_measurement(
 
             for scan in range(n_scans):
                 start = scan * pts_per_scan
-                # Last scan takes all remaining points (see last_scan_len).
-                end = (
-                    n_total
-                    if scan == n_scans - 1
-                    else start + pts_per_scan
-                )
+                end = start + pts_per_scan
                 pot_slice = all_potentials[start:end]
                 cur_slice = all_currents[start:end]
                 time_slice = all_timestamps[start:end]
