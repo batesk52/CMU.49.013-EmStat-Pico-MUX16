@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from src.data.models import MeasurementResult
+from src.data.models import MeasurementResult, default_re_ce_channel
 from src.data.pssession_exporter import (
     UNIT_MICRO_AMPERE,
     UNIT_TIME,
@@ -208,11 +208,14 @@ def build_eis_measurement(
             cap_re.append(yr / omega)
             cap_im.append(yi_val / omega)
 
-        # Build the 22-array DataSetEIS
+        # Build the 22-array DataSetEIS. Use comprehensions (not
+        # ``[{...}] * n``) so each row is a distinct dict — list-multiply
+        # aliases one dict n times, which would make any future per-row
+        # mutation silently change every row (and every array reusing it).
         n = n_freq
-        zeros_generic = [{"V": 0.0}] * n
-        zeros_current = [{"V": 0.0, "C": 7, "S": 0}] * n
-        zeros_voltage = [{"V": 0.0, "S": 0, "R": 7}] * n
+        zeros_generic = [{"V": 0.0} for _ in range(n)]
+        zeros_current = [{"V": 0.0, "C": 7, "S": 0} for _ in range(n)]
+        zeros_voltage = [{"V": 0.0, "S": 0, "R": 7} for _ in range(n)]
 
         dataset_eis: dict[str, Any] = {
             "Type": "PalmSens.Data.DataSetEIS",
@@ -483,7 +486,9 @@ def build_eis_measurement(
             "Hash": random_hash(),
             "Type": "PalmSens.Plottables.EISData",
             "MUXChannel": ch,
-            "ReCeChannel": re_ce_by_channel.get(ch, 1),
+            "ReCeChannel": re_ce_by_channel.get(
+                ch, default_re_ce_channel(electrode_mode)
+            ),
             "ElectrodeConfigMode": electrode_mode,
             "ScanType": 2,
             "FreqType": 1,

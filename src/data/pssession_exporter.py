@@ -262,10 +262,30 @@ class PsSessionExporter:
         json_str = json.dumps(
             session, separators=(",", ":"), ensure_ascii=False
         )
-        with open(output_path, "wb") as f:
-            f.write(b"\xff\xfe")  # UTF-16 LE BOM
-            f.write(json_str.encode("utf-16-le"))
-            f.write("\ufeff".encode("utf-16-le"))  # trailing BOM
+        payload = (
+            b"\xff\xfe"  # UTF-16 LE BOM
+            + json_str.encode("utf-16-le")
+            + "\ufeff".encode("utf-16-le")  # trailing BOM
+        )
+        # Write atomically: a single buffer to a temp file, then os.replace
+        # onto the destination. This guarantees a reader never sees a
+        # half-written file, and a crash mid-write can't destroy a prior
+        # good copy at output_path (the in-place "wb" open truncated it
+        # immediately before).
+        tmp_path = f"{output_path}.tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, output_path)
+        except OSError:
+            # Clean up the temp file so a failed export leaves no debris.
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
 
         abs_path = os.path.abspath(output_path)
         logger.info("Wrote .pssession file: %s", abs_path)

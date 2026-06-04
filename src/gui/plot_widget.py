@@ -19,7 +19,7 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import QTimer, pyqtSlot
 
 from src.data.models import DataPoint
 
@@ -150,6 +150,17 @@ class LivePlotWidget(pg.PlotWidget):
         self._auto_range_enabled: bool = True
         self._user_interacted: bool = False
 
+        # Throttled rendering: add_point() only appends + marks the channel
+        # dirty; the actual setData redraw happens at most ~30 Hz via this
+        # timer. Without it, a fast stream rebuilds the full curve array on
+        # every point (O(N) per point → O(N^2) over the run) and can flood
+        # the event loop. A trailing flush keeps the final point visible.
+        self._dirty_channels: set[int] = set()
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(33)  # ~30 Hz
+        self._render_timer.timeout.connect(self._flush_dirty)
+        self._render_timer.start()
+
         # Configure plot appearance
         self._setup_plot()
 
@@ -238,14 +249,28 @@ class LivePlotWidget(pg.PlotWidget):
         self._x_data[channel].append(x)
         self._y_data[channel].append(y)
 
-        # Update the curve data
-        curve = self._curves[channel]
-        curve.setData(
-            np.array(self._x_data[channel]),
-            np.array(self._y_data[channel]),
-        )
+        # Defer the actual redraw to the throttled timer (see __init__).
+        self._dirty_channels.add(channel)
 
-        # Auto-range if user hasn't manually zoomed/panned
+    def _flush_dirty(self) -> None:
+        """Redraw any channels that gained points since the last tick.
+
+        Called by the render timer (~30 Hz) and directly on completion so
+        the final point is never left unrendered.
+        """
+        if not self._dirty_channels:
+            return
+        for channel in self._dirty_channels:
+            curve = self._curves.get(channel)
+            if curve is None:
+                continue
+            curve.setData(
+                np.array(self._x_data[channel]),
+                np.array(self._y_data[channel]),
+            )
+        self._dirty_channels.clear()
+
+        # Auto-range if the user hasn't manually zoomed/panned
         if self._auto_range_enabled and not self._user_interacted:
             self.getPlotItem().enableAutoRange()
 
@@ -260,6 +285,7 @@ class LivePlotWidget(pg.PlotWidget):
         self._curves.clear()
         self._x_data.clear()
         self._y_data.clear()
+        self._dirty_channels.clear()
         self._user_interacted = False
         self._auto_range_enabled = True
 
@@ -316,6 +342,9 @@ class LivePlotWidget(pg.PlotWidget):
 
         Re-enables auto-range so the full dataset is visible.
         """
+        # Render any points still pending from the throttle timer so the
+        # finished plot shows every collected point.
+        self._flush_dirty()
         self.enable_auto_range()
         logger.debug("Measurement finished — auto-range restored.")
 
@@ -343,6 +372,12 @@ class LivePlotWidget(pg.PlotWidget):
             plot_kwargs["symbolPen"] = pg.mkPen(color)
 
         curve = self.plot([], [], **plot_kwargs)
+        # Auto-downsample + clip-to-view so render cost is bounded by the
+        # visible pixel count rather than the full point count on long runs
+        # (line plots only — keep every marker for EIS scatter plots).
+        if not self._is_eis:
+            curve.setDownsampling(auto=True, method="peak")
+            curve.setClipToView(True)
         self._curves[channel] = curve
         self._x_data[channel] = []
         self._y_data[channel] = []

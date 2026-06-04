@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.data.models import MeasurementResult
+from src.data.models import MeasurementResult, default_re_ce_channel
 from src.data.pssession_exporter import (
     UNIT_MICRO_AMPERE,
     UNIT_MICRO_COULOMB,
@@ -73,7 +73,9 @@ def build_curves_measurement(
             re_ce_by_channel[ch] = re_ce_list[cfg_idx]
 
     def _re_ce_for(ch: int) -> int:
-        return re_ce_by_channel.get(ch, 1)
+        return re_ce_by_channel.get(
+            ch, default_re_ce_channel(electrode_mode)
+        )
 
     curves: list[dict[str, Any]] = []
     dataset_values: list[dict[str, Any]] = []
@@ -90,6 +92,10 @@ def build_curves_measurement(
         first_ch_data = result.channel_data(first_ch)
         n_total = len(first_ch_data.data_points)
         pts_per_scan = n_total // n_scans if n_scans > 0 else n_total
+        # The last scan absorbs any remainder when n_total is not evenly
+        # divisible by n_scans, so no trailing points are dropped from the
+        # .pssession (the CSV keeps every point — the two must agree).
+        last_scan_len = n_total - (n_scans - 1) * pts_per_scan
 
         # Time DataArray for DataSet (zero-based)
         time_values = first_ch_data.timestamps()
@@ -112,7 +118,9 @@ def build_curves_measurement(
             "DataValueType": "PalmSens.Data.GenericValue",
             "IntervalTime": interval,
             "Unit": UNIT_TIME,
-            "DataValues": [{"V": t} for t in time_zeroed[:pts_per_scan]],
+            "DataValues": [
+                {"V": t} for t in time_zeroed[:last_scan_len]
+            ],
         }
         dataset_values.append(time_arr)
 
@@ -125,7 +133,12 @@ def build_curves_measurement(
 
             for scan in range(n_scans):
                 start = scan * pts_per_scan
-                end = start + pts_per_scan
+                # Last scan takes all remaining points (see last_scan_len).
+                end = (
+                    n_total
+                    if scan == n_scans - 1
+                    else start + pts_per_scan
+                )
                 pot_slice = all_potentials[start:end]
                 cur_slice = all_currents[start:end]
                 time_slice = all_timestamps[start:end]

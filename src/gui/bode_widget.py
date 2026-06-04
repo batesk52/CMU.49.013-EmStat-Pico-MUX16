@@ -12,7 +12,7 @@ import math
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import QTimer, pyqtSlot
 
 from src.data.models import DataPoint
 from src.gui.plot_widget import CHANNEL_COLORS, CHANNEL_SYMBOLS
@@ -44,6 +44,14 @@ class BodePlotWidget(pg.GraphicsLayoutWidget):
         # Per-channel curve items for each subplot
         self._mag_curves: dict[int, pg.PlotDataItem] = {}
         self._phase_curves: dict[int, pg.PlotDataItem] = {}
+
+        # Throttled rendering (see LivePlotWidget): add_point() appends and
+        # marks the channel dirty; the redraw happens at most ~30 Hz.
+        self._dirty_channels: set[int] = set()
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(33)  # ~30 Hz
+        self._render_timer.timeout.connect(self._flush_dirty)
+        self._render_timer.start()
 
         self._setup_plots()
 
@@ -98,13 +106,24 @@ class BodePlotWidget(pg.GraphicsLayoutWidget):
         self._zmag[channel].append(impedance)
         self._phase[channel].append(phase)
 
-        freq_arr = np.array(self._freq[channel])
-        self._mag_curves[channel].setData(
-            freq_arr, np.array(self._zmag[channel])
-        )
-        self._phase_curves[channel].setData(
-            freq_arr, np.array(self._phase[channel])
-        )
+        # Defer the redraw to the throttled timer (see __init__).
+        self._dirty_channels.add(channel)
+
+    def _flush_dirty(self) -> None:
+        """Redraw channels that gained points since the last tick."""
+        if not self._dirty_channels:
+            return
+        for channel in self._dirty_channels:
+            mag_curve = self._mag_curves.get(channel)
+            phase_curve = self._phase_curves.get(channel)
+            if mag_curve is None or phase_curve is None:
+                continue
+            freq_arr = np.array(self._freq[channel])
+            mag_curve.setData(freq_arr, np.array(self._zmag[channel]))
+            phase_curve.setData(
+                freq_arr, np.array(self._phase[channel])
+            )
+        self._dirty_channels.clear()
 
     @pyqtSlot(object)
     def on_data_point(self, data_point: DataPoint) -> None:
@@ -142,6 +161,7 @@ class BodePlotWidget(pg.GraphicsLayoutWidget):
         self._freq.clear()
         self._zmag.clear()
         self._phase.clear()
+        self._dirty_channels.clear()
 
         if self._mag_legend is not None:
             self._mag_legend.clear()
@@ -152,6 +172,8 @@ class BodePlotWidget(pg.GraphicsLayoutWidget):
 
     def on_measurement_finished(self) -> None:
         """Handle measurement completion by restoring auto-range."""
+        # Render any points still pending from the throttle timer.
+        self._flush_dirty()
         self.enable_auto_range()
         logger.debug(
             "Bode measurement finished — auto-range restored."
