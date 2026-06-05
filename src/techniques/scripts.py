@@ -578,27 +578,42 @@ def _gen_ca(params: dict[str, Any]) -> list[str]:
 
 
 def _gen_fca(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_fca (fixed-potential CA) script body."""
-    e_dc = _format_si(params.get("e_dc", 0.2))
-    t_run = _format_si(params.get("t_run", 10.0))
-    t_interval = _format_si(params.get("t_interval", 0.1))
-    lines: list[str] = []
-    lines.append(
-        f"meas_loop_fca p c {e_dc} {t_run} {t_interval}"
+    """Fast Chronoamperometry — not supported on the EmStat Pico.
+
+    The previous implementation emitted ``meas_loop_fca``, which is not a
+    valid MethodSCRIPT command (the device rejects it with ``e!4001``).
+    The real Fast-CA command is ``meas_fast_ca`` (MethodSCRIPT v1.6
+    §14.40): it is **array-based** (results stored in an ``array``, no
+    in-loop packets) and marked "EmStat Pico N" — it requires an EmStat4
+    or Nexus. Rather than emit a script the Pico can't run, fail clearly.
+
+    Raises:
+        ValueError: always — FCA is unavailable on the EmStat Pico.
+    """
+    raise ValueError(
+        "Fast Chronoamperometry (FCA) is not supported on the EmStat "
+        "Pico. It requires the array-based 'meas_fast_ca' command "
+        "(EmStat4/Nexus only). Use standard CA ('ca') instead."
     )
-    lines.extend(_indent(_pck_amperometry()))
-    lines.append("endloop")
-    return lines
 
 
 def _gen_cp(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_cp script body."""
+    """Generate meas_loop_cp script body.
+
+    Per MethodSCRIPT v1.6 §14.41 the argument order is
+    ``p c <i_dc> <interval> <run_time>`` (interval BEFORE run, matching
+    the CA family) — the previous order had interval/run swapped.
+
+    NOTE: Chronopotentiometry needs a galvanostat and is NOT supported on
+    the EmStat Pico (manual: "EmStat Pico N"); the script is valid for
+    EmStat4/Nexus, and the Pico will reject it at runtime.
+    """
     i_dc = _format_si(params.get("i_dc", 0.0001))
     t_run = _format_si(params.get("t_run", 10.0))
     t_interval = _format_si(params.get("t_interval", 0.1))
     lines: list[str] = []
     lines.append(
-        f"meas_loop_cp p c {i_dc} {t_run} {t_interval}"
+        f"meas_loop_cp p c {i_dc} {t_interval} {t_run}"
     )
     lines.extend(_indent(_pck_potentiometry()))
     lines.append("endloop")
@@ -606,12 +621,19 @@ def _gen_cp(params: dict[str, Any]) -> list[str]:
 
 
 def _gen_ocp(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_ocp script body."""
+    """Generate meas_loop_ocp script body.
+
+    Per MethodSCRIPT v1.6 §14.44, ``meas_loop_ocp`` takes a SINGLE output
+    variable (the measured RE potential) followed by ``interval`` then
+    ``run_time`` — no current variable (it is an open-circuit reading).
+    Supported on the EmStat Pico.
+    """
     t_run = _format_si(params.get("t_run", 60.0))
     t_interval = _format_si(params.get("t_interval", 1.0))
     lines: list[str] = []
-    lines.append(f"meas_loop_ocp p c {t_run} {t_interval}")
-    lines.extend(_indent(_pck_potentiometry()))
+    lines.append(f"meas_loop_ocp p {t_interval} {t_run}")
+    # OCP measures potential only (no current at open circuit).
+    lines.extend(_indent(["pck_start", "pck_add p", "pck_end"]))
     lines.append("endloop")
     return lines
 
