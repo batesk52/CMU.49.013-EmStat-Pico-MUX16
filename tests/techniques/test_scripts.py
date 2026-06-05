@@ -218,3 +218,46 @@ def test_closed_cycle_cv_accepted(technique: str) -> None:
     assert any(f"meas_loop_{technique} " in ln for ln in script_lines), (
         f"Expected a meas_loop_{technique} line in:\n{script_lines}"
     )
+
+
+# ---------------------------------------------------------------------------
+# E3: meas_loop argument-order / command fixes against MethodSCRIPT v1.6
+# (§14.40 meas_fast_ca, §14.41 meas_loop_cp, §14.44 meas_loop_ocp). These
+# techniques are GUI-hidden; the tests pin the generated MethodSCRIPT to
+# the documented signatures.
+# ---------------------------------------------------------------------------
+
+
+def test_ocp_signature_single_var_interval_before_run() -> None:
+    """meas_loop_ocp: one output var, then interval, then run_time."""
+    lines = generate("ocp", {"t_run": 60.0, "t_interval": 1.0}, channels=[1])
+    loop = next(
+        ln.strip() for ln in lines if ln.strip().startswith("meas_loop_ocp")
+    )
+    assert loop == "meas_loop_ocp p 1 60", loop
+    # OCP measures potential only — no current at open circuit.
+    assert any(ln.strip() == "pck_add p" for ln in lines)
+    assert not any(ln.strip() == "pck_add c" for ln in lines), (
+        "OCP must not pack a current variable"
+    )
+
+
+def test_cp_interval_before_run() -> None:
+    """meas_loop_cp arg order: i_dc, interval, run (interval BEFORE run)."""
+    lines = generate(
+        "cp",
+        {"i_dc": 0.0001, "t_run": 10.0, "t_interval": 0.5},
+        channels=[1],
+    )
+    loop = next(
+        ln.strip() for ln in lines if ln.strip().startswith("meas_loop_cp")
+    )
+    assert loop == "meas_loop_cp p c 100u 500m 10", loop
+
+
+def test_fca_unsupported_on_pico_raises() -> None:
+    """FCA: meas_loop_fca is invalid and meas_fast_ca needs EmStat4+."""
+    with pytest.raises(
+        ValueError, match="not supported on the EmStat Pico"
+    ):
+        generate("fca", {"e_dc": 0.2, "t_run": 10.0}, channels=[1])
