@@ -1016,7 +1016,11 @@ def generate(
 # Techniques verified against hardware during validation session.
 # Other techniques remain in the registry but are hidden from the GUI
 # until they are validated.
-_VERIFIED_TECHNIQUES = {"cv", "ca", "ca_alt_mux", "eis", "dpv", "swv"}
+# DPV is deactivated: its PSTrace method-string keys (e_pulse/t_pulse)
+# can't be verified without a native PSTrace DPV reference, and it isn't
+# in use. The generator/defaults stay in the registry — re-add "dpv"
+# here to bring it back once a reference is available.
+_VERIFIED_TECHNIQUES = {"cv", "ca", "ca_alt_mux", "eis", "swv"}
 
 
 def supported_techniques() -> list[str]:
