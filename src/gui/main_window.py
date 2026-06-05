@@ -84,22 +84,34 @@ APP_VERSION = "0.1.0"
 
 
 class _NoWheelScrollFilter(QObject):
-    """Block mouse-wheel events on combo boxes and spin boxes.
+    """Stop the mouse-wheel from changing combo/spin box values, while
+    still scrolling the surrounding panel.
 
     Mouse-scrolling over a QComboBox or QSpinBox/QDoubleSpinBox silently
     changes its value — easy to do by accident, and dangerous on
-    measurement parameters (t_eq, E vertex, current range, ...). This
-    consumes the wheel event entirely so a value can NEVER change from
-    scrolling, focused or not — the user must click and type, or use the
-    dropdown. Installed application-wide so every existing and future
-    combo/spinbox is covered without per-widget plumbing.
+    measurement parameters (t_eq, E vertex, current range, ...). The
+    wheel over such a control NEVER changes its value (focused or not);
+    instead the event is forwarded to the enclosing scroll area so the
+    panel still scrolls (no dead zones over fields). The user must click
+    and type, or use the dropdown, to change a value. Installed
+    application-wide so every existing and future combo/spinbox is
+    covered without per-widget plumbing.
     """
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Wheel and isinstance(
             obj, (QComboBox, QAbstractSpinBox)
         ):
-            return True  # consume — the wheel must never change a value
+            # Forward the wheel to the nearest scroll area so the panel
+            # scrolls, then consume it from the control so its value can
+            # never change.
+            parent = obj.parentWidget()
+            while parent is not None:
+                if isinstance(parent, QScrollArea):
+                    QApplication.sendEvent(parent.viewport(), event)
+                    break
+                parent = parent.parentWidget()
+            return True
         return False
 
 
