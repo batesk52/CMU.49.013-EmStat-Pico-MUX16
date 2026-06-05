@@ -51,15 +51,24 @@ UNIT_MICRO_COULOMB: dict[str, str] = {
     "A": "Q",
 }
 
-# Technique name → integer code used in PSTrace method strings
+# Technique name → integer code used in PSTrace method strings.
+# These are the MethodSCRIPT measurement-technique IDs (manual v1.6
+# Table 5); PSTrace's METHOD "TECHNIQUE=" field uses the same enum.
+# Verified against native PSTrace .pssession files (CV=5, SWV=2, CA=7,
+# EIS=14). The old values for lsv/dpv/swv were wrong (2/3/4 = LSV's
+# neighbours), so PSTrace mislabeled the technique.
 _TECHNIQUE_NUMBER: dict[str, int] = {
+    "lsv": 0,
+    "dpv": 1,
+    "swv": 2,
+    "npv": 3,
+    "acv": 4,
     "cv": 5,
-    "lsv": 2,
-    "dpv": 3,
-    "swv": 4,
+    "fcv": 5,
     "ca": 7,
     "ca_alt_mux": 7,
-    "eis": 14,
+    "pad": 8,
+    "eis": 14,  # PSTrace-specific (EIS is not in Table 5)
 }
 
 # Technique name → friendly title
@@ -72,6 +81,40 @@ _TECHNIQUE_TITLES: dict[str, str] = {
     "ca_alt_mux": "Chronoamperometry",
     "eis": "Impedance Spectroscopy",
 }
+
+# PSTrace method-string key overrides per technique. Our generic
+# uppercased param dump (E_DC, E_VERTEX1, FREQ_START, ...) is NOT what
+# PSTrace's method parser reads, so PSTrace fell back to template
+# defaults for those fields. These map our param names to the keys
+# PSTrace actually uses, verified against native PSTrace .pssession
+# files (CA/CV/SWV/EIS) — see docs/references/pstrace_method_keys.md.
+# ``t_eq -> T_EQUIL`` applies to every technique.
+_PSTRACE_COMMON_KEYS: dict[str, str] = {"t_eq": "T_EQUIL"}
+_PSTRACE_METHOD_KEYS: dict[str, dict[str, str]] = {
+    "ca": {"e_dc": "E"},
+    "ca_alt_mux": {"e_dc": "E"},
+    "cv": {"e_vertex1": "E_VTX1", "e_vertex2": "E_VTX2"},
+    "fcv": {"e_vertex1": "E_VTX1", "e_vertex2": "E_VTX2"},
+    "swv": {"amplitude": "E_AMP", "frequency": "FREQ"},
+    "acv": {"amplitude": "E_AMP", "frequency": "FREQ"},
+    "eis": {
+        "freq_start": "MAX_FREQ",
+        "freq_end": "MIN_FREQ",
+        "e_dc": "E",
+        "e_ac": "AMPLITUDE",
+    },
+    # geis: frequency keys follow EIS; i_dc/i_ac unverified (no reference).
+    "geis": {"freq_start": "MAX_FREQ", "freq_end": "MIN_FREQ"},
+}
+
+
+def _pstrace_method_keys(technique: str) -> dict[str, str]:
+    """Return the param→PSTrace-key overrides for a technique."""
+    return {
+        **_PSTRACE_COMMON_KEYS,
+        **_PSTRACE_METHOD_KEYS.get(technique, {}),
+    }
+
 
 # EIS techniques that use ImpedimetricMeasurement type
 _EIS_TECHNIQUES = {"eis", "geis"}
@@ -176,18 +219,10 @@ def build_method_string(
         "NOTES=",
     ]
 
-    # PSTrace reads the amperometry (CA) DC potential under the key "E"
-    # and equilibration under "T_EQUIL" — not the generic uppercased
-    # E_DC/T_EQ our dump produced, which PSTrace ignored (showing its
-    # 0.5 V template default). Map to the keys PSTrace actually reads.
-    # Verified against a native PSTrace .pssession; see
-    # docs/references/pstrace_amperometry_method.md. (T_RUN/T_INTERVAL
-    # already match PSTrace, so they round-tripped correctly.)
-    key_overrides = (
-        {"e_dc": "E", "t_eq": "T_EQUIL"}
-        if technique in ("ca", "ca_alt_mux", "fca")
-        else {}
-    )
+    # Map our param names to the keys PSTrace actually reads (per
+    # technique). Without this, PSTrace ignores the param and shows its
+    # template default. See _PSTRACE_METHOD_KEYS / the reference docs.
+    key_overrides = _pstrace_method_keys(technique)
 
     # Add technique parameters in scientific notation
     for k, v in result.params.items():
