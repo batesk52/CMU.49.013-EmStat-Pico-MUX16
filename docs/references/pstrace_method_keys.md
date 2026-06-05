@@ -37,8 +37,10 @@ Already matching (no override): `e_begin → E_BEGIN`, `e_end → E_END`,
 `n_freq → N_FREQ`, `t_run → T_RUN`, `t_interval → T_INTERVAL`.
 
 ## Not yet verified (no reference file)
-- **DPV** pulse keys (`e_pulse`, `t_pulse`) — left as the uppercased
-  defaults; needs a native PSTrace DPV file to confirm.
+- **DPV** pulse keys (`e_pulse`, `t_pulse`) — couldn't be confirmed
+  without a native PSTrace DPV file, so DPV has been **deactivated**
+  (removed from `_VERIFIED_TECHNIQUES`, hidden from the GUI). Re-add it
+  there + verify the pulse keys once a reference is available.
 - **GEIS** `i_dc`/`i_ac` — only the frequency keys are mapped.
 
 ## Gotchas when reading PSTrace files
