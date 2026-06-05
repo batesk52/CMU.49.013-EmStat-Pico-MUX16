@@ -84,37 +84,22 @@ APP_VERSION = "0.1.0"
 
 
 class _NoWheelScrollFilter(QObject):
-    """Stop mouse-wheel events from changing combo/spin box values.
+    """Block mouse-wheel events on combo boxes and spin boxes.
 
-    Without this, mouse-scrolling over a QComboBox or QSpinBox/
-    QDoubleSpinBox silently changes its value — easy to do by accident
-    while scrolling the surrounding panel, and impossible to notice
-    mid-experiment when the dropdown is on a preset or technique
-    selector. Installed application-wide so every existing and future
+    Mouse-scrolling over a QComboBox or QSpinBox/QDoubleSpinBox silently
+    changes its value — easy to do by accident, and dangerous on
+    measurement parameters (t_eq, E vertex, current range, ...). This
+    consumes the wheel event entirely so a value can NEVER change from
+    scrolling, focused or not — the user must click and type, or use the
+    dropdown. Installed application-wide so every existing and future
     combo/spinbox is covered without per-widget plumbing.
-
-    The wheel only changes a value when the control is *focused* (the
-    user deliberately clicked/tabbed into it). When unfocused, the event
-    is redirected to the enclosing scroll area so the panel still scrolls
-    instead of the wheel being dead over every control.
     """
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Wheel and isinstance(
             obj, (QComboBox, QAbstractSpinBox)
         ):
-            if obj.hasFocus():
-                # Deliberately focused — allow the value to change.
-                return False
-            # Unfocused: don't change the value; forward the wheel to the
-            # nearest scroll area so the panel still scrolls.
-            parent = obj.parentWidget()
-            while parent is not None:
-                if isinstance(parent, QScrollArea):
-                    QApplication.sendEvent(parent.viewport(), event)
-                    break
-                parent = parent.parentWidget()
-            return True  # consume from the combo/spin box
+            return True  # consume — the wheel must never change a value
         return False
 
 
