@@ -111,7 +111,9 @@ def test_csv_header_defaults_when_metadata_absent(tmp_path) -> None:
     CSVExporter().export_csv(res, str(tmp_path))
     header = _read_header(str(tmp_path / "ch05.csv"))
     assert "# Electrode config: external" in header
-    assert "# RE/CE channel: 1" in header
+    # Empty mode collapses to "external", whose RE/CE position is 15
+    # (the mode-derived fallback — not the legacy hardcoded 1).
+    assert "# RE/CE channel: 15" in header
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +207,12 @@ def test_curve_metadata_carries_mux_and_re_ce_per_channel() -> None:
 
 
 def test_curve_metadata_falls_back_when_re_ce_absent() -> None:
-    """Legacy results without re_ce_channels record RE/CE = 1."""
+    """Results without re_ce_channels record the mode-derived RE/CE.
+
+    Empty mode collapses to "external", whose RE/CE position is 15 — the
+    mode-derived fallback that keeps provenance consistent with the
+    declared mode (rather than the legacy hardcoded 1).
+    """
     from src.data.pssession_curves import build_curves_measurement
 
     res = _result_with_ca_data(
@@ -213,7 +220,7 @@ def test_curve_metadata_falls_back_when_re_ce_absent() -> None:
     )
     meas = build_curves_measurement(res, "Chronoamperometry", "method")
     curves = meas["Curves"]
-    assert all(c["ReCeChannel"] == 1 for c in curves)
+    assert all(c["ReCeChannel"] == 15 for c in curves)
     # Empty mode collapses to "external" backward-compat default
     assert all(c["ElectrodeConfigMode"] == "external" for c in curves)
 

@@ -1,8 +1,8 @@
 """Serial connection manager for the PalmSens EmStat Pico.
 
-Handles UART communication at 230400 baud (no software flow control).
-Provides methods for sending commands, loading MethodSCRIPT scripts,
-and reading device responses.
+Handles UART communication at 230400 baud with XON/XOFF software flow
+control (per the PalmSens comm protocol). Provides methods for sending
+commands, loading MethodSCRIPT scripts, and reading device responses.
 """
 
 from __future__ import annotations
@@ -71,8 +71,8 @@ class PicoConnection:
     def connect(self, port: Optional[str] = None) -> None:
         """Open the serial connection and query device identity.
 
-        Configures the port for 230400/8N1 (no software flow control),
-        then queries firmware version and serial number.
+        Configures the port for 230400/8N1 with XON/XOFF software flow
+        control, then queries firmware version and serial number.
 
         Args:
             port: Serial port path. Overrides port set in constructor.
@@ -128,6 +128,14 @@ class PicoConnection:
         except PicoConnectionError:
             self.disconnect()
             raise
+        except Exception as exc:
+            # Any other failure during the identity handshake (e.g. a
+            # malformed response) must still close the port — otherwise
+            # the open handle leaks. Normalize to PicoConnectionError.
+            self.disconnect()
+            raise PicoConnectionError(
+                f"Device identity query failed: {exc}"
+            ) from exc
 
     def disconnect(self) -> None:
         """Close the serial connection and reset device info.
@@ -170,8 +178,14 @@ class PicoConnection:
                 logger.debug("Sent command: %r", cmd)
 
                 response = self._read_until_prompt()
-                # Strip leading echo character
-                if response and response[0] == cmd[0]:
+                # Strip the device's leading echo of the command's first
+                # character. Guard on len > 1 so a legitimate 1-character
+                # response is never truncated to empty. NOTE: this is a
+                # heuristic — it cannot distinguish a real response that
+                # happens to start with the command letter from the echo.
+                # Safe for the commands actually used (t, i), whose
+                # responses never start with their own command char.
+                if len(response) > 1 and response[0] == cmd[0]:
                     response = response[1:]
                 return response.strip()
             except serial.SerialException as exc:
@@ -286,9 +300,17 @@ class PicoConnection:
             PicoConnectionError: If not connected or a read error occurs.
         """
         self._ensure_connected()
-        original_timeout = self._serial.timeout
+        # Guard the shared-port timeout swap under the lock so it cannot
+        # tear against set_timeout()/wait_until_idle(), which also mutate
+        # self._serial.timeout. The blocking readline() itself stays
+        # OUTSIDE the lock, so a GUI-thread abort()/halt() can still write
+        # while a read is in flight (the documented thread-safety promise).
+        restore_timeout = None
         if timeout is not None:
-            self._serial.timeout = timeout
+            with self._lock:
+                if self._serial.timeout != timeout:
+                    restore_timeout = self._serial.timeout
+                    self._serial.timeout = timeout
         try:
             raw = self._serial.readline()
             if not raw:
@@ -299,8 +321,9 @@ class PicoConnection:
                 f"Error reading response: {exc}"
             ) from exc
         finally:
-            if timeout is not None:
-                self._serial.timeout = original_timeout
+            if restore_timeout is not None:
+                with self._lock:
+                    self._serial.timeout = restore_timeout
 
     def read_responses(
         self, timeout: Optional[float] = None
@@ -416,9 +439,19 @@ class PicoConnection:
 
         Args:
             timeout: New timeout in seconds.
+
+        Note:
+            Do not call this while a ``read_response`` is in flight on
+            another thread: that read restores the port's prior timeout in
+            its ``finally``, which would clobber the value set here. In
+            normal use only the engine thread reads during a measurement,
+            so this is not exercised concurrently.
         """
         self._ensure_connected()
-        self._serial.timeout = timeout
+        # Lock the shared-port mutation so it can't tear against a
+        # concurrent read_response() timeout swap.
+        with self._lock:
+            self._serial.timeout = timeout
 
     def _ensure_connected(self) -> None:
         """Raise if the serial port is not open."""
@@ -444,6 +477,7 @@ class PicoConnection:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with self._lock:
+                old_timeout = self._serial.timeout
                 try:
                     # Flush any residual data
                     self._serial.reset_input_buffer()
@@ -451,20 +485,22 @@ class PicoConnection:
                     # command mode (idle), not during script execution
                     self._serial.write(b"t\n")
                     self._serial.flush()
-                    old_timeout = self._serial.timeout
                     self._serial.timeout = 1.0
                     response = self._serial.readline()
-                    self._serial.timeout = old_timeout
                     if response and response.strip():
                         # Drain any remaining response lines
                         self._serial.timeout = 0.1
                         while self._serial.readline():
                             pass
-                        self._serial.timeout = old_timeout
                         logger.debug("Device idle confirmed.")
                         return True
                 except serial.SerialException:
                     pass
+                finally:
+                    # Always restore the original timeout, even if a
+                    # SerialException fired mid-probe (else the port is
+                    # left at 1.0/0.1s and later reads end prematurely).
+                    self._serial.timeout = old_timeout
             time.sleep(0.1)
         logger.warning("Timed out waiting for device idle.")
         return False

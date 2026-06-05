@@ -26,13 +26,20 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    Qt,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
     QDockWidget,
+    QHBoxLayout,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -45,7 +52,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.comms.serial_connection import PicoConnection, PicoConnectionError
+from src.comms.serial_connection import PicoConnection
 from src.data.exporters import PsSessionExporter
 from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
@@ -66,6 +73,8 @@ from src.gui.controls import (
 )
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
+from src.gui.toggle_switch import ToggleSwitch
+from src.gui.workers import ConnectWorker
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +84,7 @@ APP_VERSION = "0.1.0"
 
 
 class _NoWheelScrollFilter(QObject):
-    """Swallow mouse-wheel events on combo boxes and spin boxes.
+    """Stop mouse-wheel events from changing combo/spin box values.
 
     Without this, mouse-scrolling over a QComboBox or QSpinBox/
     QDoubleSpinBox silently changes its value — easy to do by accident
@@ -83,14 +92,29 @@ class _NoWheelScrollFilter(QObject):
     mid-experiment when the dropdown is on a preset or technique
     selector. Installed application-wide so every existing and future
     combo/spinbox is covered without per-widget plumbing.
+
+    The wheel only changes a value when the control is *focused* (the
+    user deliberately clicked/tabbed into it). When unfocused, the event
+    is redirected to the enclosing scroll area so the panel still scrolls
+    instead of the wheel being dead over every control.
     """
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.Wheel and isinstance(
             obj, (QComboBox, QAbstractSpinBox)
         ):
-            event.ignore()
-            return True
+            if obj.hasFocus():
+                # Deliberately focused — allow the value to change.
+                return False
+            # Unfocused: don't change the value; forward the wheel to the
+            # nearest scroll area so the panel still scrolls.
+            parent = obj.parentWidget()
+            while parent is not None:
+                if isinstance(parent, QScrollArea):
+                    QApplication.sendEvent(parent.viewport(), event)
+                    break
+                parent = parent.parentWidget()
+            return True  # consume from the combo/spin box
         return False
 
 
@@ -146,6 +170,9 @@ class MainWindow(QMainWindow):
         self._last_result: Optional[MeasurementResult] = None
         self._preset_mgr = PresetManager()
         self._auto_save_active = False
+        # Background worker for the (blocking) connect handshake.
+        self._connect_worker: Optional[ConnectWorker] = None
+        self._connect_port: str = ""
 
         # Install app-wide filter that blocks accidental wheel-scroll
         # changes on combo boxes and spin boxes.
@@ -206,6 +233,37 @@ class MainWindow(QMainWindow):
         self._conn_panel = ConnectionPanel()
         layout.addWidget(self._conn_panel)
 
+        # Verbose-logging switch. Off = INFO (normal), on = DEBUG, which
+        # surfaces the per-marker device trace and the "Ended without '+'
+        # END_MEAS marker" warning — used to diagnose slow/missing
+        # end-of-measurement save prompts. Centered directly under the
+        # connection box so it's reachable before starting a run.
+        log_row = QHBoxLayout()
+        log_row.setContentsMargins(0, 2, 0, 2)
+        log_row.setSpacing(6)
+        self._log_caption = QLabel("Log output:")
+        self._log_caption.setStyleSheet(
+            "color: #f5f5f5; font-weight: bold; font-size: 12px;"
+        )
+        self._info_label = QLabel("INFO")
+        self._debug_label = QLabel("DEBUG")
+        self._log_switch = ToggleSwitch()
+        self._log_switch.setToolTip(
+            "Set logging to DEBUG. Shows the device's raw marker stream "
+            "and end-of-measurement diagnostics. Verbose — leave off for "
+            "normal use."
+        )
+        self._log_switch.toggled.connect(self._on_debug_log_toggled)
+        log_row.addStretch()
+        log_row.addWidget(self._log_caption)
+        log_row.addSpacing(4)
+        log_row.addWidget(self._info_label)
+        log_row.addWidget(self._log_switch)
+        log_row.addWidget(self._debug_label)
+        log_row.addStretch()
+        layout.addLayout(log_row)
+        self._update_log_switch_labels(False)
+
         self._tech_panel = TechniquePanel()
         layout.addWidget(self._tech_panel)
 
@@ -255,12 +313,16 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         self._log_dock = dock
 
-        # Attach a logging handler to the root logger
-        handler = _LogHandler(self._log_text)
-        handler.setFormatter(
+        # Attach a logging handler to the root logger. Keep a reference so
+        # closeEvent() can remove it — otherwise a stale handler keeps
+        # firing log records into this (destroyed) widget after the window
+        # closes, leaking the handler and risking a crash on a second
+        # MainWindow (e.g. in tests).
+        self._log_handler = _LogHandler(self._log_text)
+        self._log_handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
-        logging.getLogger().addHandler(handler)
+        logging.getLogger().addHandler(self._log_handler)
 
     def _build_menu_bar(self) -> None:
         """Create the menu bar with File, Device, and Help menus."""
@@ -392,6 +454,33 @@ class MainWindow(QMainWindow):
             self._on_auto_save_completed
         )
 
+    @pyqtSlot(bool)
+    def _on_debug_log_toggled(self, enabled: bool) -> None:
+        """Switch root logging between DEBUG (verbose) and INFO.
+
+        Affects both the console and the in-app log dock, since both
+        attach to the root logger.
+
+        Args:
+            enabled: True for DEBUG, False for INFO.
+        """
+        level = logging.DEBUG if enabled else logging.INFO
+        logging.getLogger().setLevel(level)
+        self._update_log_switch_labels(enabled)
+        logger.info(
+            "Logging level set to %s.", logging.getLevelName(level)
+        )
+
+    def _update_log_switch_labels(self, debug: bool) -> None:
+        """Emphasize the active side of the INFO/DEBUG switch."""
+        # Match the "Log output:" caption: same 12px size and bold weight
+        # so the three labels read as one consistent group — only the
+        # colour changes to mark the active side.
+        active = "color: #f5f5f5; font-weight: bold; font-size: 12px;"
+        inactive = "color: #808080; font-weight: bold; font-size: 12px;"
+        self._info_label.setStyleSheet(inactive if debug else active)
+        self._debug_label.setStyleSheet(active if debug else inactive)
+
     # ------------------------------------------------------------------
     # Connection handling
     # ------------------------------------------------------------------
@@ -410,20 +499,45 @@ class MainWindow(QMainWindow):
         if not port:
             self._conn_panel.set_error("No port selected")
             return
-
-        try:
-            self._connection.connect(port)
-        except PicoConnectionError as exc:
-            self._conn_panel.set_error(str(exc))
-            logger.error("Connection failed: %s", exc)
+        # A connect attempt is already in flight — ignore re-entry.
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
             return
 
-        firmware = self._connection.firmware_version or ""
+        # The connect handshake does blocking serial I/O, so run it on a
+        # worker thread and update the UI from its result signals — never
+        # block the GUI event loop.
+        self._conn_panel.set_connecting()
+        self._connect_port = port
+        worker = ConnectWorker(self._connection, port, self)
+        worker.succeeded.connect(self._on_connect_succeeded)
+        worker.failed.connect(self._on_connect_failed)
+        # Free the QThread once it finishes so workers don't accumulate as
+        # MainWindow children across repeated connect attempts.
+        worker.finished.connect(worker.deleteLater)
+        self._connect_worker = worker
+        worker.start()
+
+    @pyqtSlot(str)
+    def _on_connect_succeeded(self, firmware: str) -> None:
+        """Handle a successful connect handshake (GUI thread)."""
+        self._connect_worker = None
         self._conn_panel.set_connected(firmware)
         self._update_ui_connected()
         logger.info(
-            "Connected to %s (firmware: %s)", port, firmware
+            "Connected to %s (firmware: %s)",
+            self._connect_port,
+            firmware,
         )
+
+    @pyqtSlot(str)
+    def _on_connect_failed(self, message: str) -> None:
+        """Handle a failed connect handshake (GUI thread)."""
+        self._connect_worker = None
+        self._conn_panel.set_error(message)
+        logger.error("Connection failed: %s", message)
 
     @pyqtSlot()
     def _on_disconnect(self) -> None:
@@ -485,8 +599,10 @@ class MainWindow(QMainWindow):
             else:  # on_board
                 re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
 
-        # Build auto-save config if enabled
+        # Build auto-save config if enabled. Reset first so a stale True
+        # from a previous run that ended in error can't mislabel this run.
         auto_save = None
+        self._auto_save_active = False
         if self._meas_panel.is_auto_save_enabled():
             auto_dir = self._meas_panel.auto_save_directory()
             if not auto_dir:
@@ -610,6 +726,11 @@ class MainWindow(QMainWindow):
     def _on_measurement_error(self, message: str) -> None:
         """Handle measurement_error signal from engine."""
         self._meas_panel.set_idle()
+        # Clear the auto-save flag: a run that ended in error (including a
+        # user abort, which routes through measurement_error) must not
+        # leave the flag set, or the next finished run would be mislabeled
+        # as auto-saved.
+        self._auto_save_active = False
         self._status_progress.setText("Error")
         self.statusBar().showMessage(f"Error: {message}")
         logger.error("Measurement error: %s", message)
@@ -947,8 +1068,20 @@ class MainWindow(QMainWindow):
         if self._engine.isRunning():
             self._engine.abort()
             self._engine.wait(3000)
+        # Let an in-flight connect handshake finish so its thread isn't
+        # destroyed while running.
+        if (
+            self._connect_worker is not None
+            and self._connect_worker.isRunning()
+        ):
+            self._connect_worker.wait(6000)
         if self._connection.is_connected:
             self._connection.disconnect()
+        # Detach the log handler so it stops emitting into this widget
+        # once the window is gone (prevents leak / use-after-free).
+        if getattr(self, "_log_handler", None) is not None:
+            logging.getLogger().removeHandler(self._log_handler)
+            self._log_handler = None
         event.accept()
 
 

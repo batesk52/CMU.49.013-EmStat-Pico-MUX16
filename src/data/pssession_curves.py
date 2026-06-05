@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.data.models import MeasurementResult
+from src.data.models import MeasurementResult, default_re_ce_channel
 from src.data.pssession_exporter import (
     UNIT_MICRO_AMPERE,
     UNIT_MICRO_COULOMB,
@@ -60,9 +60,10 @@ def build_curves_measurement(
     measured = result.measured_channels
 
     # Per-channel RE/CE lookup so each curve records the wiring that
-    # produced it.  Backward compat: when re_ce_channels is absent or
-    # shorter than channels, fall back to RE/CE = 1 (legacy "shared
-    # reference" assumption).
+    # produced it.  When re_ce_channels is absent or shorter than
+    # channels, fall back to the RE/CE position implied by the electrode
+    # mode (external/manual -> 15, on_board -> 16) via
+    # default_re_ce_channel().
     electrode_mode = (
         getattr(result, "electrode_config_mode", "") or "external"
     )
@@ -73,7 +74,9 @@ def build_curves_measurement(
             re_ce_by_channel[ch] = re_ce_list[cfg_idx]
 
     def _re_ce_for(ch: int) -> int:
-        return re_ce_by_channel.get(ch, 1)
+        return re_ce_by_channel.get(
+            ch, default_re_ce_channel(electrode_mode)
+        )
 
     curves: list[dict[str, Any]] = []
     dataset_values: list[dict[str, Any]] = []
@@ -90,6 +93,13 @@ def build_curves_measurement(
         first_ch_data = result.channel_data(first_ch)
         n_total = len(first_ch_data.data_points)
         pts_per_scan = n_total // n_scans if n_scans > 0 else n_total
+        # NOTE: when n_total is not evenly divisible by n_scans the trailing
+        # (n_total % n_scans) points are not written to the .pssession (the
+        # CSV keeps every point). Recovering them naively makes the last
+        # scan longer than the others, which leaves the shared DataSet time
+        # array and the per-scan arrays mismatched in length — PSTrace may
+        # reject that. Proper fix is deferred until it can be validated by
+        # opening an uneven-split CV in PSTrace (bench item).
 
         # Time DataArray for DataSet (zero-based)
         time_values = first_ch_data.timestamps()

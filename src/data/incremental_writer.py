@@ -16,7 +16,7 @@ import threading
 from datetime import datetime
 from typing import Any, Optional
 
-from src.data.exporters import _ordered_columns
+from src.data.exporters import _TECHNIQUE_COLUMN_MAP, _ordered_columns
 from src.data.models import DataPoint
 
 logger = logging.getLogger(__name__)
@@ -180,8 +180,15 @@ class IncrementalCSVWriter:
         if channel in self._header_written:
             return
 
-        # Determine columns from the first batch of points
-        all_vars: set[str] = set()
+        # Determine columns from the first batch of points, UNIONED with
+        # the technique's canonical column schema. The header is frozen
+        # here (CSV headers can't be rewritten mid-stream), so seeding the
+        # known schema ensures a variable that only appears in a LATER
+        # packet still gets a column — otherwise it would be silently
+        # dropped by the variables.get(col, "") lookup in flush_points.
+        all_vars: set[str] = set(
+            _TECHNIQUE_COLUMN_MAP.get(self._technique, [])
+        )
         for dp in points:
             all_vars.update(dp.variables.keys())
         columns = _ordered_columns(self._technique, all_vars)

@@ -176,9 +176,22 @@ def build_method_string(
         "NOTES=",
     ]
 
+    # PSTrace reads the amperometry (CA) DC potential under the key "E"
+    # and equilibration under "T_EQUIL" — not the generic uppercased
+    # E_DC/T_EQ our dump produced, which PSTrace ignored (showing its
+    # 0.5 V template default). Map to the keys PSTrace actually reads.
+    # Verified against a native PSTrace .pssession; see
+    # docs/references/pstrace_amperometry_method.md. (T_RUN/T_INTERVAL
+    # already match PSTrace, so they round-tripped correctly.)
+    key_overrides = (
+        {"e_dc": "E", "t_eq": "T_EQUIL"}
+        if technique in ("ca", "ca_alt_mux", "fca")
+        else {}
+    )
+
     # Add technique parameters in scientific notation
     for k, v in result.params.items():
-        key_upper = k.upper()
+        key_upper = key_overrides.get(k, k.upper())
         if isinstance(v, bool):
             lines.append(f"{key_upper}={v}")
         elif isinstance(v, float):
@@ -262,10 +275,32 @@ class PsSessionExporter:
         json_str = json.dumps(
             session, separators=(",", ":"), ensure_ascii=False
         )
-        with open(output_path, "wb") as f:
-            f.write(b"\xff\xfe")  # UTF-16 LE BOM
-            f.write(json_str.encode("utf-16-le"))
-            f.write("\ufeff".encode("utf-16-le"))  # trailing BOM
+        payload = (
+            b"\xff\xfe"  # UTF-16 LE BOM
+            + json_str.encode("utf-16-le")
+            + "\ufeff".encode("utf-16-le")  # trailing BOM
+        )
+        # Write to a temp file, then os.replace onto the destination. The
+        # replace is atomic on the same filesystem, so a reader sees either
+        # the old file or the fully-written new one — never a half-written
+        # file, and a crash mid-write can't destroy a prior good copy (the
+        # old in-place "wb" open truncated output_path immediately). Note:
+        # full crash durability of the new directory entry would also need
+        # an fsync of the parent directory, which is not done here.
+        tmp_path = f"{output_path}.tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, output_path)
+        except OSError:
+            # Clean up the temp file so a failed export leaves no debris.
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
 
         abs_path = os.path.abspath(output_path)
         logger.info("Wrote .pssession file: %s", abs_path)

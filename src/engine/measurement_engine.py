@@ -51,6 +51,15 @@ _ERROR_PREFIX = "!"
 # Empty-line sentinel returned when the device has nothing more to send
 _EMPTY_LINE = ""
 
+# Short read timeout used to confirm end-of-measurement once the device
+# has stopped sending data. The full MEASUREMENT_TIMEOUT is only needed
+# while waiting for the next data packet (slow EIS/CA inter-packet gaps);
+# once a read comes back empty the device is almost certainly done, so the
+# confirmation reads fail fast instead of each blocking MEASUREMENT_TIMEOUT.
+# This is what stops the "save?" prompt from lagging minutes (or never
+# firing) when a clean '+' END_MEAS marker isn't received.
+_EMPTY_CONFIRM_TIMEOUT = 2.0  # seconds
+
 
 class MeasurementEngine(QThread):
     """Background QThread that executes electrochemical measurements.
@@ -196,13 +205,21 @@ class MeasurementEngine(QThread):
         try:
             self._run_measurement()
         except PicoConnectionError as exc:
+            self._ensure_cell_off()
             msg = f"Serial communication error: {exc}"
             logger.error(msg)
             self.measurement_error.emit(msg)
         except Exception as exc:
+            self._ensure_cell_off()
             msg = f"Unexpected error: {exc}"
             logger.error(msg, exc_info=True)
             self.measurement_error.emit(msg)
+        except BaseException:
+            # Cover control-flow exceptions (KeyboardInterrupt/SystemExit)
+            # so the cell is de-energized even on an abnormal thread exit;
+            # re-raise — we must not swallow these.
+            self._ensure_cell_off()
+            raise
 
     # ---- Internal implementation -----------------------------------------
 
@@ -248,11 +265,18 @@ class MeasurementEngine(QThread):
         re_ce_channels = getattr(config, "re_ce_channels", None) or None
 
         # -- Generate MethodSCRIPT -----------------------------------------
+        # generate() may stash technique metadata (e.g. ``_n_rounds`` for
+        # ca_alt_mux) into the params dict it receives. Pass a copy so the
+        # caller's config.params (shared with the GUI) is never mutated and
+        # the metadata never leaks into saved CSV/.pssession params; read
+        # the metadata back from the copy below.
+        gen_params = dict(params)
         try:
             script_lines = generate(
-                technique, params, channels, re_ce_channels=re_ce_channels
+                technique, gen_params, channels,
+                re_ce_channels=re_ce_channels,
             )
-        except (ValueError, Exception) as exc:
+        except Exception as exc:
             self.measurement_error.emit(
                 f"Script generation failed: {exc}"
             )
@@ -351,10 +375,10 @@ class MeasurementEngine(QThread):
             markers_seen: list[str] = []
             # ca_alt_mux uses a self-looping script: total loops =
             # n_rounds * n_channels, all in a single script run.
-            # n_rounds is computed once by generate() and passed
-            # back via params["_n_rounds"] to avoid duplication.
+            # n_rounds is computed once by generate() and read back from
+            # the gen_params copy (keeps config.params unmutated).
             if technique == "ca_alt_mux":
-                n_rounds = int(params["_n_rounds"])
+                n_rounds = int(gen_params["_n_rounds"])
                 loops_expected = n_rounds * len(channels)
             else:
                 loops_expected = n_scans * len(channels)
@@ -368,14 +392,35 @@ class MeasurementEngine(QThread):
             )
             avg_buffer: list[tuple[float, dict[str, float]]] = []
             consecutive_empty = 0
+            # Long timeout while expecting data; drops to the short confirm
+            # timeout after the first empty read so end-of-measurement is
+            # detected in seconds rather than minutes when '+' is missed.
+            read_timeout = MEASUREMENT_TIMEOUT
+            # EIS/GEIS sweep one frequency at a time; a single point at the
+            # lowest swept frequency (freq_end) can take many periods. At or
+            # above 0.1 Hz a point is only tens of seconds — well under
+            # MEASUREMENT_TIMEOUT — so the first empty read still reliably
+            # means "done" and fast-confirm is safe. Below 0.1 Hz a point can
+            # approach the timeout, so keep the full timeout there (preserving
+            # the original 3-consecutive-empty tolerance that resets on
+            # incoming data). Fast-cadence techniques (CA, CV, SWV, …) always
+            # fast-confirm — their packets arrive sub-second.
+            if technique in ("eis", "geis"):
+                freq_end = float(params.get("freq_end", 0.1))
+                confirm_timeout = (
+                    _EMPTY_CONFIRM_TIMEOUT
+                    if freq_end >= 0.1
+                    else MEASUREMENT_TIMEOUT
+                )
+            else:
+                confirm_timeout = _EMPTY_CONFIRM_TIMEOUT
 
             # -- Read one round of responses ------------------------------
             while not self._abort_requested:
                 try:
-                    line = connection.read_response(
-                        timeout=MEASUREMENT_TIMEOUT
-                    )
+                    line = connection.read_response(timeout=read_timeout)
                 except PicoConnectionError as exc:
+                    self._ensure_cell_off()
                     self.measurement_error.emit(
                         f"Serial read error: {exc}"
                     )
@@ -384,13 +429,35 @@ class MeasurementEngine(QThread):
                 if line == _EMPTY_LINE:
                     consecutive_empty += 1
                     if consecutive_empty >= 3:
+                        # Completed via the idle fallback rather than a
+                        # clean '+' END_MEAS marker. Record what the device
+                        # actually sent so a dropped/absent terminator can
+                        # be confirmed on hardware (firmware variance or RX
+                        # buffer loss on long runs are the usual causes).
+                        if LoopMarker.END_MEAS.name not in markers_seen:
+                            logger.warning(
+                                "Ended without '+' END_MEAS marker — used "
+                                "idle fallback after %d points. Markers "
+                                "seen this round: %s",
+                                self.result.num_points,
+                                markers_seen[-12:],
+                            )
                         break
+                    # Device has gone quiet — almost certainly finished but
+                    # without a clean '+' marker. Confirm with short reads
+                    # instead of blocking the full MEASUREMENT_TIMEOUT each
+                    # (no-op for EIS/GEIS, which keep the full timeout).
+                    read_timeout = confirm_timeout
                     continue
+                # Real data resumed: restore the long timeout for the next
+                # (possibly slow) inter-packet gap.
                 consecutive_empty = 0
+                read_timeout = MEASUREMENT_TIMEOUT
 
                 if line.startswith(_ERROR_PREFIX):
                     error_msg = f"Device error: {line}"
                     logger.error(error_msg)
+                    self._ensure_cell_off()
                     self.measurement_error.emit(error_msg)
                     return
 
@@ -570,6 +637,30 @@ class MeasurementEngine(QThread):
                 self.result.num_points,
             )
             self.measurement_finished.emit(self.result)
+
+    def _ensure_cell_off(self) -> None:
+        """Best-effort: stop any running device script after an abnormal
+        exit so the cell is not left energized.
+
+        The script's ``on_finished: cell_off`` only runs on *normal*
+        completion; on a read error, a device error line, or an unexpected
+        exception the script is still executing with the cell driven onto
+        the electrode. Sending an abort (``Z``) halts that script. Safe to
+        call from the engine thread; swallows errors since we are already
+        on a failure path. Not called on normal completion (where
+        ``cell_off`` runs) or on user abort (where ``abort()`` already
+        sent ``Z``).
+        """
+        conn = self._connection
+        if conn is None or not conn.is_connected:
+            return
+        try:
+            conn.abort()
+            logger.info("Sent abort to de-energize cell after error.")
+        except Exception as exc:  # noqa: BLE001 - best-effort cleanup
+            logger.warning(
+                "Best-effort cell-off after error failed: %s", exc
+            )
 
     def _flush_auto_save(self) -> None:
         """Flush new data points to the incremental writer."""

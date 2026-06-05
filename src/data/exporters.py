@@ -22,7 +22,11 @@ import os
 from datetime import datetime
 from typing import Any
 
-from src.data.models import ChannelData, MeasurementResult
+from src.data.models import (
+    ChannelData,
+    MeasurementResult,
+    default_re_ce_channel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -223,8 +227,10 @@ class CSVExporter:
 
             # Electrode-config provenance (per-channel; preserves the
             # mode + RE/CE position that was active during this run).
-            # Back-compat: empty / missing fields default to "external"
-            # with RE/CE = 1 (legacy behaviour pre-WS-batch-2).
+            # Back-compat: when the explicit list is missing, fall back to
+            # the RE/CE position the mode implies (external/manual -> 15,
+            # on_board -> 16) rather than a hardcoded 1, so provenance
+            # stays consistent with the declared mode.
             mode = (
                 getattr(result, "electrode_config_mode", "")
                 or "external"
@@ -233,15 +239,15 @@ class CSVExporter:
             re_ce_list = (
                 getattr(result, "re_ce_channels", None) or []
             )
-            re_ce_for_ch = 1
+            re_ce_for_ch = default_re_ce_channel(mode)
             try:
                 idx = result.channels.index(ch_data.channel)
                 if 0 <= idx < len(re_ce_list):
                     re_ce_for_ch = int(re_ce_list[idx])
             except (ValueError, AttributeError):
                 # ch_data.channel not in result.channels OR result.
-                # channels missing: fall back to legacy default.
-                re_ce_for_ch = 1
+                # channels missing: keep the mode-derived default.
+                pass
             f.write(f"# RE/CE channel: {re_ce_for_ch}\n")
             f.write("#\n")
 

@@ -528,9 +528,9 @@ def _validate_cv_cycle(params: dict[str, Any]) -> None:
     e_vertex2 = float(params.get("e_vertex2", -0.5))
     if e_begin != e_vertex2:
         raise ValueError(
-            f"CV must form a closed cycle: e_begin ({e_begin} V) must "
-            f"equal e_vertex2 ({e_vertex2} V). Open cycles are rejected "
-            "by the device with error !0007."
+            f"E begin and E vertex 2 must match! CV requires a closed "
+            f"cycle (E begin = E vertex 2). Got E begin = {e_begin} V, "
+            f"E vertex 2 = {e_vertex2} V."
         )
 
 
