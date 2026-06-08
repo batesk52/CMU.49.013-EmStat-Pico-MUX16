@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from src.techniques.scripts import (
+    _gen_eis,
     _preamble,
     _preamble_eis,
     _preamble_galvano,
@@ -76,6 +77,54 @@ def test_preamble_eis_ignores_bw_hz_and_stays_200k() -> None:
     assert "set_max_bandwidth 4" not in lines_with_bw, (
         "EIS preamble must not switch to bw_hz value"
     )
+
+
+def test_preamble_eis_uses_bounded_current_autoranging() -> None:
+    """EIS must autorange current within a bounded window, not pin to one.
+
+    A pinned range (``set_autoranging ba {cr} {cr}``, min==max) disables
+    autoranging and mis-ranges the multi-decade |Z| span of a real sweep,
+    crushing low-frequency SNR. The preamble must emit a real window
+    ``set_autoranging ba 1n {cr}`` (floor below the highest-impedance
+    point's current, ceiling at the user range) and must NOT pin min==max.
+    """
+    lines = _preamble_eis({"cr": "100u"})
+    assert "set_autoranging ba 1n 100u" in lines, (
+        f"EIS must autorange current within [1n, cr]; got: {lines}"
+    )
+    assert "set_autoranging ba 100u 100u" not in lines, (
+        "EIS must not pin current autoranging to a single range (min==max "
+        "disables autoranging)"
+    )
+    # The nominal/start range is still set from cr.
+    assert "set_range ba 100u" in lines
+
+
+def test_gen_eis_passes_e_dc_as_dc_potential_argument() -> None:
+    """The final meas_loop_eis argument must carry e_dc, not a hardcoded 0.
+
+    That argument is the sweep's DC potential (manual sec 14.46). Pinning
+    it to 0 ran every sweep at 0 V regardless of the requested bias.
+    """
+    body = _gen_eis(
+        {
+            "e_dc": 0.22,
+            "e_ac": 0.01,
+            "freq_start": 100000.0,
+            "freq_end": 1.0,
+            "n_freq": 50,
+        }
+    )
+    eis_line = next(li for li in body if li.startswith("meas_loop_eis"))
+    # e_dc=0.22 V formats to '220m'; it must be the trailing DC arg.
+    assert eis_line.endswith(" 220m"), (
+        f"e_dc must be the DC-potential argument; got: {eis_line!r}"
+    )
+    assert not eis_line.endswith(" 0"), (
+        "DC-potential argument must not be hardcoded to 0"
+    )
+    # set_e still establishes the bias before the loop.
+    assert "set_e 220m" in body
 
 
 def test_preamble_galvano_ignores_bw_hz_and_stays_200k() -> None:
