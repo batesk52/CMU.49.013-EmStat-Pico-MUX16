@@ -244,3 +244,97 @@ CMU.49.013-EmStat-Pico-MUX16/
   * Rebase `feature/bw-sweep-mode2` onto post-merge main
   * Run 4-ch CA at optimal BW found in sweep; document combined effect
   * Validate: TRA addendum in CMU.17.022.md with combined-config std dev
+
+---
+
+## CMU.17.034 — Preset Sequencer (PLANNED, Low priority, plan-only as of 2026-06-09)
+
+A PSTrace-"Scripts"-equivalent for the MUX-16: a new sidebar tab where saved
+presets are stacked as draggable blocks and run back-to-back. Two coupled
+pieces — (1) externalize the preset store so preset files live outside the
+repo and are imported via the preset dropdown, and (2) a sequence tab + runner.
+
+**Design rationale and decisions:** see `architecture.md` → "Preset Sequencer
+(CMU.17.034)". Key already-true fact: the `Preset` dataclass already carries
+`channels`, `electrode_config_mode` (external=A / on_board=B / manual=C), and
+`re_ce_channels` (the Mode-C pairing), so no schema redesign is needed — only
+externalization of the file and a verification that the preset *save* path
+captures the live electrode mode.
+
+### Phase 1: Externalize the preset store
+
+#### src/data/presets.py
+- [ ] **presets.py** - Add load/save-to-arbitrary-path + versioned file wrapper
+  * `PresetFile` wrapper schema on disk: `{"format": "mux16-presets", "version": 1, "presets": {<name>: <Preset asdict>}}` (the bare `{name: preset}` map stays readable via a back-compat branch)
+  * `PresetManager.load_from_path(path)` / `save_to_path(path)`; keep `_BUILTIN_PRESETS` in code as seed-only
+  * Default store moves OUT of the repo: resolve a user-data path (remembered last-used file), NOT `presets/presets.json`
+  * One-time migration: if the legacy in-repo `presets/presets.json` exists and no external file is configured, import it once
+  * Validate: `python -c "from src.data.presets import PresetManager; m=PresetManager(); m.save_to_path('x.mux16'); n=PresetManager(); n.load_from_path('x.mux16'); print(sorted(n.list_presets()))"` round-trips
+
+- [ ] **app settings persistence** - Remember the last-used preset file path
+  * Small `QSettings` (or a json in the user-data dir) holding `last_preset_file`; GUI auto-loads it on startup
+  * Validate: set path, relaunch GUI in a test harness, assert the same presets load
+
+#### src/gui/controls.py (TechniquePanel preset dropdown)
+- [ ] **controls.py** - Add "Import preset file…" as the last entry of the preset combobox
+  * Selecting it opens a `QFileDialog` (filter `*.mux16`), loads that file via `PresetManager.load_from_path`, repopulates the dropdown, and persists the path as last-used
+  * This is the ONLY way a new file location is chosen (no hardcoded Drive/local default — user browses on a new run)
+  * Validate: headless test stubs the dialog to return a temp `.mux16`, asserts dropdown repopulates and `last_preset_file` updates
+
+- [ ] **Preset SAVE captures electrode mode** - Verify/extend the save path
+  * Confirm "save current settings as preset" writes `electrode_config_mode` + `re_ce_channels` (Mode C), not just technique params + channels
+  * Validate: save a Mode-C config, reload, assert `re_ce_channels` survived
+
+#### repo hygiene
+- [ ] **.gitignore + remove tracked presets.json** - Presets are user data, not code
+  * Add the user-data preset glob to `.gitignore`; `git rm --cached presets/presets.json` (built-ins remain in code)
+  * Validate: `git status` clean after a preset save; built-ins still load with no external file present
+
+### Phase 2: Sequence model + persistence
+
+#### src/data/sequence.py (NEW)
+- [ ] **sequence.py** - `SequenceStep` + `Sequence` dataclasses and a SEPARATE sequence file
+  * `SequenceStep{preset_name: str, repeat: int = 1, delay_s: float = 0.0, channels_override: list[int] | None, mode_override: str | None}`
+  * `Sequence{name: str, steps: list[SequenceStep]}`; on-disk wrapper `{"format": "mux16-sequence", "version": 1, ...}` in a sibling `*.mux16seq` file (separate from presets, per decision 2026-06-09)
+  * `build_config(step, preset) -> TechniqueConfig` resolves a step against its preset (applying overrides) and lets `TechniqueConfig.__post_init__` validate (Mode-C bounds etc.)
+  * Validate: `pytest tests/data/test_sequence.py` — round-trip a 3-step sequence, and assert `build_config` raises on a Mode-C step with empty `re_ce_channels`
+
+### Phase 3: Sequencer tab (GUI)
+
+#### src/gui/sequence_panel.py (NEW)
+- [ ] **sequence_panel.py** - `SequencePanel(QWidget)` with reorderable blocks
+  * `QListWidget` in `InternalMove` drag-drop mode; each row = one step block showing preset name + per-step options (repeat, delay, optional channel/mode override)
+  * Add-step (from the loaded presets), remove-step, Run / Stop buttons, "step i of N" progress label
+  * Save/Load sequence (`*.mux16seq`) via file dialogs
+  * Validate: headless test adds 3 blocks, reorders via model move, asserts the step order list matches
+
+#### src/gui/main_window.py
+- [ ] **main_window.py** - Register the new dock tab
+  * `_build_sequence_dock()` mirroring `_build_log_dock`; `tabifyDockWidget(self._control_dock, self._sequence_dock)` so it sits beside Settings/Log
+  * Validate: launch GUI in offscreen mode (`QT_QPA_PLATFORM=offscreen`), assert a dock titled "Sequence" exists
+
+### Phase 4: Sequence runner
+
+#### src/engine/sequence_runner.py (NEW)
+- [ ] **sequence_runner.py** - `SequenceRunner(QObject)` drives steps via the existing engine
+  * Holds the resolved `[TechniqueConfig]` queue; `start()` launches step 0 via `engine.start_measurement`
+  * On `measurement_finished` → advance (honour `repeat`, then `delay_s` via `QTimer`); on `measurement_error` → stop and re-emit
+  * Gates on `engine.isRunning()` / thread `finished` so the single-run guard is never violated
+  * Forces a "sequence mode" flag so `_on_measurement_finished` AUTO-SAVES per step and does NOT pop the interactive export dialog
+  * Output: parent folder `exports/YYYYMMDD_HHMMSS_sequence/stepNN_<technique>/…`
+  * Signals: `sequence_progress(int, int)`, `sequence_finished()`, `sequence_error(str)`
+  * Validate: `pytest tests/engine/test_sequence_runner.py` with a mock engine — assert step N+1 launches only after step N's finished signal, and that an error halts the queue
+
+#### src/gui/main_window.py (wiring)
+- [ ] **main_window.py** - Suppress export prompt in sequence mode; disable single-run controls while a sequence runs
+  * Validate: offscreen test — start a 2-step mock sequence, assert no modal dialog is raised and the Start button is disabled mid-sequence
+
+### Phase 5: Tests + docs
+- [ ] **tests/** - `test_sequence.py`, `test_sequence_runner.py`, `test_sequence_panel.py` (headless), preset round-trip + import-dialog tests
+  * Validate: `pytest -q` all green
+- [ ] **README transform** - Convert these checkboxes to past-tense docs as each lands; record decisions in `architecture.md`
+
+#### Open items to confirm at build time (NOT blocking the plan)
+- File extension spelling (`.mux16` / `.mux16seq` assumed here)
+- Whether per-step channel/mode overrides ship in v1 or are deferred (preset-as-is is the minimum)
+- Exact user-data dir for the remembered `last_preset_file` (the import dialog means there's no hardcoded *preset* location; only the pointer needs a home)
