@@ -34,7 +34,7 @@ from typing import Any, Optional
 # imported at module top, before any asyncio loop exists.
 from serial.tools import list_ports as _serial_list_ports
 
-from src.agent.bridge import await_signal, run_on_gui
+from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import supported_techniques, technique_params
 
@@ -244,6 +244,16 @@ class EngineAdapter:
             result = await asyncio.wrap_future(future)
         except Exception as exc:
             # measurement_error payload, or SignalTimeoutError.
+            if isinstance(exc, SignalTimeoutError):
+                # A timed-out await must not leave the cell energized
+                # and the engine busy: best-effort abort, mirroring the
+                # engine's own error-path cell-off policy.
+                try:
+                    self._engine.abort()
+                except Exception as abort_exc:
+                    logger.warning(
+                        "Abort after await timeout failed: %s", abort_exc
+                    )
             logger.error("Measurement failed: %s", exc)
             return self._error(technique, str(exc))
 

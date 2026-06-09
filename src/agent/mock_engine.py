@@ -328,13 +328,18 @@ class MockMeasurementEngine(QObject):
         if not self._events:
             if self._timer is not None:
                 self._timer.stop()
-            self._running = False
             result = self.result
             logger.info(
                 "Mock measurement complete: %d data points collected.",
                 result.num_points if result is not None else 0,
             )
-            self.measurement_finished.emit(result)
+            # Emit while still running -- the real engine's isRunning()
+            # is True during emission (the flag only drops when run()
+            # returns) -- then clear the flag even if a slot raises.
+            try:
+                self.measurement_finished.emit(result)
+            finally:
+                self._running = False
             return
 
         kind, payload = self._events.popleft()
@@ -352,9 +357,13 @@ class MockMeasurementEngine(QObject):
         if self._timer is not None:
             self._timer.stop()
         self._events.clear()
-        self._running = False
         logger.info("Mock measurement aborted by user.")
-        self.measurement_error.emit(ABORT_MESSAGE)
+        # Same ordering contract as the normal finish path: emit while
+        # isRunning() is still True, then clear the flag.
+        try:
+            self.measurement_error.emit(ABORT_MESSAGE)
+        finally:
+            self._running = False
 
     # ---- Synthetic data ----------------------------------------------------
 
