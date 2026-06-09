@@ -435,6 +435,12 @@ class MainWindow(QMainWindow):
         self._tech_panel.delete_preset_requested.connect(
             self._on_delete_preset
         )
+        # "Import preset file..." entry repointed the active store; the
+        # panel already repopulated its own dropdown, so just refresh the
+        # rest of the preset-dependent UI.
+        self._tech_panel.presets_imported.connect(
+            self._on_presets_imported
+        )
 
         # Engine signals -> GUI updates
         self._engine.data_point_ready.connect(
@@ -933,6 +939,9 @@ class MainWindow(QMainWindow):
 
     def _load_presets_into_ui(self) -> None:
         """Populate the technique panel preset combo box."""
+        # Hand the panel the active manager so its "Import preset
+        # file..." entry can repoint the store (CMU.17.034).
+        self._tech_panel.set_preset_manager(self._preset_mgr)
         presets = {
             k: p.name
             for k, p in self._preset_mgr.get_all().items()
@@ -941,6 +950,23 @@ class MainWindow(QMainWindow):
             k for k in presets if not self._preset_mgr.is_builtin(k)
         }
         self._tech_panel.refresh_presets(presets, deletable=deletable)
+
+    @pyqtSlot(str)
+    def _on_presets_imported(self, path: str) -> None:
+        """React to a preset-file import from the technique panel.
+
+        The panel already reloaded the manager and repopulated its own
+        dropdown; refresh the deletable-key bookkeeping by re-running the
+        shared populate path and surface the change in the status bar.
+
+        Args:
+            path: The imported preset file path.
+        """
+        self._load_presets_into_ui()
+        self.statusBar().showMessage(
+            f"Imported presets from {os.path.basename(path)}"
+        )
+        logger.info("Presets imported from %s", path)
 
     @pyqtSlot()
     def _on_save_preset(self) -> None:
@@ -959,8 +985,22 @@ class MainWindow(QMainWindow):
 
         technique = self._tech_panel.selected_technique()
         params = self._tech_panel.get_params()
-        channels = self._chan_panel.selected_channels()
         auto_save = self._meas_panel.is_auto_save_enabled()
+
+        # Capture the live electrode-config mode so the preset round-trips
+        # the wiring policy, not just technique params + channels
+        # (CMU.17.034). In manual mode the WE + RE/CE pairing both come
+        # from the manual panel; in external/on_board the channel grid
+        # supplies WE and re_ce_channels stays empty (TechniqueConfig
+        # repopulates the mode default at run time).
+        mode = self._electrode_config_panel.selected_mode()
+        if mode == "manual":
+            channels, re_ce_channels = (
+                self._manual_channel_panel.selected_pairs()
+            )
+        else:
+            channels = self._chan_panel.selected_channels()
+            re_ce_channels = []
 
         preset = Preset(
             name=name,
@@ -969,6 +1009,8 @@ class MainWindow(QMainWindow):
             channels=channels,
             auto_save=auto_save,
             description=f"User preset: {name}",
+            electrode_config_mode=mode,
+            re_ce_channels=re_ce_channels,
         )
         self._preset_mgr.add_preset(key, preset)
 
@@ -1019,7 +1061,18 @@ class MainWindow(QMainWindow):
 
         self._tech_panel.set_technique(preset.technique)
         self._tech_panel.set_params(preset.params)
-        self._chan_panel.set_channels(preset.channels)
+
+        # Restore the wiring mode and route the channels to the matching
+        # panel (CMU.17.034). Manual presets carry an explicit per-WE
+        # RE/CE pairing; external/on_board presets only drive the grid.
+        mode = preset.electrode_config_mode or "external"
+        self._electrode_config_panel.set_mode(mode)
+        if mode == "manual":
+            self._manual_channel_panel.set_pairs(
+                preset.channels, preset.re_ce_channels
+            )
+        else:
+            self._chan_panel.set_channels(preset.channels)
 
         default_dir = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),

@@ -277,14 +277,14 @@ captures the live electrode mode.
   * Verified by `tests/data/test_app_settings.py`: set-then-get round-trip plus auto-load recovering presets from a saved file under a temp settings path
 
 #### src/gui/controls.py (TechniquePanel preset dropdown)
-- [ ] **controls.py** - Add "Import preset file…" as the last entry of the preset combobox
-  * Selecting it opens a `QFileDialog` (filter `*.mux16`), loads that file via `PresetManager.load_from_path`, repopulates the dropdown, and persists the path as last-used
-  * This is the ONLY way a new file location is chosen (no hardcoded Drive/local default — user browses on a new run)
-  * Validate: headless test stubs the dialog to return a temp `.mux16`, asserts dropdown repopulates and `last_preset_file` updates
+- **controls.py** - "Import preset file..." is the last entry of the preset combobox
+  * `TechniquePanel` carries the entry as a sentinel-keyed (`_IMPORT_PRESET_SENTINEL`) item appended by `refresh_presets`. Selecting it opens a `QFileDialog` (filter `MUX16 presets (*.mux16)`), loads the file via the injected `PresetManager.load_from_path`, repopulates the dropdown, persists the path via `set_last_preset_file`, and emits `presets_imported`. A cancelled dialog (or a missing manager / unreadable file) restores the prior selection and changes nothing
+  * The manager is injected by `MainWindow._load_presets_into_ui` via `set_preset_manager` (with an optional settings-path override so tests never touch the real per-user store). This is the ONLY way a new file location is chosen — no hardcoded Drive/local default
+  * Verified by `tests/gui/test_preset_import.py`: stubs `QFileDialog.getOpenFileName` to a temp `.mux16`, asserts the dropdown repopulates AND `last_preset_file` updates; a cancel case leaves state untouched
 
-- [ ] **Preset SAVE captures electrode mode** - Verify/extend the save path
-  * Confirm "save current settings as preset" writes `electrode_config_mode` + `re_ce_channels` (Mode C), not just technique params + channels
-  * Validate: save a Mode-C config, reload, assert `re_ce_channels` survived
+- **Preset SAVE captures electrode mode** - `MainWindow._on_save_preset` persists the live wiring policy
+  * Reads `electrode_config_mode` from `ElectrodeConfigPanel`; in manual mode the WE + per-WE `re_ce_channels` pairing both come from `ManualChannelPanel.selected_pairs()`, while external/on_board take WE from the channel grid and leave `re_ce_channels` empty (re-defaulted at run time by `TechniqueConfig.__post_init__`). `_on_preset_selected` restores the mode + routes channels to the matching panel on load
+  * Verified by `tests/gui/test_preset_save_mode.py`: a Mode-C config with explicit `re_ce_channels` survives a save/reload round-trip (`electrode_config_mode == "manual"`, pairing intact)
 
 #### repo hygiene
 - [ ] **.gitignore + remove tracked presets.json** - Presets are user data, not code
@@ -317,14 +317,12 @@ captures the live electrode mode.
 ### Phase 4: Sequence runner
 
 #### src/engine/sequence_runner.py (NEW)
-- [ ] **sequence_runner.py** - `SequenceRunner(QObject)` drives steps via the existing engine
-  * Holds the resolved `[TechniqueConfig]` queue; `start()` launches step 0 via `engine.start_measurement`
-  * On `measurement_finished` → advance (honour `repeat`, then `delay_s` via `QTimer`); on `measurement_error` → stop and re-emit
-  * Gates on `engine.isRunning()` / thread `finished` so the single-run guard is never violated
-  * Forces a "sequence mode" flag so `_on_measurement_finished` AUTO-SAVES per step and does NOT pop the interactive export dialog
-  * Output: parent folder `exports/YYYYMMDD_HHMMSS_sequence/stepNN_<technique>/…`
+- **sequence_runner.py** - `SequenceRunner(QObject)` drives steps via the existing engine
+  * Holds a resolved queue of `_QueueEntry(config, delay_s)`; `start()` launches step 0 via `engine.start_measurement`. `from_sequence(engine, connection, sequence, preset_manager)` resolves each step with `build_config` (validated eagerly so a Mode-C step with no usable pairing raises before step 0) and expands `SequenceStep.repeat` into that many entries, applying `delay_s` only on the final repeat
+  * On `measurement_finished` → emits `sequence_progress`, then schedules the next entry after `delay_s` via `QTimer.singleShot`; `_advance` re-checks `engine.isRunning()` (re-arming a short timer rather than launching) so the single-run guard is never violated. On `measurement_error` → clears the running flag, halts the queue, re-emits `sequence_error`
+  * `sequence_mode` property lets the main window suppress the interactive export prompt and auto-save per step (Batch-3 wiring); `step_output_dir(base_dir, i)` / `current_output_dir` compose `<base>/<stamp>_sequence/stepNN_<technique>/`
   * Signals: `sequence_progress(int, int)`, `sequence_finished()`, `sequence_error(str)`
-  * Validate: `pytest tests/engine/test_sequence_runner.py` with a mock engine — assert step N+1 launches only after step N's finished signal, and that an error halts the queue
+  * Verified by `tests/engine/test_sequence_runner.py` with a mock engine (QObject exposing the two lifecycle signals + a `start_measurement` recorder + `isRunning()`): step N+1 starts only after step N's finished signal, the queue completes to `sequence_finished` with monotonic progress, an error halts the queue + emits `sequence_error`, and `repeat` expands into extra runs
 
 #### src/gui/main_window.py (wiring)
 - [ ] **main_window.py** - Suppress export prompt in sequence mode; disable single-run controls while a sequence runs
