@@ -61,6 +61,7 @@ from src.data.models import (
     MeasurementResult,
     TechniqueConfig,
 )
+from src.data.app_settings import get_last_preset_file
 from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
 from src.gui.controls import (
@@ -166,6 +167,10 @@ class MainWindow(QMainWindow):
         self._engine = MeasurementEngine(parent=self)
         self._last_result: Optional[MeasurementResult] = None
         self._preset_mgr = PresetManager()
+        # Auto-load the last-used external preset file (CMU.17.034) when
+        # one was remembered and still exists; otherwise the default
+        # per-user store stays active.
+        self._load_last_preset_file()
         self._auto_save_active = False
         # Background worker for the (blocking) connect handshake.
         self._connect_worker: Optional[ConnectWorker] = None
@@ -904,6 +909,27 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Presets and auto-save
     # ------------------------------------------------------------------
+
+    def _load_last_preset_file(self) -> None:
+        """Adopt the remembered last-used preset file, if any.
+
+        Reads the ``last_preset_file`` pointer from app settings and, when
+        it names an existing file, loads it into the active
+        :class:`PresetManager` so the user's chosen preset store reappears
+        across launches.  A stale/missing pointer is ignored silently so
+        the default per-user store remains active.
+        """
+        remembered = get_last_preset_file()
+        if not remembered or not os.path.isfile(remembered):
+            return
+        try:
+            self._preset_mgr.load_from_path(remembered)
+        except OSError as e:
+            logger.warning(
+                "Could not load last preset file %s: %s",
+                remembered,
+                e,
+            )
 
     def _load_presets_into_ui(self) -> None:
         """Populate the technique panel preset combo box."""

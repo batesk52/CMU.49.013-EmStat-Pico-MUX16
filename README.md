@@ -264,16 +264,17 @@ captures the live electrode mode.
 ### Phase 1: Externalize the preset store
 
 #### src/data/presets.py
-- [ ] **presets.py** - Add load/save-to-arbitrary-path + versioned file wrapper
-  * `PresetFile` wrapper schema on disk: `{"format": "mux16-presets", "version": 1, "presets": {<name>: <Preset asdict>}}` (the bare `{name: preset}` map stays readable via a back-compat branch)
-  * `PresetManager.load_from_path(path)` / `save_to_path(path)`; keep `_BUILTIN_PRESETS` in code as seed-only
-  * Default store moves OUT of the repo: resolve a user-data path (remembered last-used file), NOT `presets/presets.json`
-  * One-time migration: if the legacy in-repo `presets/presets.json` exists and no external file is configured, import it once
-  * Validate: `python -c "from src.data.presets import PresetManager; m=PresetManager(); m.save_to_path('x.mux16'); n=PresetManager(); n.load_from_path('x.mux16'); print(sorted(n.list_presets()))"` round-trips
+- **presets.py** - Load/save-to-arbitrary-path + versioned file wrapper
+  * On-disk wrapper schema: `{"format": "mux16-presets", "version": 1, "presets": {<name>: <Preset asdict>}}`; the loader detects the legacy bare `{name: preset}` map by the absence of a `"format"` key and reads it via a back-compat branch
+  * `PresetManager.load_from_path(path)` / `save_to_path(path)` added; `load_from_path` re-seeds built-ins, merges the file on top, and switches the active path so later add/delete persist there. `_BUILTIN_PRESETS` stays in code as seed-only (always present in memory)
+  * Default store moved OUT of the repo to a per-user data path (`~/.emstat_pico_mux16/presets.mux16`), not `presets/presets.json`
+  * One-time migration: a default-store manager with no external file imports the legacy in-repo `presets/presets.json` once, then materializes the external file
+  * Verified: `python -c "from src.data.presets import PresetManager; m=PresetManager(); m.save_to_path('x.mux16'); n=PresetManager(); n.load_from_path('x.mux16'); print(sorted(n.list_presets()))"` round-trips
 
-- [ ] **app settings persistence** - Remember the last-used preset file path
-  * Small `QSettings` (or a json in the user-data dir) holding `last_preset_file`; GUI auto-loads it on startup
-  * Validate: set path, relaunch GUI in a test harness, assert the same presets load
+- **app settings persistence** (`src/data/app_settings.py`) - Remembers the last-used preset file path
+  * A tiny JSON file in the user-data dir (`~/.emstat_pico_mux16/app_settings.json`) holds `last_preset_file`; chosen over `QSettings` so `get_last_preset_file` / `set_last_preset_file` import and round-trip with no running `QApplication`. The settings path is overridable (`path=`) so tests never touch the real store
+  * `MainWindow._load_last_preset_file` auto-loads the remembered file on startup when it still exists; a stale/missing pointer is ignored silently
+  * Verified by `tests/data/test_app_settings.py`: set-then-get round-trip plus auto-load recovering presets from a saved file under a temp settings path
 
 #### src/gui/controls.py (TechniquePanel preset dropdown)
 - [ ] **controls.py** - Add "Import preset file…" as the last entry of the preset combobox
@@ -293,11 +294,11 @@ captures the live electrode mode.
 ### Phase 2: Sequence model + persistence
 
 #### src/data/sequence.py (NEW)
-- [ ] **sequence.py** - `SequenceStep` + `Sequence` dataclasses and a SEPARATE sequence file
+- **sequence.py** - `SequenceStep` + `Sequence` dataclasses and a SEPARATE sequence file
   * `SequenceStep{preset_name: str, repeat: int = 1, delay_s: float = 0.0, channels_override: list[int] | None, mode_override: str | None}`
-  * `Sequence{name: str, steps: list[SequenceStep]}`; on-disk wrapper `{"format": "mux16-sequence", "version": 1, ...}` in a sibling `*.mux16seq` file (separate from presets, per decision 2026-06-09)
-  * `build_config(step, preset) -> TechniqueConfig` resolves a step against its preset (applying overrides) and lets `TechniqueConfig.__post_init__` validate (Mode-C bounds etc.)
-  * Validate: `pytest tests/data/test_sequence.py` — round-trip a 3-step sequence, and assert `build_config` raises on a Mode-C step with empty `re_ce_channels`
+  * `Sequence{name: str, steps: list[SequenceStep]}` with `to_dict` / `from_dict` / `save_to_path` / `load_from_path`; on-disk wrapper `{"format": "mux16-sequence", "version": 1, ...}` in a sibling `*.mux16seq` file (separate from presets, per decision 2026-06-09)
+  * `build_config(step, preset) -> TechniqueConfig` resolves a step against its preset (applying channel/mode overrides) and lets `TechniqueConfig.__post_init__` validate (Mode-C bounds etc.). When a channels override changes the count, the preset's explicit `re_ce_channels` is dropped so external/on_board steps repopulate from the mode default and a manual step with no usable pairing raises — the intended safety behaviour
+  * Verified by `tests/data/test_sequence.py`: 3-step round-trip equality (incl. overrides) and `build_config` raising on a Mode-C step with empty `re_ce_channels`
 
 ### Phase 3: Sequencer tab (GUI)
 
