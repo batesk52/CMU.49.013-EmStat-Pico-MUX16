@@ -12,6 +12,9 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-06-09: CMU.17.034 Preset Sequencer — Batch 1 (backend) merged
+- [x | code-team Batch 1 | 2026-06-09] Tournament (3 coders), winner coder 2, merged to `plan/cmu-17-034-preset-sequencer` (`01924fd`). Externalized PresetManager (`save_to_path`/`load_from_path`, versioned `mux16-presets` wrapper + legacy bare-map back-compat, user-data default store `~/.emstat_pico_mux16/presets.mux16`, one-time migration of in-repo presets/presets.json); new `src/data/sequence.py` (SequenceStep/Sequence + `*.mux16seq` + `build_config` delegating Mode-C validation to TechniqueConfig.__post_init__); new `src/data/app_settings.py` (headless `last_preset_file` pointer + main_window startup auto-load). Suite 85 passed. Winner uniquely handled the channels_override/re_ce_channels length-mismatch edge case with a proving test. Incident: coders 2/3 worktrees+branches auto-torn-down on return; commits recovered from dangling objects (see lessons.md). Batches 2-3 (GUI import dropdown, sequence_panel, sequence_runner, main_window dock, gitignore) still pending.
+
 ### 2026-06-05: Four PRs landed — #7 save-prompt-lag + 17 hardening + 2 CRITICAL review fixes, #8 E3 generator signatures, #10 wheel-scroll regression, #9 PSTrace method-string fidelity (main at `3d6b5e6`)
 - [x | Session | 2026-06-05] PR #7 merged 16:01 UTC (`a9f7992`) → bench validation surfaced 3 follow-ups, all merged same day. Final main `3d6b5e6`. Cumulative test count 69 → 79+ across the day (each PR added regression tests). Linear chain: review → bench → follow-up PRs → merge.
 
