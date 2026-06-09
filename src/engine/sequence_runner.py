@@ -43,6 +43,15 @@ from src.data.sequence import Sequence, build_config
 
 logger = logging.getLogger(__name__)
 
+# Re-poll cadence (ms) while waiting for the engine thread to settle
+# between steps, plus a bounded number of re-polls before giving up.  At
+# 20 ms a 200-poll cap gives ~4 s of grace for the engine's
+# ``measurement_finished`` signal to be followed by ``isRunning()`` going
+# False; past that the engine is wedged, so the sequence errors out rather
+# than re-arming the timer forever.
+_ADVANCE_REPOLL_MS = 20
+_ADVANCE_MAX_REPOLLS = 200
+
 
 @dataclass
 class _QueueEntry:
@@ -96,6 +105,9 @@ class SequenceRunner(QObject):
         self._queue: list[_QueueEntry] = list(queue)
         self._index: int = 0
         self._running: bool = False
+        # Re-poll counter for the inter-step settle wait; reset before
+        # each advance and capped so a wedged engine surfaces an error.
+        self._advance_repolls: int = 0
         # Timestamped parent dir for per-step auto-save; fixed once at
         # construction so every step in the run shares one folder.
         self._run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -280,16 +292,36 @@ class SequenceRunner(QObject):
         # Defer the next step so the engine thread fully finishes (the
         # finished signal can fire while isRunning() is briefly still
         # True) and the inter-step delay is honoured.
+        self._advance_repolls = 0
         QTimer.singleShot(delay_ms, self._advance)
 
     def _advance(self) -> None:
-        """Launch the next step once the engine has settled."""
+        """Launch the next step once the engine has settled.
+
+        While the engine is still winding down its previous run, this
+        re-arms a short timer instead of launching (never violating the
+        single-run guard).  The re-poll count is bounded: a wedged engine
+        that never goes idle halts the queue with ``sequence_error``
+        rather than re-polling forever.
+        """
         if not self._running:
             return
         if self._engine.isRunning():
-            # Engine not yet idle -- re-check shortly without launching,
-            # never violating the single-run guard.
-            QTimer.singleShot(20, self._advance)
+            self._advance_repolls += 1
+            if self._advance_repolls > _ADVANCE_MAX_REPOLLS:
+                # Engine never went idle within the grace window -- treat
+                # it as wedged and surface an error instead of spinning.
+                self._running = False
+                msg = (
+                    "Engine did not become idle between steps "
+                    f"(step {self._index + 1}/{len(self._queue)}); "
+                    "sequence aborted."
+                )
+                logger.error(msg)
+                self.sequence_error.emit(msg)
+                return
+            # Engine not yet idle -- re-check shortly without launching.
+            QTimer.singleShot(_ADVANCE_REPOLL_MS, self._advance)
             return
         self._launch_current()
 

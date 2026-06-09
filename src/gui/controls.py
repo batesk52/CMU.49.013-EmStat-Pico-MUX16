@@ -619,10 +619,32 @@ class TechniquePanel(QGroupBox):
             k for k in presets if not self._preset_mgr.is_builtin(k)
         }
         self.refresh_presets(presets, deletable=deletable)
-        # After a rebuild the combo sits on "(No Preset)" (index 0).
-        self._pre_import_index = 0
+        # Land on the first real preset rather than "(No Preset)" so an
+        # import immediately surfaces a usable config (index 0 is the
+        # "(No Preset)" placeholder; index 1 is the first real preset when
+        # the imported store is non-empty).
+        self._select_first_real_preset()
         self.presets_imported.emit(path)
         logger.info("Imported preset file: %s", path)
+
+    def _select_first_real_preset(self) -> None:
+        """Select the first real preset entry after a dropdown rebuild.
+
+        Falls back to "(No Preset)" (index 0) when the store is empty.
+        The first real preset sits at index 1 (index 0 is the placeholder
+        and the trailing entry is the "Import preset file..." action).
+        """
+        first_real = -1
+        for i in range(self._preset_combo.count()):
+            key = self._preset_combo.itemData(i)
+            if key and key != _IMPORT_PRESET_SENTINEL:
+                first_real = i
+                break
+        idx = first_real if first_real >= 0 else 0
+        self._pre_import_index = idx
+        # currentIndexChanged fires _on_preset_selected, which emits
+        # preset_selected so the main window loads the config.
+        self._preset_combo.setCurrentIndex(idx)
 
     def _restore_pre_import_selection(self) -> None:
         """Restore the combo to the selection before the import dialog."""

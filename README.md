@@ -247,7 +247,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 
 ---
 
-## CMU.17.034 — Preset Sequencer (PLANNED, Low priority, plan-only as of 2026-06-09)
+## CMU.17.034 — Preset Sequencer (IMPLEMENTED 2026-06-09)
 
 A PSTrace-"Scripts"-equivalent for the MUX-16: a new sidebar tab where saved
 presets are stacked as draggable blocks and run back-to-back. Two coupled
@@ -287,9 +287,9 @@ captures the live electrode mode.
   * Verified by `tests/gui/test_preset_save_mode.py`: a Mode-C config with explicit `re_ce_channels` survives a save/reload round-trip (`electrode_config_mode == "manual"`, pairing intact)
 
 #### repo hygiene
-- [ ] **.gitignore + remove tracked presets.json** - Presets are user data, not code
-  * Add the user-data preset glob to `.gitignore`; `git rm --cached presets/presets.json` (built-ins remain in code)
-  * Validate: `git status` clean after a preset save; built-ins still load with no external file present
+- **.gitignore + untracked presets.json** - Presets are user data, not code
+  * `.gitignore` now ignores the user-data preset/sequence globs (`*.mux16`, `*.mux16seq`) and `/presets/presets.json`; the legacy in-repo store was untracked via `git rm --cached presets/presets.json` (kept on disk as the one-time migration source). Built-in seeds remain in code
+  * Verified: `presets/presets.json` no longer tracked yet still on disk; the default-store manager migrates the 12 legacy presets on first run, and a path-pointed manager with no external file loads cleanly (built-in seed set, currently empty by design)
 
 ### Phase 2: Sequence model + persistence
 
@@ -303,16 +303,16 @@ captures the live electrode mode.
 ### Phase 3: Sequencer tab (GUI)
 
 #### src/gui/sequence_panel.py (NEW)
-- [ ] **sequence_panel.py** - `SequencePanel(QWidget)` with reorderable blocks
-  * `QListWidget` in `InternalMove` drag-drop mode; each row = one step block showing preset name + per-step options (repeat, delay, optional channel/mode override)
-  * Add-step (from the loaded presets), remove-step, Run / Stop buttons, "step i of N" progress label
-  * Save/Load sequence (`*.mux16seq`) via file dialogs
-  * Validate: headless test adds 3 blocks, reorders via model move, asserts the step order list matches
+- **sequence_panel.py** - `SequencePanel(QWidget)` with reorderable blocks
+  * `QListWidget` in `InternalMove` drag-drop mode; each row stores its `SequenceStep` as item data so the visual order IS the sequence order (read back via `build_sequence`). Each row shows preset name + repeat/delay suffix; the selected row's repeat + delay are edited via spin boxes that write back onto the step
+  * Add-step (a `QInputDialog` picker over the injected `PresetManager.list_presets()`), remove-step, Run / Stop buttons, and a "Step i of N" progress label. Save/Load sequence (`*.mux16seq`) via `QFileDialog`
+  * Owns no engine/connection: the `PresetManager`, engine, and a connection-provider callable are injected by `MainWindow`. Run builds a `SequenceRunner.from_sequence` against the current `Sequence` and starts it; the runner's `sequence_progress`/`sequence_finished`/`sequence_error` drive the progress label + Run/Stop enabled-state. Stop clears the runner and aborts the in-flight engine step. `sequence_started`/`sequence_stopped` signals bridge into the main window's export-suppression state
+  * Verified by `tests/gui/test_sequence_panel.py` (offscreen): 3 blocks add in order, a model-level `takeItem`+`insertItem` reorder changes `Sequence.steps` order, and a save-to-`*.mux16seq`/reload round-trips equal (with an independent ground-truth check on the persisted file)
 
 #### src/gui/main_window.py
-- [ ] **main_window.py** - Register the new dock tab
-  * `_build_sequence_dock()` mirroring `_build_log_dock`; `tabifyDockWidget(self._control_dock, self._sequence_dock)` so it sits beside Settings/Log
-  * Validate: launch GUI in offscreen mode (`QT_QPA_PLATFORM=offscreen`), assert a dock titled "Sequence" exists
+- **main_window.py** - Register the new dock tab
+  * `_build_sequence_dock()` mirrors `_build_log_dock`: a movable/floatable `QDockWidget` titled "Sequence" hosting a `SequencePanel`. `tabifyDockWidget(self._control_dock, self._sequence_dock)` tabs it beside Settings/Log; the panel is injected with the shared `PresetManager`, engine, and a `_sequence_connection` accessor (returns the single `PicoConnection` when connected, else `None`)
+  * Verified by `tests/gui/test_sequence_dock.py` (offscreen): a dock titled "Sequence" is present after `MainWindow()` construction
 
 ### Phase 4: Sequence runner
 
@@ -325,15 +325,17 @@ captures the live electrode mode.
   * Verified by `tests/engine/test_sequence_runner.py` with a mock engine (QObject exposing the two lifecycle signals + a `start_measurement` recorder + `isRunning()`): step N+1 starts only after step N's finished signal, the queue completes to `sequence_finished` with monotonic progress, an error halts the queue + emits `sequence_error`, and `repeat` expands into extra runs
 
 #### src/gui/main_window.py (wiring)
-- [ ] **main_window.py** - Suppress export prompt in sequence mode; disable single-run controls while a sequence runs
-  * Validate: offscreen test — start a 2-step mock sequence, assert no modal dialog is raised and the Start button is disabled mid-sequence
+- **main_window.py** - Suppress export prompt in sequence mode; disable single-run controls while a sequence runs
+  * A `_sequence_active` flag is set on `sequence_started` (which also disables the measurement panel) and cleared on `sequence_stopped` (which restores Start when a device is still connected). In `_on_measurement_finished`, sequence mode returns early BEFORE the `set_idle()` / export-prompt branch — so each step's completion never re-enables Start and never raises the interactive `_prompt_export` / auto-save modal (the `SequenceRunner` drives the next step and per-step auto-save handles persistence)
+  * Verified by `tests/gui/test_sequence_dock.py` (offscreen): a 2-step mock sequence raises NO `QMessageBox` (every entry point monkeypatched to fail the test) and keeps Start disabled mid-sequence, re-enabling it after `sequence_finished`
 
 ### Phase 5: Tests + docs
-- [ ] **tests/** - `test_sequence.py`, `test_sequence_runner.py`, `test_sequence_panel.py` (headless), preset round-trip + import-dialog tests
-  * Validate: `pytest -q` all green
-- [ ] **README transform** - Convert these checkboxes to past-tense docs as each lands; record decisions in `architecture.md`
+- **tests/** - `test_sequence.py`, `test_sequence_runner.py`, `test_sequence_panel.py` + `test_sequence_dock.py` (headless), preset round-trip + import-dialog tests
+  * `test_sequence_runner.py` also covers the carry-forwards: `start()` refuses when the engine is already running (emits `sequence_error`), and a late `measurement_finished` arriving after `stop()` adds no phantom step (no extra launch / progress / finish)
+  * Full suite green: `QT_QPA_PLATFORM=offscreen pytest -q` -> 100 passed
+- **README transform** - Checkboxes converted to past-tense docs; decisions recorded in `architecture.md`
 
-#### Open items to confirm at build time (NOT blocking the plan)
-- File extension spelling (`.mux16` / `.mux16seq` assumed here)
-- Whether per-step channel/mode overrides ship in v1 or are deferred (preset-as-is is the minimum)
-- Exact user-data dir for the remembered `last_preset_file` (the import dialog means there's no hardcoded *preset* location; only the pointer needs a home)
+#### Build-time resolutions (closed)
+- File extensions shipped as `.mux16` (presets) / `.mux16seq` (sequences)
+- Per-step channel/mode overrides are persisted in the `SequenceStep` model but the v1 panel UI edits only preset + repeat + delay; overrides round-trip through save/load and `build_config` honours them
+- The remembered `last_preset_file` pointer lives in `~/.emstat_pico_mux16/app_settings.json`; the import dialog is the only way to point at a preset file (no hardcoded location)

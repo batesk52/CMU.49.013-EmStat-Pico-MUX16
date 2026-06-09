@@ -74,6 +74,7 @@ from src.gui.controls import (
 )
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
+from src.gui.sequence_panel import SequencePanel
 from src.gui.toggle_switch import ToggleSwitch
 from src.gui.workers import ConnectWorker
 
@@ -172,6 +173,11 @@ class MainWindow(QMainWindow):
         # per-user store stays active.
         self._load_last_preset_file()
         self._auto_save_active = False
+        # True while a SequenceRunner is driving the engine.  Read in
+        # _on_measurement_finished to suppress the interactive export
+        # prompt (auto-save per step instead) and to keep the single-run
+        # Start control disabled until the sequence ends (CMU.17.034).
+        self._sequence_active = False
         # Background worker for the (blocking) connect handshake.
         self._connect_worker: Optional[ConnectWorker] = None
         self._connect_port: str = ""
@@ -193,9 +199,12 @@ class MainWindow(QMainWindow):
         )
         self._build_control_dock()
         self._build_log_dock()
-        # Tab the Log dock behind the Controls dock so Settings is the
-        # default view; user clicks "Log" tab when a measurement runs.
+        self._build_sequence_dock()
+        # Tab the Log + Sequence docks behind the Controls dock so
+        # Settings is the default view; the user clicks "Log" when a
+        # measurement runs and "Sequence" to stack presets.
         self.tabifyDockWidget(self._control_dock, self._log_dock)
+        self.tabifyDockWidget(self._control_dock, self._sequence_dock)
         self._control_dock.raise_()
         self._build_menu_bar()
         self._build_status_bar()
@@ -325,6 +334,46 @@ class MainWindow(QMainWindow):
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
         logging.getLogger().addHandler(self._log_handler)
+
+    def _build_sequence_dock(self) -> None:
+        """Build the Sequence dock hosting the preset sequencer panel.
+
+        Mirrors ``_build_log_dock``: a movable/floatable ``QDockWidget``
+        titled "Sequence" hosting a :class:`SequencePanel` that is wired
+        to the shared PresetManager, engine, and a connection accessor by
+        injection (the panel owns no engine of its own).  Sequence
+        start/stop is bridged into the export-suppression + Start-disable
+        state via :meth:`_on_sequence_started` / :meth:`_on_sequence_stopped`.
+        """
+        dock = QDockWidget("Sequence", self)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        self._sequence_panel = SequencePanel(
+            preset_manager=self._preset_mgr,
+            engine=self._engine,
+            connection_provider=self._sequence_connection,
+        )
+        self._sequence_panel.sequence_started.connect(
+            self._on_sequence_started
+        )
+        self._sequence_panel.sequence_stopped.connect(
+            self._on_sequence_stopped
+        )
+        dock.setWidget(self._sequence_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self._sequence_dock = dock
+
+    def _sequence_connection(self) -> Optional[PicoConnection]:
+        """Return the connection for the sequencer, or None if down.
+
+        The sequencer reuses the main window's single ``PicoConnection``
+        so every step runs against the same already-open serial link.
+        """
+        if self._connection.is_connected:
+            return self._connection
+        return None
 
     def _build_menu_bar(self) -> None:
         """Create the menu bar with File, Device, and Help menus."""
@@ -675,6 +724,30 @@ class MainWindow(QMainWindow):
         self._meas_panel.set_running()
         self._status_progress.setText("Running")
 
+    @pyqtSlot()
+    def _on_sequence_started(self) -> None:
+        """Enter sequence mode: suppress export prompts, lock Start.
+
+        While a sequence runs, every step's ``measurement_finished`` is
+        auto-saved (no modal prompt) and the single-run Start control
+        stays disabled so the user can't launch a competing measurement.
+        """
+        self._sequence_active = True
+        self._meas_panel.set_disabled()
+        self._status_progress.setText("Sequence running")
+
+    @pyqtSlot()
+    def _on_sequence_stopped(self) -> None:
+        """Leave sequence mode and restore the single-run controls."""
+        self._sequence_active = False
+        # Restore Start only when a device is still connected; the engine
+        # is idle once the sequence has stopped.
+        if self._connection.is_connected:
+            self._meas_panel.set_idle()
+        else:
+            self._meas_panel.set_disabled()
+        self._status_progress.setText("Idle")
+
     @pyqtSlot(str)
     def _on_measurement_started(self, technique: str) -> None:
         """Handle measurement_started signal from engine."""
@@ -700,9 +773,7 @@ class MainWindow(QMainWindow):
         Stores the result, updates UI to idle, and prompts for export.
         """
         self._last_result = result
-        self._meas_panel.set_idle()
         self._export_action.setEnabled(True)
-        self._status_progress.setText("Idle")
         self._plot_container.on_measurement_finished()
 
         n_points = result.num_points
@@ -716,6 +787,17 @@ class MainWindow(QMainWindow):
             n_points,
             n_channels,
         )
+
+        # In sequence mode each step finishing must NOT pop a modal
+        # prompt (it would block the queue) and must NOT re-enable the
+        # single-run Start control — the SequenceRunner drives the next
+        # step and the sequence_stopped signal restores the controls.
+        if self._sequence_active:
+            self._auto_save_active = False
+            return
+
+        self._meas_panel.set_idle()
+        self._status_progress.setText("Idle")
 
         # If auto-save was active, data is already on disk
         if self._auto_save_active:

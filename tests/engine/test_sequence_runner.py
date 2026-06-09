@@ -193,6 +193,66 @@ def test_repeat_expands_into_extra_runs(qapp) -> None:
     assert len(engine.started_configs) == 3
 
 
+def test_start_refuses_when_engine_already_running(qapp) -> None:
+    """start() refuses (errors) when the engine is already busy.
+
+    The runner must honour the engine's single-run guard: if the engine
+    is mid-measurement when ``start()`` is called, no step launches and a
+    ``sequence_error`` is surfaced instead.
+    """
+    engine = MockEngine()
+    # Simulate a foreign measurement already in flight on the engine.
+    engine.start_measurement(None, _make_config("cv"))
+    assert engine.isRunning() is True
+
+    runner = SequenceRunner(engine, None, _queue("ca", "dpv"))
+    errors: list[str] = []
+    finished: list[bool] = []
+    runner.sequence_error.connect(errors.append)
+    runner.sequence_finished.connect(lambda: finished.append(True))
+
+    runner.start()
+
+    # No NEW step from the runner launched; only the pre-existing config.
+    assert len(engine.started_configs) == 1
+    assert len(errors) == 1
+    assert finished == []
+    assert runner.sequence_mode is False
+
+
+def test_late_finish_after_stop_adds_no_phantom_step(qapp) -> None:
+    """A finished signal arriving after stop() must not resurrect the queue.
+
+    Stopping clears the running flag; a delayed ``measurement_finished``
+    from the already-launched step must be ignored -- no next step is
+    launched, no progress is emitted, and no extra ``sequence_finished``
+    fires.
+    """
+    engine = MockEngine()
+    runner = SequenceRunner(engine, None, _queue("cv", "ca", "dpv"))
+
+    progress: list[tuple[int, int]] = []
+    finished: list[bool] = []
+    runner.sequence_progress.connect(
+        lambda c, t: progress.append((c, t))
+    )
+    runner.sequence_finished.connect(lambda: finished.append(True))
+
+    runner.start()
+    assert len(engine.started_configs) == 1
+
+    # User stops mid-step, THEN the in-flight step's finished arrives late.
+    runner.stop()
+    assert runner.sequence_mode is False
+    engine.finish_current()
+    _drain(qapp)
+
+    # The late finish was swallowed: no step 2, no progress, no finish.
+    assert len(engine.started_configs) == 1
+    assert progress == []
+    assert finished == []
+
+
 def _tmp_store():
     """Return a throwaway preset-store path in a temp dir."""
     import tempfile
