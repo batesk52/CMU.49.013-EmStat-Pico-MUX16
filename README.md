@@ -125,6 +125,14 @@ CMU.49.013-EmStat-Pico-MUX16/
   * Supports abort (`Z` command), halt (`h`), and resume (`H`) from the GUI thread via PicoConnection's thread-safe write methods
   * Buffers all decoded DataPoints into a `MeasurementResult` with device metadata, technique parameters, and channel list for post-run export
   * Handles serial disconnection and device error codes gracefully, emitting `measurement_error` signal with descriptive messages
+  * Detects a disconnected RE/CE mid-run via `ElectrodeHealthMonitor`: a sustained run of overload/NaN-current points (the signature of a railed potentiostat that has lost cell control) de-energizes the cell and errors out with a "check reference and counter electrode connections" message instead of logging garbage data
+
+#### src/comms/electrode_health.py
+- **electrode_health.py** - Disconnected RE/CE guard shared by the GUI engine and the MCP service
+  * `ElectrodeHealthMonitor` watches the decoded packet stream and trips on `DEFAULT_DISCONNECT_RUN` (10) consecutive overloaded/NaN-current points; a single recovered reading resets the run so autoranging and CV switching transients don't false-trip
+  * Reads the device's own `STATUS_OVERLOAD` (0x0002) status bit and the `nan` current sentinel — no extra device round-trips
+  * The shared RE/CE pair means a real disconnect overloads every MUX channel, so the run accumulates across channel switches; one dead WE is broken up by its neighbours' healthy reads and won't trip
+  * Side-effect free: exposes `tripped`/`reason` so the GUI engine emits a Qt error signal and the MCP service raises `ElectrodeDisconnectError` (a `RuntimeError`, so it bypasses the comms reconnect-and-retry path)
 
 ### Phase 3: GUI Application
 

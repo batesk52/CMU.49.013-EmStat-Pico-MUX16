@@ -30,6 +30,7 @@ from typing import Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from src.comms.electrode_health import ElectrodeHealthMonitor
 from src.comms.protocol import LoopMarker, PacketParser, ParsedPacket
 from src.comms.serial_connection import (
     MEASUREMENT_TIMEOUT,
@@ -103,6 +104,9 @@ class MeasurementEngine(QThread):
         self.result: Optional[MeasurementResult] = None
         self._writer: Optional[IncrementalCSVWriter] = None
         self._last_flush_index: int = 0
+        # Diagnostic raw-line capture (off unless EMSTAT_RAW_CAPTURE is set).
+        self._raw_capture = None  # Optional[TextIO]
+        self._raw_capture_t0: float = 0.0
 
     # ---- Public API (called from GUI thread) -----------------------------
 
@@ -220,6 +224,10 @@ class MeasurementEngine(QThread):
             # re-raise — we must not swallow these.
             self._ensure_cell_off()
             raise
+        finally:
+            # Diagnostic capture must close on every path, including the
+            # many early returns inside _run_measurement.
+            self._close_raw_capture()
 
     # ---- Internal implementation -----------------------------------------
 
@@ -332,6 +340,15 @@ class MeasurementEngine(QThread):
         t_run = float(params.get("t_run", 0.0))
         measurement_start_time = time.monotonic()
         parser = PacketParser()
+        # Watches the data stream for a sustained overload run, the
+        # electrical signature of a disconnected RE/CE (potentiostat
+        # railed, current ADC saturated). Trips the run with an error
+        # rather than silently logging garbage data.
+        electrode_monitor = ElectrodeHealthMonitor()
+        # Diagnostic: dump every raw response line + per-packet health
+        # verdict when EMSTAT_RAW_CAPTURE is set. Used at the bench to
+        # confirm/tune the disconnect heuristic against real device output.
+        self._open_raw_capture(technique)
         n_scans = int(params.get("n_scans", 1))
         round_num = 0
 
@@ -361,6 +378,7 @@ class MeasurementEngine(QThread):
             self.channel_changed.emit(current_channel)
             channel_start_time = time.monotonic()
             parser.reset()  # reset loop_depth between rounds
+            electrode_monitor.reset()  # fresh overload run per round
             # Diagnostic: log the first raw packet for each channel so
             # the CH1-8-all-zero pattern can be distinguished between
             # device-side zero vs missing packet vs decode artefact.
@@ -454,6 +472,8 @@ class MeasurementEngine(QThread):
                 consecutive_empty = 0
                 read_timeout = MEASUREMENT_TIMEOUT
 
+                self._raw_capture_write("RX", line)
+
                 if line.startswith(_ERROR_PREFIX):
                     error_msg = f"Device error: {line}"
                     logger.error(error_msg)
@@ -469,6 +489,21 @@ class MeasurementEngine(QThread):
 
                 if isinstance(result, ParsedPacket):
                     packets_since_marker += 1
+                    # Disconnected RE/CE guard: a sustained overload run
+                    # means the cell is out of control. Stop the run,
+                    # de-energize the cell, and surface the fault.
+                    electrode_monitor.observe(result)
+                    if self._raw_capture is not None:
+                        self._raw_capture_write(
+                            "HEALTH",
+                            f"consecutive_overload="
+                            f"{electrode_monitor.consecutive}",
+                        )
+                    if electrode_monitor.tripped:
+                        logger.error(electrode_monitor.reason)
+                        self._ensure_cell_off()
+                        self.measurement_error.emit(electrode_monitor.reason)
+                        return
                     # Use global time for continuous or self-looping
                     # techniques (ca_alt_mux); per-channel for others
                     if continuous or technique == "ca_alt_mux":
@@ -661,6 +696,71 @@ class MeasurementEngine(QThread):
             logger.warning(
                 "Best-effort cell-off after error failed: %s", exc
             )
+
+    def _open_raw_capture(self, technique: str) -> None:
+        """Open a raw-line diagnostic capture file if enabled.
+
+        Controlled by the ``EMSTAT_RAW_CAPTURE`` environment variable,
+        which is unset in normal operation (this is a no-op then):
+
+        * ``1`` / ``true`` / ``yes`` — write a timestamped log into the
+          current working directory.
+        * a directory path — write a timestamped log inside it.
+        * any other path — use it verbatim as the file path.
+
+        The file is line-buffered so a deliberate mid-run disconnect is
+        on disk even if the run errors out before normal cleanup. Failure
+        to open is logged and swallowed — capture must never break a run.
+        """
+        self._raw_capture = None
+        val = os.environ.get("EMSTAT_RAW_CAPTURE")
+        if not val:
+            return
+        try:
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            fname = f"raw_capture_{stamp}_{technique}.log"
+            if val.strip().lower() in ("1", "true", "yes"):
+                path = fname
+            elif os.path.isdir(val):
+                path = os.path.join(val, fname)
+            else:
+                path = val
+            self._raw_capture = open(
+                path, "w", buffering=1, encoding="utf-8"
+            )
+            self._raw_capture_t0 = time.monotonic()
+            self._raw_capture.write(
+                f"# EmStat raw capture — technique={technique} "
+                f"start={datetime.now().isoformat()}\n"
+                "# columns: t_rel(s)  TAG  payload\n"
+            )
+            logger.info("Raw-line capture enabled: %s", path)
+        except OSError as exc:  # noqa: BLE001 - diagnostic must not break run
+            logger.warning("Could not open raw capture %r: %s", val, exc)
+            self._raw_capture = None
+
+    def _raw_capture_write(self, tag: str, payload: str) -> None:
+        """Append one line to the capture file (no-op when disabled)."""
+        cap = self._raw_capture
+        if cap is None:
+            return
+        try:
+            dt = time.monotonic() - self._raw_capture_t0
+            cap.write(f"{dt:9.3f}  {tag:6s}  {payload}\n")
+        except (OSError, ValueError):
+            # Closed handle or write failure — drop capture, keep running.
+            self._raw_capture = None
+
+    def _close_raw_capture(self) -> None:
+        """Close the capture file if open (idempotent)."""
+        cap = self._raw_capture
+        self._raw_capture = None
+        if cap is None:
+            return
+        try:
+            cap.close()
+        except OSError:
+            pass
 
     def _flush_auto_save(self) -> None:
         """Flush new data points to the incremental writer."""

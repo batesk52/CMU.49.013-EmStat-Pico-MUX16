@@ -12,6 +12,9 @@ Project-specific task tracking and history.
 
 ## Completed
 
+### 2026-06-09: CMU.17.035 — error out on disconnected RE/CE
+- [x | Session | 2026-06-09] Added `src/comms/electrode_health.py` (`ElectrodeHealthMonitor` + `ElectrodeDisconnectError`) and wired it into `src/engine/measurement_engine.py`. A sustained run of overloaded/NaN-current points (default 10 consecutive) is the electrical signature of a railed potentiostat that has lost cell control because RE or CE is open; the engine now de-energizes the cell (`_ensure_cell_off`) and emits `measurement_error` with a "check RE/CE connections" message instead of logging garbage. Detection reuses the device's existing `STATUS_OVERLOAD` (0x0002) status bit + `nan` current sentinel — no extra round-trips. A single recovered reading resets the run so autoranging / CV switching transients don't false-trip; the shared RE/CE means a real disconnect accumulates the run across MUX channels while one dead WE is broken up by its neighbours. 15 unit tests in `tests/comms/test_electrode_health.py` (all green; full comms suite 27 passed). The detector module is vendored read-only into CMU.49.014's `pico/comms/` so the MCP service shares the same logic.
+
 ### 2026-06-05: Four PRs landed — #7 save-prompt-lag + 17 hardening + 2 CRITICAL review fixes, #8 E3 generator signatures, #10 wheel-scroll regression, #9 PSTrace method-string fidelity (main at `3d6b5e6`)
 - [x | Session | 2026-06-05] PR #7 merged 16:01 UTC (`a9f7992`) → bench validation surfaced 3 follow-ups, all merged same day. Final main `3d6b5e6`. Cumulative test count 69 → 79+ across the day (each PR added regression tests). Linear chain: review → bench → follow-up PRs → merge.
 
