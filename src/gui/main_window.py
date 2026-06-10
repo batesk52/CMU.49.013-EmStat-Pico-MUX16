@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QScrollArea,
     QTabWidget,
     QVBoxLayout,
@@ -58,13 +59,22 @@ from src.agent.mock_engine import MockConnection, MockMeasurementEngine
 from src.agent.tools import build_registry
 from src.agent.vendor_analysis import build_analysis_tools
 from src.comms.serial_connection import PicoConnection
-from src.data.exporters import PsSessionExporter
+from src.data.exporters import (
+    PsSessionExporter,
+    make_sequence_dir,
+    sequence_step_dirname,
+)
 from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
     ON_BOARD_RE_CE_CHANNEL,
     AutoSaveConfig,
     MeasurementResult,
     TechniqueConfig,
+)
+from src.data.app_settings import (
+    get_export_dir,
+    get_last_preset_file,
+    set_export_dir,
 )
 from src.data.presets import Preset, PresetManager
 from src.engine.measurement_engine import MeasurementEngine
@@ -79,6 +89,7 @@ from src.gui.controls import (
 from src.gui.agent_dock import AgentDockPanel
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
+from src.gui.sequence_panel import SequencePanel
 from src.gui.toggle_switch import ToggleSwitch
 from src.gui.workers import ConnectWorker
 
@@ -87,6 +98,14 @@ logger = logging.getLogger(__name__)
 # Application metadata
 APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
+
+# Provenance auto-save policy lives in the data layer (shared with the
+# sequence runner, which applies the same forcing per step); aliases kept
+# so existing callers/tests keep working.
+from src.data.models import (  # noqa: E402
+    ALWAYS_AUTOSAVE_TECHNIQUES as _ALWAYS_AUTOSAVE_TECHNIQUES,
+    forces_auto_save as _forces_auto_save,
+)
 
 
 class _NoWheelScrollFilter(QObject):
@@ -172,7 +191,26 @@ class MainWindow(QMainWindow):
         self._engine = MeasurementEngine(parent=self)
         self._last_result: Optional[MeasurementResult] = None
         self._preset_mgr = PresetManager()
+        # Auto-load the last-used external preset file (CMU.17.034) when
+        # one was remembered and still exists; otherwise the default
+        # per-user store stays active.
+        self._load_last_preset_file()
         self._auto_save_active = False
+        # True while a SequenceRunner is driving the engine.  Read in
+        # _on_measurement_finished to suppress the interactive export
+        # prompt (auto-save per step instead) and to keep the single-run
+        # Start control disabled until the sequence ends (CMU.17.034).
+        self._sequence_active = False
+        # Results of sequence steps that did NOT auto-save are retained
+        # so the end-of-run prompt (fired from _on_sequence_stopped — the
+        # one terminal hook covering finish, stop, AND error) can offer
+        # to save them; auto-saved steps are already on disk and are not
+        # retained (no unbounded growth on long auto-saved runs).
+        self._sequence_results: list[MeasurementResult] = []
+        # Auto-save dir of the step currently finishing (set by the
+        # engine's auto_save_completed, cleared at each step start) —
+        # how the finished handler knows a step already saved itself.
+        self._step_autosave_dir: Optional[str] = None
         # Background worker for the (blocking) connect handshake.
         self._connect_worker: Optional[ConnectWorker] = None
         self._connect_port: str = ""
@@ -194,9 +232,12 @@ class MainWindow(QMainWindow):
         )
         self._build_control_dock()
         self._build_log_dock()
-        # Tab the Log dock behind the Controls dock so Settings is the
-        # default view; user clicks "Log" tab when a measurement runs.
+        self._build_sequence_dock()
+        # Tab the Log + Sequence docks behind the Controls dock so
+        # Settings is the default view; the user clicks "Log" when a
+        # measurement runs and "Sequence" to stack presets.
         self.tabifyDockWidget(self._control_dock, self._log_dock)
+        self.tabifyDockWidget(self._control_dock, self._sequence_dock)
         self._control_dock.raise_()
         self._build_menu_bar()
         self._build_status_bar()
@@ -218,10 +259,63 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_central_widget(self) -> None:
-        """Create the EIS plot container as the central widget."""
-        self._plot_container = EISPlotContainer(parent=self)
-        self._plot = self._plot_container.nyquist
-        self.setCentralWidget(self._plot_container)
+        """Create the tabbed live-plot area as the central widget.
+
+        Each measurement run gets its own plot tab, so a multi-step
+        sequence leaves one reviewable live plot per step while a single
+        run uses a single tab. ``_plot_container`` always points at the
+        tab that data currently routes to (or ``None`` between runs).
+        """
+        self._plot_tabs = QTabWidget()
+        self._plot_tabs.setMovable(False)
+        self._plot_tabs.setDocumentMode(True)
+        self._plot_tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        # Step counter for sequence tab labels; reset per sequence run.
+        self._seq_plot_n = 0
+        self._plot_container: Optional[EISPlotContainer] = None
+        # Seed one tab so the app opens with a plot and the technique
+        # dropdown can preview before the first run.
+        self._add_plot_tab("", "Live")
+        self.setCentralWidget(self._plot_tabs)
+
+    def _add_plot_tab(
+        self, technique: str, label: str
+    ) -> EISPlotContainer:
+        """Create a new live-plot tab and make it the active target.
+
+        Args:
+            technique: Technique to configure the tab's plot for.
+            label: Tab caption (e.g. ``"CV"`` or ``"2·EIS"``).
+
+        Returns:
+            The newly created (and now current) plot container.
+        """
+        container = EISPlotContainer(parent=self)
+        container.set_technique(technique)
+        index = self._plot_tabs.addTab(container, label)
+        self._plot_tabs.setCurrentIndex(index)
+        self._plot_container = container
+        return container
+
+    def _reset_plot_tabs(self) -> None:
+        """Remove every plot tab (between independent runs)."""
+        while self._plot_tabs.count():
+            widget = self._plot_tabs.widget(0)
+            self._plot_tabs.removeTab(0)
+            widget.deleteLater()
+        self._plot_container = None
+
+    @pyqtSlot(object)
+    def _route_data_point(self, data_point: object) -> None:
+        """Forward an incoming data point to the active plot tab."""
+        if self._plot_container is not None:
+            self._plot_container.on_data_point(data_point)
+
+    @pyqtSlot(str)
+    def _on_technique_preview(self, technique: str) -> None:
+        """Preview a technique on the current tab when the dropdown changes."""
+        if self._plot_container is not None:
+            self._plot_container.set_technique(technique)
 
     def _build_control_dock(self) -> None:
         """Build left dock with stacked control panels."""
@@ -358,19 +452,13 @@ class MainWindow(QMainWindow):
             connection.connect("MOCK1")
             # Mirror the real-engine wiring (_wire_signals) so agent-
             # driven mock measurements animate the same live plots.
-            # Plot prep first: GUI-started runs get clear_plot/
-            # set_technique from _on_start_measurement, but agent runs
-            # bypass that handler, so the variable mapping must be set
-            # before the first data point arrives.
-            engine.measurement_started.connect(
-                self._on_agent_measurement_started
-            )
-            engine.data_point_ready.connect(
-                self._plot_container.on_data_point
-            )
+            # _on_measurement_started creates and configures the run's
+            # plot tab (tabbed live plots), so no separate plot-prep
+            # handler is needed; data points route to the active tab.
             engine.measurement_started.connect(
                 self._on_measurement_started
             )
+            engine.data_point_ready.connect(self._route_data_point)
             engine.measurement_finished.connect(
                 self._on_agent_measurement_finished
             )
@@ -409,21 +497,6 @@ class MainWindow(QMainWindow):
         self.resizeDocks([dock], [420], Qt.Orientation.Horizontal)
         self._agent_dock = dock
 
-    @pyqtSlot(str)
-    def _on_agent_measurement_started(self, technique: str) -> None:
-        """Prepare the live plot for an agent-driven (mock) run.
-
-        Mirrors the clear_plot/set_technique step that
-        ``_on_start_measurement`` performs for GUI-started runs, so
-        agent-driven measurements render with the correct axis
-        variable mapping.
-
-        Args:
-            technique: Technique identifier from measurement_started.
-        """
-        self._plot_container.clear_plot()
-        self._plot_container.set_technique(technique)
-
     @pyqtSlot(object)
     def _on_agent_measurement_finished(
         self, result: MeasurementResult
@@ -442,7 +515,8 @@ class MainWindow(QMainWindow):
         self._meas_panel.set_idle()
         self._export_action.setEnabled(True)
         self._status_progress.setText("Idle")
-        self._plot_container.on_measurement_finished()
+        if self._plot_container is not None:
+            self._plot_container.on_measurement_finished()
         n_points = result.num_points
         n_channels = len(result.measured_channels)
         self.statusBar().showMessage(
@@ -454,6 +528,60 @@ class MainWindow(QMainWindow):
             n_points,
             n_channels,
         )
+
+    def _build_sequence_dock(self) -> None:
+        """Build the Sequence dock hosting the preset sequencer panel.
+
+        Mirrors ``_build_log_dock``: a movable/floatable ``QDockWidget``
+        titled "Sequence" hosting a :class:`SequencePanel` that is wired
+        to the shared PresetManager, engine, and a connection accessor by
+        injection (the panel owns no engine of its own).  Sequence
+        start/stop is bridged into the export-suppression + Start-disable
+        state via :meth:`_on_sequence_started` / :meth:`_on_sequence_stopped`.
+        """
+        dock = QDockWidget("Sequence", self)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        self._sequence_panel = SequencePanel(
+            preset_manager=self._preset_mgr,
+            engine=self._engine,
+            connection_provider=self._sequence_connection,
+            export_base_provider=self._sequence_export_base,
+        )
+        self._sequence_panel.sequence_started.connect(
+            self._on_sequence_started
+        )
+        self._sequence_panel.sequence_stopped.connect(
+            self._on_sequence_stopped
+        )
+        dock.setWidget(self._sequence_panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self._sequence_dock = dock
+
+    def _sequence_connection(self) -> Optional[PicoConnection]:
+        """Return the connection for the sequencer, or None if down.
+
+        The sequencer reuses the main window's single ``PicoConnection``
+        so every step runs against the same already-open serial link.
+        """
+        if self._connection.is_connected:
+            return self._connection
+        return None
+
+    def _sequence_export_base(self) -> tuple[str, bool]:
+        """Return ``(base_export_dir, auto_save_all)`` for a sequence run.
+
+        Mirrors the single-run policy exactly: the base resolves to the
+        explicit auto-save folder (else the configured export dir), and
+        ``auto_save_all`` is the GUI auto-save toggle. The base is ALWAYS
+        supplied because provenance-forced techniques (EIS/GEIS) must
+        auto-save their ``_script.mscr`` even when the toggle is off —
+        the runner applies that per-step forcing itself.
+        """
+        base = self._meas_panel.auto_save_directory() or get_export_dir()
+        return base, self._meas_panel.is_auto_save_enabled()
 
     def _build_menu_bar(self) -> None:
         """Create the menu bar with File, Device, and Help menus."""
@@ -467,6 +595,10 @@ class MainWindow(QMainWindow):
         self._export_action.setEnabled(False)
         self._export_action.triggered.connect(self._on_export)
         file_menu.addAction(self._export_action)
+
+        set_export_dir_action = QAction("Set Export &Folder...", self)
+        set_export_dir_action.triggered.connect(self._on_set_export_dir)
+        file_menu.addAction(set_export_dir_action)
 
         file_menu.addSeparator()
 
@@ -530,7 +662,11 @@ class MainWindow(QMainWindow):
 
         # Technique panel -> plot container
         self._tech_panel.technique_changed.connect(
-            self._plot_container.set_technique
+            self._on_technique_preview
+        )
+        # Technique panel -> force auto-save default for EIS/GEIS
+        self._tech_panel.technique_changed.connect(
+            self._on_technique_changed_auto_save
         )
 
         # Electrode-config panel -> swap visible channel panel
@@ -564,10 +700,16 @@ class MainWindow(QMainWindow):
         self._tech_panel.delete_preset_requested.connect(
             self._on_delete_preset
         )
+        # "Import preset file..." entry repointed the active store; the
+        # panel already repopulated its own dropdown, so just refresh the
+        # rest of the preset-dependent UI.
+        self._tech_panel.presets_imported.connect(
+            self._on_presets_imported
+        )
 
         # Engine signals -> GUI updates
         self._engine.data_point_ready.connect(
-            self._plot_container.on_data_point
+            self._route_data_point
         )
         self._engine.measurement_started.connect(
             self._on_measurement_started
@@ -686,6 +828,26 @@ class MainWindow(QMainWindow):
     # Measurement lifecycle
     # ------------------------------------------------------------------
 
+    def _default_export_dir(self) -> str:
+        """Return the configured base directory for auto-saved run folders.
+
+        Delegates to the configurable export-dir setting so forced and
+        opt-in auto-save share one user-set location (File > Set Export
+        Folder), rather than the legacy in-repo ``exports/``.
+        """
+        return get_export_dir()
+
+    @pyqtSlot(str)
+    def _on_technique_changed_auto_save(self, technique: str) -> None:
+        """Reflect the forced-auto-save default in the checkbox.
+
+        EIS/GEIS always auto-save (see :func:`_forces_auto_save`); checking
+        the box keeps the UI consistent with what the run will actually do.
+        Other techniques are left as the operator set them.
+        """
+        if _forces_auto_save(technique):
+            self._meas_panel.set_auto_save(True, self._default_export_dir())
+
     @pyqtSlot()
     def _on_start_measurement(self) -> None:
         """Gather config from panels and start the measurement engine."""
@@ -730,21 +892,23 @@ class MainWindow(QMainWindow):
             else:  # on_board
                 re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
 
-        # Build auto-save config if enabled. Reset first so a stale True
-        # from a previous run that ended in error can't mislabel this run.
+        # Build auto-save config. EIS/GEIS always auto-save so the exact
+        # MethodSCRIPT (DC bias + current ranging) is recorded as
+        # _script.mscr in the run folder — those settings are not otherwise
+        # recoverable from the saved data; other techniques honour the
+        # checkbox. Reset the active flag first so a stale True from a
+        # previous run that ended in error can't mislabel this run.
         auto_save = None
         self._auto_save_active = False
-        if self._meas_panel.is_auto_save_enabled():
-            auto_dir = self._meas_panel.auto_save_directory()
-            if not auto_dir:
-                auto_dir = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)),
-                    "..", "..", "exports",
-                )
-                auto_dir = os.path.normpath(auto_dir)
-            auto_save = AutoSaveConfig(
-                enabled=True, output_dir=auto_dir
+        if (
+            _forces_auto_save(technique)
+            or self._meas_panel.is_auto_save_enabled()
+        ):
+            auto_dir = (
+                self._meas_panel.auto_save_directory()
+                or self._default_export_dir()
             )
+            auto_save = AutoSaveConfig(enabled=True, output_dir=auto_dir)
             self._auto_save_active = True
 
         try:
@@ -768,10 +932,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Prepare the plot
-        self._plot_container.clear_plot()
-        self._plot_container.set_technique(technique)
-
+        # The live-plot tab is created when the engine emits
+        # measurement_started (see _on_measurement_started).
         try:
             self._engine.start_measurement(self._connection, config)
         except RuntimeError as exc:
@@ -798,12 +960,164 @@ class MainWindow(QMainWindow):
         self._meas_panel.set_running()
         self._status_progress.setText("Running")
 
+    @pyqtSlot()
+    def _on_sequence_started(self) -> None:
+        """Enter sequence mode: suppress export prompts, lock Start.
+
+        While a sequence runs, every step's ``measurement_finished`` is
+        auto-saved (no modal prompt) and the single-run Start control
+        stays disabled so the user can't launch a competing measurement.
+        """
+        self._sequence_active = True
+        # Fresh tab strip: one live-plot tab is added per step as it starts.
+        self._seq_plot_n = 0
+        self._reset_plot_tabs()
+        # Start collecting the results of steps that don't auto-save, for
+        # the end-of-run save prompt.
+        self._sequence_results = []
+        self._meas_panel.set_disabled()
+        self._status_progress.setText("Sequence running")
+
+    @pyqtSlot()
+    def _on_sequence_stopped(self) -> None:
+        """Leave sequence mode and offer to save any unsaved step data.
+
+        This is the SINGLE terminal hook — the panel emits
+        ``sequence_stopped`` on clean completion, user stop, and step
+        error alike — so no ending path can silently discard the
+        retained (non-auto-saved) step results.
+        """
+        self._sequence_active = False
+        # Restore Start only when a device is still connected; the engine
+        # is idle (or winding down an abort) once the sequence has stopped.
+        if self._connection.is_connected:
+            self._meas_panel.set_idle()
+        else:
+            self._meas_panel.set_disabled()
+        self._status_progress.setText("Idle")
+        # Never leave the central area tab-less (a first step that fails
+        # before measurement_started would otherwise leave zero tabs and
+        # a dead technique preview until the next run).
+        if self._plot_tabs.count() == 0:
+            self._add_plot_tab(
+                self._tech_panel.selected_technique() or "", "Live"
+            )
+        self._offer_sequence_save()
+
+    def _offer_sequence_save(self) -> None:
+        """Prompt to save retained (non-auto-saved) sequence step data."""
+        results = self._sequence_results
+        self._sequence_results = []
+        if not results:
+            return
+
+        n = len(results)
+        reply = QMessageBox.question(
+            self,
+            "Save Sequence Data",
+            f"The sequence ended with {n} completed step(s) that were "
+            "not auto-saved. Save them now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            self.statusBar().showMessage("Sequence data discarded.")
+            return
+
+        try:
+            parent = self._save_sequence_results(results)
+        except Exception as exc:  # noqa: BLE001 - surface, don't crash
+            logger.error("Sequence save failed: %s", exc)
+            QMessageBox.warning(
+                self, "Save Failed", f"Could not save sequence: {exc}"
+            )
+            return
+        self.statusBar().showMessage(f"Sequence saved to {parent}")
+        QMessageBox.information(
+            self,
+            "Sequence Saved",
+            f"Saved {n} step(s) to:\n{parent}",
+        )
+
+    def _save_sequence_results(
+        self, results: list[MeasurementResult]
+    ) -> str:
+        """Write every retained step into one shared sequence folder.
+
+        Uses the same layout helpers as the runner's live auto-save path
+        (``make_sequence_dir`` + ``sequence_step_dirname``), so both ways
+        of saving a sequence land as a ``<stamp>_sequence`` parent with
+        one ``stepNN_<technique>`` subfolder per step (per-channel CSVs
+        plus a ``.pssession`` each). A modal progress dialog keeps the
+        UI responsive on long multi-channel saves.
+
+        Args:
+            results: The per-step results collected during the run.
+
+        Returns:
+            The absolute path of the created ``<stamp>_sequence`` parent.
+        """
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        parent = make_sequence_dir(get_export_dir(), stamp)
+        progress = QProgressDialog(
+            "Saving sequence steps...", None, 0, len(results), self
+        )
+        progress.setWindowModality(
+            Qt.WindowModality.ApplicationModal
+        )
+        progress.setMinimumDuration(500)
+        try:
+            for i, result in enumerate(results):
+                progress.setValue(i)
+                technique = result.technique or "unknown"
+                step_dir = os.path.join(
+                    parent, sequence_step_dirname(i, technique)
+                )
+                os.makedirs(step_dir, exist_ok=True)
+                self._write_csv_files(result, step_dir)
+                try:
+                    PsSessionExporter().export_pssession(
+                        result,
+                        os.path.join(
+                            step_dir, f"{technique}.pssession"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - CSVs written
+                    logger.error(
+                        "pssession export failed for step %d: %s",
+                        i + 1,
+                        exc,
+                    )
+            progress.setValue(len(results))
+        finally:
+            progress.close()
+        logger.info(
+            "Saved %d sequence step(s) to %s", len(results), parent
+        )
+        return parent
+
     @pyqtSlot(str)
     def _on_measurement_started(self, technique: str) -> None:
         """Handle measurement_started signal from engine."""
+        # Give the run its own live-plot tab. A sequence accumulates one
+        # tab per step so the user can tab between every step's plot; a
+        # single run replaces the tabs with one. Each tab is configured for
+        # the technique actually starting, so a mixed CV/EIS/CA sequence
+        # never plots one step on another's axes.
+        if self._sequence_active:
+            self._seq_plot_n += 1
+            self._add_plot_tab(
+                technique, f"{self._seq_plot_n}·{technique.upper()}"
+            )
+        else:
+            self._reset_plot_tabs()
+            self._add_plot_tab(technique, technique.upper() or "Run")
         # Prevent Export from silently writing the prior run's data
         # if the user invokes it before this run completes.
         self._last_result = None
+        # Fresh per-step auto-save tracking: auto_save_completed (emitted
+        # before measurement_finished) fills this in when the run wrote.
+        self._step_autosave_dir = None
         self._export_action.setEnabled(False)
         self._meas_panel.set_running()
         self._status_progress.setText(
@@ -823,10 +1137,9 @@ class MainWindow(QMainWindow):
         Stores the result, updates UI to idle, and prompts for export.
         """
         self._last_result = result
-        self._meas_panel.set_idle()
         self._export_action.setEnabled(True)
-        self._status_progress.setText("Idle")
-        self._plot_container.on_measurement_finished()
+        if self._plot_container is not None:
+            self._plot_container.on_measurement_finished()
 
         n_points = result.num_points
         n_channels = len(result.measured_channels)
@@ -839,6 +1152,39 @@ class MainWindow(QMainWindow):
             n_points,
             n_channels,
         )
+
+        # In sequence mode each step finishing must NOT pop a modal
+        # prompt (it would block the queue) and must NOT re-enable the
+        # single-run Start control — the SequenceRunner drives the next
+        # step and the sequence_stopped signal restores the controls.
+        if self._sequence_active:
+            # Per-step export prompts stay suppressed mid-queue. A step
+            # that auto-saved (its CSVs + _script.mscr are already on
+            # disk) gets its .pssession written into the same folder now
+            # — the convention is per-channel CSV + one .pssession per
+            # run — and is NOT retained. Steps that didn't auto-save are
+            # retained for the end-of-run save prompt.
+            if self._step_autosave_dir:
+                technique = result.technique or "unknown"
+                try:
+                    PsSessionExporter().export_pssession(
+                        result,
+                        os.path.join(
+                            self._step_autosave_dir,
+                            f"{technique}.pssession",
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - CSVs on disk
+                    logger.error(
+                        "Step .pssession export failed: %s", exc
+                    )
+            else:
+                self._sequence_results.append(result)
+            self._auto_save_active = False
+            return
+
+        self._meas_panel.set_idle()
+        self._status_progress.setText("Idle")
 
         # If auto-save was active, data is already on disk
         if self._auto_save_active:
@@ -934,6 +1280,28 @@ class MainWindow(QMainWindow):
                 "No measurement results to export.",
             )
 
+    @pyqtSlot()
+    def _on_set_export_dir(self) -> None:
+        """Choose and persist the default export directory.
+
+        The selected folder is remembered across launches (via
+        ``app_settings``) and used as the base for manual exports,
+        auto-save, and sequence step output. Picking nothing leaves the
+        current setting unchanged.
+        """
+        current = get_export_dir()
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Set Export Folder",
+            current,
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not chosen:
+            return
+        set_export_dir(chosen)
+        self.statusBar().showMessage(f"Export folder set to: {chosen}")
+        logger.info("Export folder set to %s", chosen)
+
     def _do_export(self, result: MeasurementResult) -> None:
         """Export measurement results to a user-chosen directory.
 
@@ -944,13 +1312,7 @@ class MainWindow(QMainWindow):
         Args:
             result: The measurement result to export.
         """
-        default_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..",
-            "..",
-            "exports",
-        )
-        default_dir = os.path.normpath(default_dir)
+        default_dir = get_export_dir()
 
         directory = QFileDialog.getExistingDirectory(
             self,
@@ -1039,8 +1401,32 @@ class MainWindow(QMainWindow):
     # Presets and auto-save
     # ------------------------------------------------------------------
 
+    def _load_last_preset_file(self) -> None:
+        """Adopt the remembered last-used preset file, if any.
+
+        Reads the ``last_preset_file`` pointer from app settings and, when
+        it names an existing file, loads it into the active
+        :class:`PresetManager` so the user's chosen preset store reappears
+        across launches.  A stale/missing pointer is ignored silently so
+        the default per-user store remains active.
+        """
+        remembered = get_last_preset_file()
+        if not remembered or not os.path.isfile(remembered):
+            return
+        try:
+            self._preset_mgr.load_from_path(remembered)
+        except OSError as e:
+            logger.warning(
+                "Could not load last preset file %s: %s",
+                remembered,
+                e,
+            )
+
     def _load_presets_into_ui(self) -> None:
         """Populate the technique panel preset combo box."""
+        # Hand the panel the active manager so its "Import preset
+        # file..." entry can repoint the store (CMU.17.034).
+        self._tech_panel.set_preset_manager(self._preset_mgr)
         presets = {
             k: p.name
             for k, p in self._preset_mgr.get_all().items()
@@ -1049,6 +1435,23 @@ class MainWindow(QMainWindow):
             k for k in presets if not self._preset_mgr.is_builtin(k)
         }
         self._tech_panel.refresh_presets(presets, deletable=deletable)
+
+    @pyqtSlot(str)
+    def _on_presets_imported(self, path: str) -> None:
+        """React to a preset-file import from the technique panel.
+
+        The panel already reloaded the manager and repopulated its own
+        dropdown; refresh the deletable-key bookkeeping by re-running the
+        shared populate path and surface the change in the status bar.
+
+        Args:
+            path: The imported preset file path.
+        """
+        self._load_presets_into_ui()
+        self.statusBar().showMessage(
+            f"Imported presets from {os.path.basename(path)}"
+        )
+        logger.info("Presets imported from %s", path)
 
     @pyqtSlot()
     def _on_save_preset(self) -> None:
@@ -1067,8 +1470,22 @@ class MainWindow(QMainWindow):
 
         technique = self._tech_panel.selected_technique()
         params = self._tech_panel.get_params()
-        channels = self._chan_panel.selected_channels()
         auto_save = self._meas_panel.is_auto_save_enabled()
+
+        # Capture the live electrode-config mode so the preset round-trips
+        # the wiring policy, not just technique params + channels
+        # (CMU.17.034). In manual mode the WE + RE/CE pairing both come
+        # from the manual panel; in external/on_board the channel grid
+        # supplies WE and re_ce_channels stays empty (TechniqueConfig
+        # repopulates the mode default at run time).
+        mode = self._electrode_config_panel.selected_mode()
+        if mode == "manual":
+            channels, re_ce_channels = (
+                self._manual_channel_panel.selected_pairs()
+            )
+        else:
+            channels = self._chan_panel.selected_channels()
+            re_ce_channels = []
 
         preset = Preset(
             name=name,
@@ -1077,6 +1494,8 @@ class MainWindow(QMainWindow):
             channels=channels,
             auto_save=auto_save,
             description=f"User preset: {name}",
+            electrode_config_mode=mode,
+            re_ce_channels=re_ce_channels,
         )
         self._preset_mgr.add_preset(key, preset)
 
@@ -1127,15 +1546,30 @@ class MainWindow(QMainWindow):
 
         self._tech_panel.set_technique(preset.technique)
         self._tech_panel.set_params(preset.params)
-        self._chan_panel.set_channels(preset.channels)
 
-        default_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..", "..", "exports",
+        # Restore the wiring mode and route the channels to the matching
+        # panel (CMU.17.034). Manual presets carry an explicit per-WE
+        # RE/CE pairing; external/on_board presets only drive the grid.
+        mode = preset.electrode_config_mode or "external"
+        self._electrode_config_panel.set_mode(mode)
+        if mode == "manual":
+            self._manual_channel_panel.set_pairs(
+                preset.channels, preset.re_ce_channels
+            )
+        else:
+            self._chan_panel.set_channels(preset.channels)
+
+        # Auto-save is opt-in and the user's checkbox choice is theirs:
+        # selecting a preset never CLEARS a manually enabled auto-save,
+        # and a preset's saved auto_save flag never forces it on. The one
+        # forcing exception is EIS/GEIS (script provenance), which turns
+        # the box on.
+        enable = (
+            self._meas_panel.is_auto_save_enabled()
+            or _forces_auto_save(preset.technique)
         )
-        default_dir = os.path.normpath(default_dir)
         self._meas_panel.set_auto_save(
-            preset.auto_save, default_dir
+            enable, self._default_export_dir()
         )
 
         self.statusBar().showMessage(
@@ -1145,7 +1579,14 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_auto_save_completed(self, output_dir: str) -> None:
-        """Update status bar when auto-save writes files."""
+        """Record the run's auto-save dir and update the status bar.
+
+        The engine emits this BEFORE ``measurement_finished``, so the
+        finished handler can tell an auto-saved sequence step (gets its
+        ``.pssession`` written here, not retained) from one that needs
+        retaining for the end-of-run save prompt.
+        """
+        self._step_autosave_dir = output_dir
         dirname = os.path.basename(output_dir)
         self.statusBar().showMessage(
             f"Auto-saved to: {dirname}"

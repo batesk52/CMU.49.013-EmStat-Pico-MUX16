@@ -73,11 +73,37 @@ class AutoSaveConfig:
     Attributes:
         enabled: Whether auto-save is active.
         output_dir: Base directory for auto-saved files. A timestamped
-            subdirectory is created automatically.
+            subdirectory is created automatically unless ``exact_dir``
+            is set.
+        exact_dir: When True, ``output_dir`` IS the run directory —
+            no timestamped subdirectory is created. Used by the
+            sequencer to give every step run (repeats included) its own
+            collision-free ``stepNN_<technique>`` folder.
     """
 
     enabled: bool = False
     output_dir: str = ""
+    exact_dir: bool = False
+
+
+# Techniques that must always auto-save for provenance: their generating
+# MethodSCRIPT (frequency table, amplitude, autoranging window) is not
+# otherwise recoverable from the saved data, so every run persists a
+# ``_script.mscr`` copy alongside the CSVs. Policy lives here (data
+# layer) so the GUI and the sequence runner apply the same rule.
+ALWAYS_AUTOSAVE_TECHNIQUES: frozenset[str] = frozenset({"eis", "geis"})
+
+
+def forces_auto_save(technique: str) -> bool:
+    """Return True if ``technique`` must always auto-save for provenance.
+
+    Args:
+        technique: Technique identifier (case-insensitive).
+
+    Returns:
+        True for techniques in :data:`ALWAYS_AUTOSAVE_TECHNIQUES`.
+    """
+    return technique.lower() in ALWAYS_AUTOSAVE_TECHNIQUES
 
 
 @dataclass

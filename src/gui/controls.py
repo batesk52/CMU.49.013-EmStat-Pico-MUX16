@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QRadioButton,
     QSizePolicy,
@@ -43,14 +44,24 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.data.app_settings import set_last_preset_file
 from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
     MODE_C_MAX_CHANNEL,
     ON_BOARD_RE_CE_CHANNEL,
 )
+from src.data.presets import PresetManager
 from src.techniques.scripts import supported_techniques, technique_params
 
 logger = logging.getLogger(__name__)
+
+# Sentinel ``itemData`` value marking the trailing "Import preset file..."
+# entry in the preset combo box.  Selecting it opens a file dialog rather
+# than loading a preset (CMU.17.034 — Phase 1).
+_IMPORT_PRESET_SENTINEL = "__import_preset__"
+
+# File dialog filter for externalized preset files (CMU.17.034).
+_PRESET_FILE_FILTER = "MUX16 presets (*.mux16)"
 
 # -----------------------------------------------------------------------
 # Friendly technique display names
@@ -77,50 +88,17 @@ _TECHNIQUE_LABELS: dict[str, str] = {
     "ocp_alt_mux": "OCP (MUX-Alternating)",
 }
 
-# Parameter display names and units for spin box labels
-_PARAM_LABELS: dict[str, tuple[str, str]] = {
-    "e_begin": ("E begin", "V"),
-    "e_end": ("E end", "V"),
-    "e_step": ("E step", "V"),
-    "e_vertex1": ("E vertex 1", "V"),
-    "e_vertex2": ("E vertex 2", "V"),
-    "e_pulse": ("E pulse", "V"),
-    "e_dc": ("E DC", "V"),
-    "e_ac": ("E AC", "V"),
-    "e_cond": ("E conditioning", "V"),
-    "e_dep": ("E deposition", "V"),
-    "e_eq": ("E equilibration", "V"),
-    "scan_rate": ("Scan rate", "V/s"),
-    "t_pulse": ("t pulse", "s"),
-    "t_run": ("t run", "s"),
-    "t_interval": ("t interval", "s"),
-    "t_base": ("t base", "s"),
-    "t_cond": ("t conditioning", "s"),
-    "t_dep": ("t deposition", "s"),
-    "t_eq": ("t equilibration", "s"),
-    "amplitude": ("Amplitude", "V"),
-    "frequency": ("Frequency", "Hz"),
-    "freq_start": ("Freq start", "Hz"),
-    "freq_end": ("Freq end", "Hz"),
-    "i_dc": ("I DC", "A"),
-    "i_ac": ("I AC", "A"),
-    "n_scans": ("# Scans", ""),
-    "n_freq": ("# Frequencies", ""),
-    "settle_time": ("Settle time", "s"),
-    "samples_per_visit": ("Samples per channel visit", ""),
-    "cr": ("Current range", ""),
-    "bw_hz": ("Max Bandwidth", "Hz"),
-}
-
-# Current range options for combo box
-_CURRENT_RANGES = [
-    "100n", "2u", "4u", "8u", "16u",
-    "32u", "63u", "100u", "1m", "10m", "100m",
-]
-
-# Max bandwidth options for combo box (Hz).
-# Mode-2 sweep range; default 400 preserves legacy behavior.
-_BANDWIDTH_HZ = [0.4, 4, 40, 400, 4000, 40000, 200000]
+# Parameter labels/ranges and the widget factory live in
+# src/gui/parameter_form.py (the single authority shared with the
+# sequence step editor); aliases kept for in-module readability.
+from src.gui.parameter_form import (  # noqa: E402
+    BANDWIDTH_HZ as _BANDWIDTH_HZ,
+    CURRENT_RANGES as _CURRENT_RANGES,
+    PARAM_LABELS as _PARAM_LABELS,
+    create_param_widget,
+    guess_step as _guess_step,
+    read_param_widget,
+)
 
 
 # =======================================================================
@@ -317,6 +295,9 @@ class TechniquePanel(QGroupBox):
             the user selects a different technique.
         params_changed(): Emitted when any parameter value changes.
         save_preset_requested(): Emitted when the user clicks Save.
+        presets_imported(str): Emitted with the imported file path after
+            the user picks a new preset file via "Import preset file...".
+            The main window reacts by repopulating any preset-dependent UI.
     """
 
     technique_changed = pyqtSignal(str)
@@ -324,11 +305,22 @@ class TechniquePanel(QGroupBox):
     preset_selected = pyqtSignal(str)  # preset key
     save_preset_requested = pyqtSignal()
     delete_preset_requested = pyqtSignal(str)  # preset key to delete
+    presets_imported = pyqtSignal(str)  # imported preset file path
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Technique", parent)
         self._param_widgets: dict[str, QWidget] = {}
         self._deletable_keys: set[str] = set()
+        # PresetManager whose store the "Import preset file..." entry
+        # repoints.  Injected by the main window via set_preset_manager;
+        # without it the import entry is inert (no manager to load into).
+        self._preset_mgr: Optional[PresetManager] = None
+        # Path used to override the app-settings store in tests so the
+        # real per-user file is never touched.
+        self._settings_path: Optional[str] = None
+        # Combo index selected before the import dialog opened, so a
+        # cancelled dialog can restore the prior selection.
+        self._pre_import_index: int = 0
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -429,27 +421,10 @@ class TechniquePanel(QGroupBox):
         Returns:
             Dict mapping parameter names to their current values.
         """
-        params: dict[str, Any] = {}
-        for name, widget in self._param_widgets.items():
-            if isinstance(widget, QDoubleSpinBox):
-                params[name] = widget.value()
-            elif isinstance(widget, QSpinBox):
-                params[name] = widget.value()
-            elif isinstance(widget, QComboBox):
-                # bw_hz stores numeric Hz value in itemData; recover
-                # it as float/int so _format_si() formats it correctly.
-                if name == "bw_hz":
-                    data = widget.currentData()
-                    if data is None:
-                        # Fallback: try to parse the visible text
-                        try:
-                            data = float(widget.currentText())
-                        except (TypeError, ValueError):
-                            data = 400
-                    params[name] = data
-                else:
-                    params[name] = widget.currentText()
-        return params
+        return {
+            name: read_param_widget(name, widget)
+            for name, widget in self._param_widgets.items()
+        }
 
     def set_technique(self, technique: str) -> None:
         """Programmatically select a technique.
@@ -497,25 +472,160 @@ class TechniquePanel(QGroupBox):
                 excluded). If None, no preset is deletable.
         """
         self._deletable_keys = deletable or set()
+        # Preserve the current selection across the rebuild so a refresh
+        # (e.g. the main window re-running its populate path right after
+        # an import) cannot visually reset the dropdown to "(No Preset)"
+        # while the parameter form still shows the selected preset.
+        prev_key = self._preset_combo.currentData()
         self._preset_combo.blockSignals(True)
         self._preset_combo.clear()
         self._preset_combo.addItem("(No Preset)", "")
         for key, name in sorted(presets.items()):
             self._preset_combo.addItem(name, key)
+        # Trailing "Import preset file..." action entry (CMU.17.034).
+        # Always last so it reads as a command, not a preset.
+        self._preset_combo.addItem(
+            "Import preset file...", _IMPORT_PRESET_SENTINEL
+        )
+        restored = -1
+        if prev_key and prev_key != _IMPORT_PRESET_SENTINEL:
+            restored = self._preset_combo.findData(prev_key)
+            if restored >= 0:
+                self._preset_combo.setCurrentIndex(restored)
         self._preset_combo.blockSignals(False)
-        # Selection resets to "(No Preset)" after a rebuild.
-        self._delete_preset_btn.setEnabled(False)
+        self._delete_preset_btn.setEnabled(
+            restored >= 0 and prev_key in self._deletable_keys
+        )
+
+    def set_preset_manager(
+        self,
+        manager: PresetManager,
+        settings_path: Optional[str] = None,
+    ) -> None:
+        """Inject the PresetManager the import entry loads into.
+
+        Args:
+            manager: Active :class:`PresetManager`; "Import preset
+                file..." calls ``load_from_path`` on it.
+            settings_path: Optional app-settings file override (tests
+                point this at a temp file so the real per-user store is
+                untouched).
+        """
+        self._preset_mgr = manager
+        self._settings_path = settings_path
 
     # ---- Internal --------------------------------------------------------
 
     def _on_preset_selected(self, index: int) -> None:
         """Handle preset combo box selection change."""
         key = self._preset_combo.itemData(index)
+        # The trailing "Import preset file..." entry is an action, not a
+        # preset: route to the file dialog and never treat it as a key.
+        if key == _IMPORT_PRESET_SENTINEL:
+            self._delete_preset_btn.setEnabled(False)
+            self._on_import_preset_file()
+            return
         self._delete_preset_btn.setEnabled(
             bool(key) and key in self._deletable_keys
         )
+        # Remember the last real selection so a cancelled import dialog
+        # can fall back to it.
+        self._pre_import_index = index
         if key:
             self.preset_selected.emit(key)
+
+    def _on_import_preset_file(self) -> None:
+        """Open a file dialog and load the chosen ``*.mux16`` store.
+
+        On a successful pick the manager's active store is repointed to
+        the file, the dropdown is repopulated, the path is remembered as
+        last-used, and ``presets_imported`` is emitted.  A cancelled
+        dialog (or a missing manager) restores the prior selection and
+        does nothing else.
+        """
+        if self._preset_mgr is None:
+            logger.warning(
+                "Import preset selected with no PresetManager set."
+            )
+            self._restore_pre_import_selection()
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import preset file",
+            "",
+            _PRESET_FILE_FILTER,
+        )
+        if not path:
+            # Cancelled: leave the manager untouched, restore selection.
+            self._restore_pre_import_selection()
+            return
+
+        try:
+            self._preset_mgr.load_from_path(path)
+        except (OSError, ValueError) as exc:
+            # load_from_path parses strictly and raises BEFORE touching
+            # the manager, so a corrupt/wrong file leaves the store and
+            # the active path exactly as they were. Surface the failure
+            # — silently doing nothing reads as a successful import.
+            logger.warning(
+                "Could not import preset file %s: %s", path, exc
+            )
+            QMessageBox.warning(
+                self,
+                "Import Failed",
+                f"Could not import preset file:\n{path}\n\n{exc}",
+            )
+            self._restore_pre_import_selection()
+            return
+
+        # Persist the chosen file as last-used (CMU.17.034).
+        set_last_preset_file(path, path=self._settings_path)
+
+        # Repopulate the dropdown from the freshly loaded store.
+        presets = {
+            k: p.name for k, p in self._preset_mgr.get_all().items()
+        }
+        deletable = {
+            k for k in presets if not self._preset_mgr.is_builtin(k)
+        }
+        self.refresh_presets(presets, deletable=deletable)
+        # Land on the first real preset rather than "(No Preset)" so an
+        # import immediately surfaces a usable config (index 0 is the
+        # "(No Preset)" placeholder; index 1 is the first real preset when
+        # the imported store is non-empty).
+        self._select_first_real_preset()
+        self.presets_imported.emit(path)
+        logger.info("Imported preset file: %s", path)
+
+    def _select_first_real_preset(self) -> None:
+        """Select the first real preset entry after a dropdown rebuild.
+
+        Falls back to "(No Preset)" (index 0) when the store is empty.
+        The first real preset sits at index 1 (index 0 is the placeholder
+        and the trailing entry is the "Import preset file..." action).
+        """
+        first_real = -1
+        for i in range(self._preset_combo.count()):
+            key = self._preset_combo.itemData(i)
+            if key and key != _IMPORT_PRESET_SENTINEL:
+                first_real = i
+                break
+        idx = first_real if first_real >= 0 else 0
+        self._pre_import_index = idx
+        # currentIndexChanged fires _on_preset_selected, which emits
+        # preset_selected so the main window loads the config.
+        self._preset_combo.setCurrentIndex(idx)
+
+    def _restore_pre_import_selection(self) -> None:
+        """Restore the combo to the selection before the import dialog."""
+        count = self._preset_combo.count()
+        idx = self._pre_import_index
+        if idx < 0 or idx >= count:
+            idx = 0
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.setCurrentIndex(idx)
+        self._preset_combo.blockSignals(False)
 
     def _on_delete_clicked(self) -> None:
         """Emit delete request for the currently selected preset."""
@@ -579,6 +689,10 @@ class TechniquePanel(QGroupBox):
     ) -> QWidget:
         """Create an appropriate input widget for a parameter.
 
+        Delegates to the shared factory in ``parameter_form`` (the
+        single authority, also used by sequence step editors) so the
+        two parameter UIs cannot drift.
+
         Args:
             name: Parameter name.
             default: Default value.
@@ -586,58 +700,9 @@ class TechniquePanel(QGroupBox):
         Returns:
             A QDoubleSpinBox, QSpinBox, or QComboBox.
         """
-        if name == "cr":
-            # Current range uses a combo box
-            combo = QComboBox()
-            for cr in _CURRENT_RANGES:
-                combo.addItem(cr)
-            # Set to default
-            idx = combo.findText(str(default))
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            combo.currentIndexChanged.connect(
-                lambda: self.params_changed.emit()
-            )
-            return combo
-
-        if name == "bw_hz":
-            # Max bandwidth uses a combo box of Hz values.
-            # Each item stores the numeric Hz value as itemData so
-            # callers can recover a float/int rather than a string.
-            combo = QComboBox()
-            for hz in _BANDWIDTH_HZ:
-                # Use int label when value is integer, else float repr
-                label = (
-                    str(int(hz))
-                    if float(hz).is_integer()
-                    else str(hz)
-                )
-                combo.addItem(label, hz)
-            # Default selection (matches scripts default bw_hz=400)
-            try:
-                default_hz = float(default)
-            except (TypeError, ValueError):
-                default_hz = 400.0
-            idx = combo.findText(
-                str(int(default_hz))
-                if default_hz.is_integer()
-                else str(default_hz)
-            )
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            combo.currentIndexChanged.connect(
-                lambda: self.params_changed.emit()
-            )
-            return combo
-
-        if isinstance(default, int):
-            spin = QSpinBox()
-            spin.setRange(0, 10000)
-            spin.setValue(default)
-            spin.valueChanged.connect(
-                lambda: self.params_changed.emit()
-            )
-            return spin
+        return create_param_widget(
+            name, default, self.params_changed.emit
+        )
 
         # Float parameter
         spin = QDoubleSpinBox()
@@ -649,29 +714,6 @@ class TechniquePanel(QGroupBox):
             lambda: self.params_changed.emit()
         )
         return spin
-
-
-def _guess_step(value: float) -> float:
-    """Guess a reasonable spin box step size from a default value.
-
-    Args:
-        value: The default parameter value.
-
-    Returns:
-        A step size (order-of-magnitude smaller than the value).
-    """
-    if value == 0:
-        return 0.001
-    abs_val = abs(value)
-    if abs_val >= 100:
-        return 1.0
-    if abs_val >= 1:
-        return 0.1
-    if abs_val >= 0.01:
-        return 0.001
-    if abs_val >= 0.0001:
-        return 0.00001
-    return abs_val / 10.0
 
 
 # =======================================================================

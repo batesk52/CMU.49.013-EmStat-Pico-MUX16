@@ -2,7 +2,21 @@
 
 Provides :class:`Preset` dataclass and :class:`PresetManager` for
 saving, loading, and managing named measurement configurations.
-Ships with a built-in NO Sensing preset matching the DARPA IV&V SOP.
+
+Preset files are user data and live OUTSIDE the repository (CMU.17.034 —
+preset sequencer, Phase 1).  The default store is a versioned file in a
+per-user data directory; the in-repo ``presets/presets.json`` is treated
+as a one-time migration source only.  ``_BUILTIN_PRESETS`` stays in code
+as seed defaults and is always present in memory.
+
+On-disk format is JSON under a versioned wrapper::
+
+    {"format": "mux16-presets", "version": 1,
+     "presets": {<name>: <asdict(Preset)>}}
+
+The loader also accepts the legacy bare ``{<name>: {...}}`` map (detected
+by the absence of a ``"format"`` key) so files written before the wrapper
+was introduced still load cleanly.
 """
 
 from __future__ import annotations
@@ -13,17 +27,27 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from src.data.paths import USER_DATA_DIR
+
 logger = logging.getLogger(__name__)
 
-# Default preset storage location relative to project root.
-_DEFAULT_PRESETS_DIR = os.path.join(
+# On-disk wrapper identity.
+PRESET_FILE_FORMAT = "mux16-presets"
+PRESET_FILE_VERSION = 1
+
+# Per-user data directory for the externalized preset store.  Kept out of
+# the repo so presets are user data, not code; the location is shared
+# with app settings via src/data/paths.py (single source of truth).
+_USER_DATA_DIR = USER_DATA_DIR
+_DEFAULT_PRESETS_FILE = os.path.join(_USER_DATA_DIR, "presets.mux16")
+
+# Legacy in-repo store, kept only as a one-time migration source.
+_LEGACY_PRESETS_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)
     ))),
     "presets",
-)
-_DEFAULT_PRESETS_FILE = os.path.join(
-    _DEFAULT_PRESETS_DIR, "presets.json"
+    "presets.json",
 )
 
 
@@ -65,9 +89,122 @@ class Preset:
 # ---------------------------------------------------------------------------
 
 # Presets here are injected at load time and protected from deletion via
-# the GUI. Empty by default — all shipped presets live in presets.json
-# so users can manage them with Save/Delete without code changes.
-_BUILTIN_PRESETS: dict[str, Preset] = {}
+# the GUI.  A minimal generic set ships in code so a fresh checkout or a
+# packaged executable has usable starting points (the dropdown and the
+# sequencer's "Add step" were otherwise empty on a machine with no
+# migrated store).  Parameter values mirror the technique defaults in
+# ``src/techniques/scripts.py``; user presets with the same key override.
+_BUILTIN_PRESETS: dict[str, Preset] = {
+    "default_cv": Preset(
+        name="Default CV (CH1)",
+        technique="cv",
+        params={
+            "t_eq": 2.0,
+            "e_begin": -0.5,
+            "e_vertex1": 0.5,
+            "e_vertex2": -0.5,
+            "e_step": 0.01,
+            "scan_rate": 0.1,
+            "n_scans": 1,
+            "cr": "100u",
+        },
+        channels=[1],
+        description="Built-in generic CV starting point.",
+    ),
+    "default_eis": Preset(
+        name="Default EIS (CH1)",
+        technique="eis",
+        params={
+            "t_eq": 2.0,
+            "e_dc": 0.0,
+            "e_ac": 0.01,
+            "freq_start": 50000.0,
+            "freq_end": 10.0,
+            "n_freq": 31,
+            "cr": "100u",
+        },
+        channels=[1],
+        description="Built-in generic EIS starting point.",
+    ),
+    "default_ca": Preset(
+        name="Default CA (CH1)",
+        technique="ca",
+        params={
+            "e_dc": 0.1,
+            "t_run": 10.0,
+            "t_interval": 0.1,
+            "cr": "100u",
+            "bw_hz": 400,
+        },
+        channels=[1],
+        description="Built-in generic CA starting point.",
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# (De)serialization helpers
+# ---------------------------------------------------------------------------
+
+
+def _preset_from_dict(obj: dict[str, Any]) -> Preset:
+    """Build a :class:`Preset` from a raw dict, tolerating extra keys.
+
+    Filters the dict to the known ``Preset`` fields so older files
+    (pre-batch-2) and newer ones carrying unknown extras both load
+    cleanly.  Missing new fields fall back to their dataclass defaults.
+
+    Args:
+        obj: Raw mapping of preset field names to values.
+
+    Returns:
+        A constructed ``Preset``.
+    """
+    allowed = set(Preset.__dataclass_fields__.keys())
+    filtered = {k: v for k, v in obj.items() if k in allowed}
+    return Preset(**filtered)
+
+
+def _presets_from_payload(
+    data: dict[str, Any]
+) -> dict[str, Preset]:
+    """Extract a ``{name: Preset}`` map from a loaded JSON payload.
+
+    Accepts both the versioned wrapper
+    (``{"format": ..., "presets": {...}}``) and the legacy bare
+    ``{name: {...}}`` map.  Detection is by the presence of a
+    ``"format"`` key.
+
+    Args:
+        data: Parsed JSON object from a preset file.
+
+    Returns:
+        Mapping of preset key to ``Preset`` instance.
+    """
+    if isinstance(data, dict) and "format" in data:
+        raw = data.get("presets", {})
+    else:
+        # Legacy bare map: {name: {...preset...}}.
+        raw = data
+    return {key: _preset_from_dict(obj) for key, obj in raw.items()}
+
+
+def _wrap_presets(
+    presets: dict[str, Preset]
+) -> dict[str, Any]:
+    """Wrap a ``{name: Preset}`` map in the versioned on-disk format.
+
+    Args:
+        presets: In-memory preset map.
+
+    Returns:
+        A JSON-serializable wrapper dict.
+    """
+    return {
+        "format": PRESET_FILE_FORMAT,
+        "version": PRESET_FILE_VERSION,
+        "presets": {k: asdict(v) for k, v in presets.items()},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -76,75 +213,174 @@ _BUILTIN_PRESETS: dict[str, Preset] = {}
 
 
 class PresetManager:
-    """Load, save, and manage measurement presets from JSON.
+    """Load, save, and manage measurement presets from a JSON file.
 
-    Presets are stored in a JSON file.  Built-in presets are always
-    available and cannot be deleted (but their parameters can be
-    overridden by user presets with the same key).
+    Built-in presets are always available in memory and cannot be
+    deleted (but their parameters can be overridden by user presets
+    with the same key).  The active store is an external, versioned
+    file under a per-user data directory.
 
     Args:
-        path: Path to the presets JSON file.  Defaults to
-            ``presets/presets.json`` relative to the project root.
+        path: Path to the presets file.  When ``None`` the per-user
+            default (``~/.emstat_pico_mux16/presets.mux16``) is used,
+            with a one-time import from the legacy in-repo
+            ``presets/presets.json`` if the external file does not yet
+            exist.
     """
 
     def __init__(
         self, path: Optional[str] = None
     ) -> None:
-        self._path = path or _DEFAULT_PRESETS_FILE
+        if path is None:
+            self._path = _DEFAULT_PRESETS_FILE
+            self._use_default_store = True
+        else:
+            self._path = path
+            self._use_default_store = False
         self._presets: dict[str, Preset] = {}
         self._load()
 
-    def _load(self) -> None:
-        """Load presets from disk, merging with built-ins."""
-        # Start with built-in presets
+    # -- internal -----------------------------------------------------
+
+    def _seed_builtins(self) -> None:
+        """Reset the in-memory map to a fresh copy of the built-ins."""
         self._presets = {
             k: Preset(**asdict(v))
             for k, v in _BUILTIN_PRESETS.items()
         }
 
+    def _load(self) -> None:
+        """Load presets from disk, merging on top of the built-ins.
+
+        For the default store, a missing external file triggers a
+        one-time migration from the legacy in-repo ``presets.json``
+        (when present) before the external file is created.
+        """
+        self._seed_builtins()
+
         if os.path.isfile(self._path):
-            try:
-                with open(
-                    self._path, "r", encoding="utf-8"
-                ) as f:
-                    data = json.load(f)
-                # Filter to the known Preset fields so older JSON files
-                # (pre-batch-2) and newer ones with unknown extras both
-                # load cleanly.  Missing new fields fall back to their
-                # dataclass defaults (electrode_config_mode="external",
-                # re_ce_channels=[]).
-                allowed = set(Preset.__dataclass_fields__.keys())
-                for key, obj in data.items():
-                    filtered = {
-                        k: v
-                        for k, v in obj.items()
-                        if k in allowed
-                    }
-                    self._presets[key] = Preset(**filtered)
-                logger.info(
-                    "Loaded %d presets from %s",
-                    len(data),
-                    self._path,
-                )
-            except (json.JSONDecodeError, TypeError, KeyError) as e:
-                logger.warning(
-                    "Failed to load presets from %s: %s",
-                    self._path,
-                    e,
-                )
-        else:
-            # Create file with built-in presets
-            self._save()
+            self._read_into(self._path)
+            return
+
+        # External store does not exist yet.
+        if self._use_default_store and os.path.isfile(
+            _LEGACY_PRESETS_FILE
+        ):
+            # One-time migration of the shipped in-repo presets.
+            self._read_into(_LEGACY_PRESETS_FILE)
+            logger.info(
+                "Migrated legacy presets from %s to %s",
+                _LEGACY_PRESETS_FILE,
+                self._path,
+            )
+
+        # Materialize the (possibly migrated, possibly built-in-only)
+        # store at the active path so subsequent runs are stable.
+        self._save()
+
+    def _read_into(self, path: str) -> None:
+        """Parse ``path`` and merge its presets over the built-ins.
+
+        Args:
+            path: Existing preset file to read.
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loaded = _presets_from_payload(data)
+            self._presets.update(loaded)
+            logger.info(
+                "Loaded %d presets from %s", len(loaded), path
+            )
+        except (
+            OSError,
+            json.JSONDecodeError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ) as e:
+            logger.warning(
+                "Failed to load presets from %s: %s", path, e
+            )
 
     def _save(self) -> None:
-        """Write all presets to disk."""
-        os.makedirs(
-            os.path.dirname(self._path), exist_ok=True
-        )
-        data = {k: asdict(v) for k, v in self._presets.items()}
+        """Write all presets to the active path in wrapper format."""
+        directory = os.path.dirname(self._path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        logger.info("Saved %d presets to %s", len(data), self._path)
+            json.dump(_wrap_presets(self._presets), f, indent=2)
+        logger.info(
+            "Saved %d presets to %s",
+            len(self._presets),
+            self._path,
+        )
+
+    # -- explicit path I/O (CMU.17.034) -------------------------------
+
+    def save_to_path(self, path: str) -> None:
+        """Write the current presets to an arbitrary file.
+
+        The file is written in the versioned wrapper format.  The
+        manager's active path is unchanged; use this to export to a
+        new ``*.mux16`` location.
+
+        Args:
+            path: Destination file path.
+        """
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(_wrap_presets(self._presets), f, indent=2)
+        logger.info(
+            "Saved %d presets to %s", len(self._presets), path
+        )
+
+    def load_from_path(self, path: str) -> None:
+        """Replace the in-memory presets with the contents of ``path``.
+
+        The file is parsed STRICTLY first; any failure raises and leaves
+        the manager completely untouched (presets, active path). This is
+        what the GUI import flow relies on — a corrupt or wrong file
+        must surface an error rather than silently emptying the preset
+        list, repointing the store at the bad file, and letting the next
+        save overwrite it.
+
+        On success, built-ins are re-seeded, the file's presets are
+        merged on top (user entries override same-named built-ins), and
+        the manager's active path switches to ``path``.
+
+        Args:
+            path: Source preset file (wrapper or legacy bare map).
+
+        Raises:
+            OSError: If the file cannot be read.
+            ValueError: If the file is not valid JSON or not a preset
+                store (includes ``json.JSONDecodeError``).
+        """
+        # Strict parse BEFORE any state change.
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)  # raises JSONDecodeError (ValueError)
+        try:
+            loaded = _presets_from_payload(data)
+        except (TypeError, KeyError, AttributeError) as e:
+            raise ValueError(
+                f"Not a valid preset store: {e}"
+            ) from e
+
+        self._seed_builtins()
+        self._presets.update(loaded)
+        self._path = path
+        self._use_default_store = False
+        logger.info("Loaded %d presets from %s", len(loaded), path)
+
+    # -- queries ------------------------------------------------------
+
+    @property
+    def path(self) -> str:
+        """Return the active preset file path."""
+        return self._path
 
     def list_presets(self) -> list[str]:
         """Return sorted list of preset keys."""

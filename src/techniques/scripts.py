@@ -325,7 +325,22 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     lines.append("set_max_bandwidth 200k")
     lines.append("set_range_minmax da 0 0")
     lines.append(f"set_range ba {cr}")
-    lines.append(f"set_autoranging ba {cr} {cr}")
+    # Bounded current autoranging across the sweep. A single fixed range
+    # (the old `set_autoranging ba {cr} {cr}`, where min==max DISABLES
+    # autoranging per MethodSCRIPT v1.6 sec 14.50) is badly mismatched to
+    # the multi-decade |Z| span of a real EIS sweep: e.g. a high-impedance
+    # IDE runs 73 uA at 100 kHz down to ~68 nA at 5 Hz, so a pinned 100u
+    # range reads the low-frequency points at <0.1% of full scale, burying
+    # them in quantization/clamping noise. Letting the firmware pick the
+    # best range per frequency within [1n, {cr}] restores low-frequency
+    # SNR. Autoranging was previously locked because mid-sweep range
+    # switching corrupted <80 Hz data, but EmStat Pico FW 1.6 ("Fixed
+    # meas_loop_eis resetting auto-ranging") addresses that; the galvano
+    # preamble below already uses a real window. Floor 1n matches PalmSens'
+    # own EmStat Pico EIS examples; {cr} stays the user-selected ceiling so
+    # the high-frequency current can't overload. HARDWARE-VALIDATE on
+    # FW 1.6 (confirm no <80 Hz corruption returns).
+    lines.append(f"set_autoranging ba 1n {cr}")
     lines.append("cell_on")
     return lines
 
@@ -641,10 +656,18 @@ def _gen_ocp(params: dict[str, Any]) -> list[str]:
 def _gen_eis(params: dict[str, Any]) -> list[str]:
     """Generate meas_loop_eis script body.
 
-    EIS uses 3 variables (h, r, j) not the standard (p, c).
-    DC potential is set via set_e before the loop, not as
-    an argument to meas_loop_eis. The manual (v1.6 p36) shows:
-        meas_loop_eis h r j <e_ac> <freq_start> <freq_end> <n_freq> <eis_opt>
+    EIS uses 3 variables (h, r, j) not the standard (p, c). Per the
+    MethodSCRIPT v1.6 manual (sec 14.46, p.88-89) the signature is::
+
+        meas_loop_eis h r j <amplitude> <freq_start> <freq_end> <n_freq> <e_dc>
+
+    The final argument is the **DC potential** of the applied sine wave
+    (not an ``eis_opt``/averaging field — ``eis_opt`` is unsupported on the
+    EmStat Pico, manual sec 9.8). It was previously hardcoded to ``0``,
+    which pinned every sweep to 0 V regardless of the requested ``e_dc``;
+    we now pass ``e_dc`` so the operator's DC bias is actually applied.
+    ``set_e`` still establishes the bias before the loop so the cell is at
+    the measurement potential when the sweep begins.
     """
     e_dc = _format_si(params.get("e_dc", 0.0))
     e_ac = _format_si(params.get("e_ac", 0.01))
@@ -655,7 +678,7 @@ def _gen_eis(params: dict[str, Any]) -> list[str]:
     lines.append(f"set_e {e_dc}")
     lines.append(
         f"meas_loop_eis h r j {e_ac}"
-        f" {freq_start} {freq_end} {n_freq} 0"
+        f" {freq_start} {freq_end} {n_freq} {e_dc}"
     )
     lines.extend(_indent(_pck_eis()))
     lines.append("endloop")
@@ -663,7 +686,14 @@ def _gen_eis(params: dict[str, Any]) -> list[str]:
 
 
 def _gen_geis(params: dict[str, Any]) -> list[str]:
-    """Generate meas_loop_geis (galvanostatic EIS) script body."""
+    """Generate meas_loop_geis (galvanostatic EIS) script body.
+
+    Mirrors :func:`_gen_eis`: the final ``meas_loop_geis`` argument is the
+    **DC current** offset of the applied sine, previously hardcoded to
+    ``0`` (which ignored the requested ``i_dc``). Now passes ``i_dc``.
+    NOTE: GEIS is not yet hardware-validated on this device — verify the
+    DC-current argument behaviour on the bench before relying on it.
+    """
     i_dc = _format_si(params.get("i_dc", 0.0))
     i_ac = _format_si(params.get("i_ac", 0.00001))
     freq_start = _format_si(params.get("freq_start", 100000.0))
@@ -673,7 +703,7 @@ def _gen_geis(params: dict[str, Any]) -> list[str]:
     lines.append(f"set_i {i_dc}")
     lines.append(
         f"meas_loop_geis h r j {i_ac}"
-        f" {freq_start} {freq_end} {n_freq} 0"
+        f" {freq_start} {freq_end} {n_freq} {i_dc}"
     )
     lines.extend(_indent(_pck_eis()))
     lines.append("endloop")
