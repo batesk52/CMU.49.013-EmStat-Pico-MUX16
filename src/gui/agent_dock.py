@@ -719,25 +719,28 @@ class AgentDockPanel(QWidget):
         self._chat = ChatView()
         layout.addWidget(self._chat, stretch=1)
 
-        # Input row.
-        input_row = QHBoxLayout()
+        # Input area: full-width text box with the buttons BENEATH it,
+        # so the box gets the whole dock width for writing.
         self._input_edit = ChatInput()
         self._input_edit.setPlaceholderText(
             "Message the agent...  (Enter sends, Shift+Enter = newline)"
         )
         self._input_edit.submit.connect(self._on_send_clicked)
-        input_row.addWidget(self._input_edit, stretch=1)
+        layout.addWidget(self._input_edit)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._on_send_clicked)
-        input_row.addWidget(self._send_button)
+        button_row.addWidget(self._send_button)
         self._stop_button = QPushButton("Stop")
         self._stop_button.setToolTip(
             "Stop the agent worker thread (per-turn interruption is "
             "not supported; this disables the agent until restart)."
         )
         self._stop_button.clicked.connect(self._on_stop_clicked)
-        input_row.addWidget(self._stop_button)
-        layout.addLayout(input_row)
+        button_row.addWidget(self._stop_button)
+        layout.addLayout(button_row)
 
     def _connect_worker(self, worker: AgentWorker) -> None:
         """Connect worker signals (default = queued across threads)."""
