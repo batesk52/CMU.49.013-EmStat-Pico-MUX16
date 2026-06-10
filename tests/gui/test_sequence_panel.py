@@ -92,6 +92,45 @@ def test_save_reload_round_trips(qapp, tmp_path) -> None:
     ]
 
 
+def test_run_refused_while_engine_busy_without_side_effects(
+    qapp, tmp_path, monkeypatch
+) -> None:
+    """Run on a busy engine is refused BEFORE sequence_started fires.
+
+    The old order emitted sequence_started first, which made the main
+    window destroy the in-flight single run's live plot and then
+    re-enable Start while the measurement was still running.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    from src.data.presets import Preset, PresetManager
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "warning",
+        staticmethod(lambda *a, **k: warnings.append(a[1])),
+    )
+
+    class BusyEngine:
+        def isRunning(self) -> bool:  # noqa: N802 - Qt naming
+            return True
+
+    mgr = PresetManager(path=str(tmp_path / "store.mux16"))
+    mgr.add_preset("cv1", Preset(name="cv1", technique="cv", channels=[1]))
+    panel = SequencePanel(preset_manager=mgr, engine=BusyEngine())
+    panel.add_step(SequenceStep(preset_name="cv1"))
+
+    started: list[bool] = []
+    panel.sequence_started.connect(lambda: started.append(True))
+
+    panel._on_run()  # noqa: SLF001
+
+    assert started == []  # signal never fired
+    assert panel._runner is None  # noqa: SLF001 no runner built
+    assert any("Engine Busy" in w for w in warnings)
+
+
 def test_legacy_step_upgraded_to_embedded_on_load(qapp, tmp_path) -> None:
     """A legacy reference step embeds its config from the store on load."""
     from src.data.presets import Preset, PresetManager

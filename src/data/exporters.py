@@ -305,3 +305,37 @@ def make_export_dir(
     path = os.path.join(base_dir, dirname)
     os.makedirs(path, exist_ok=True)
     return os.path.abspath(path)
+
+
+def make_sequence_dir(base_dir: str, stamp: str) -> str:
+    """Return the parent folder path for one sequence run (not created).
+
+    Single source of the ``<stamp>_sequence`` naming so the live
+    auto-save path (sequence runner) and the end-of-run save prompt
+    (main window) produce the identical layout.
+
+    Args:
+        base_dir: Root exports directory.
+        stamp: ``YYYYMMDD_HHMMSS`` run stamp.
+
+    Returns:
+        The composed (uncreated) sequence parent directory path.
+    """
+    return os.path.join(base_dir, f"{stamp}_sequence")
+
+
+def sequence_step_dirname(index: int, technique: str) -> str:
+    """Return the per-step folder name inside a sequence parent.
+
+    ``stepNN_<technique>`` with a 1-indexed, zero-padded step number —
+    unique per queue entry (repeats included), so concurrent-second
+    runs of the same technique can never collide.
+
+    Args:
+        index: 0-indexed position in the expanded run queue.
+        technique: Technique identifier (``"unknown"`` when empty).
+
+    Returns:
+        The step directory name (no path separators).
+    """
+    return f"step{index + 1:02d}_{technique or 'unknown'}"

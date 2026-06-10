@@ -27,6 +27,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
+from src.data.paths import USER_DATA_DIR
+
 logger = logging.getLogger(__name__)
 
 # On-disk wrapper identity.
@@ -34,10 +36,9 @@ PRESET_FILE_FORMAT = "mux16-presets"
 PRESET_FILE_VERSION = 1
 
 # Per-user data directory for the externalized preset store.  Kept out of
-# the repo so presets are user data, not code.
-_USER_DATA_DIR = os.path.join(
-    os.path.expanduser("~"), ".emstat_pico_mux16"
-)
+# the repo so presets are user data, not code; the location is shared
+# with app settings via src/data/paths.py (single source of truth).
+_USER_DATA_DIR = USER_DATA_DIR
 _DEFAULT_PRESETS_FILE = os.path.join(_USER_DATA_DIR, "presets.mux16")
 
 # Legacy in-repo store, kept only as a one-time migration source.
@@ -88,10 +89,57 @@ class Preset:
 # ---------------------------------------------------------------------------
 
 # Presets here are injected at load time and protected from deletion via
-# the GUI.  Empty by default — shipped presets are migrated from the
-# legacy presets.json into the external user store on first run so users
-# can manage them with Save/Delete without code changes.
-_BUILTIN_PRESETS: dict[str, Preset] = {}
+# the GUI.  A minimal generic set ships in code so a fresh checkout or a
+# packaged executable has usable starting points (the dropdown and the
+# sequencer's "Add step" were otherwise empty on a machine with no
+# migrated store).  Parameter values mirror the technique defaults in
+# ``src/techniques/scripts.py``; user presets with the same key override.
+_BUILTIN_PRESETS: dict[str, Preset] = {
+    "default_cv": Preset(
+        name="Default CV (CH1)",
+        technique="cv",
+        params={
+            "t_eq": 2.0,
+            "e_begin": -0.5,
+            "e_vertex1": 0.5,
+            "e_vertex2": -0.5,
+            "e_step": 0.01,
+            "scan_rate": 0.1,
+            "n_scans": 1,
+            "cr": "100u",
+        },
+        channels=[1],
+        description="Built-in generic CV starting point.",
+    ),
+    "default_eis": Preset(
+        name="Default EIS (CH1)",
+        technique="eis",
+        params={
+            "t_eq": 2.0,
+            "e_dc": 0.0,
+            "e_ac": 0.01,
+            "freq_start": 50000.0,
+            "freq_end": 10.0,
+            "n_freq": 31,
+            "cr": "100u",
+        },
+        channels=[1],
+        description="Built-in generic EIS starting point.",
+    ),
+    "default_ca": Preset(
+        name="Default CA (CH1)",
+        technique="ca",
+        params={
+            "e_dc": 0.1,
+            "t_run": 10.0,
+            "t_interval": 0.1,
+            "cr": "100u",
+            "bw_hz": 400,
+        },
+        channels=[1],
+        description="Built-in generic CA starting point.",
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -292,18 +340,40 @@ class PresetManager:
     def load_from_path(self, path: str) -> None:
         """Replace the in-memory presets with the contents of ``path``.
 
-        Built-ins are re-seeded first, then the file's presets are
-        merged on top (so user entries override same-named built-ins).
-        The manager's active path is switched to ``path`` so subsequent
-        ``add_preset`` / ``delete_preset`` calls persist there.
+        The file is parsed STRICTLY first; any failure raises and leaves
+        the manager completely untouched (presets, active path). This is
+        what the GUI import flow relies on — a corrupt or wrong file
+        must surface an error rather than silently emptying the preset
+        list, repointing the store at the bad file, and letting the next
+        save overwrite it.
+
+        On success, built-ins are re-seeded, the file's presets are
+        merged on top (user entries override same-named built-ins), and
+        the manager's active path switches to ``path``.
 
         Args:
             path: Source preset file (wrapper or legacy bare map).
+
+        Raises:
+            OSError: If the file cannot be read.
+            ValueError: If the file is not valid JSON or not a preset
+                store (includes ``json.JSONDecodeError``).
         """
+        # Strict parse BEFORE any state change.
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)  # raises JSONDecodeError (ValueError)
+        try:
+            loaded = _presets_from_payload(data)
+        except (TypeError, KeyError, AttributeError) as e:
+            raise ValueError(
+                f"Not a valid preset store: {e}"
+            ) from e
+
         self._seed_builtins()
-        self._read_into(path)
+        self._presets.update(loaded)
         self._path = path
         self._use_default_store = False
+        logger.info("Loaded %d presets from %s", len(loaded), path)
 
     # -- queries ------------------------------------------------------
 

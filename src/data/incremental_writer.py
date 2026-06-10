@@ -59,6 +59,7 @@ class IncrementalCSVWriter:
         device_info: dict[str, str],
         channels: list[int],
         output_dir: str,
+        exact_dir: bool = False,
     ) -> str:
         """Initialise the writer and create output directory.
 
@@ -68,7 +69,12 @@ class IncrementalCSVWriter:
             device_info: Device metadata (serial, firmware).
             channels: List of channels that will produce data.
             output_dir: Base directory; a timestamped subdirectory
-                is created automatically.
+                is created automatically unless ``exact_dir`` is set.
+            exact_dir: When True, write directly into ``output_dir``
+                (the caller guarantees its uniqueness). The sequencer
+                uses this so same-second repeats of one technique
+                cannot collide on the second-resolution timestamped
+                name and silently overwrite each other.
 
         Returns:
             Absolute path to the created output directory.
@@ -78,9 +84,12 @@ class IncrementalCSVWriter:
         self._device_info = device_info
         self._start_time = datetime.now()
 
-        timestamp = self._start_time.strftime("%Y%m%d_%H%M%S")
-        dirname = f"{timestamp}_{technique}_autosave"
-        self._output_dir = os.path.join(output_dir, dirname)
+        if exact_dir:
+            self._output_dir = output_dir
+        else:
+            timestamp = self._start_time.strftime("%Y%m%d_%H%M%S")
+            dirname = f"{timestamp}_{technique}_autosave"
+            self._output_dir = os.path.join(output_dir, dirname)
         os.makedirs(self._output_dir, exist_ok=True)
 
         self._started = True

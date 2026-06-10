@@ -17,48 +17,29 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 from typing import Optional
+
+from src.data.paths import USER_DATA_DIR, default_export_dir
+
+__all__ = [
+    "default_export_dir",
+    "get_export_dir",
+    "get_last_preset_file",
+    "set_export_dir",
+    "set_last_preset_file",
+]
 
 logger = logging.getLogger(__name__)
 
-# Per-user data directory (shared with the preset store).
-_USER_DATA_DIR = os.path.join(
-    os.path.expanduser("~"), ".emstat_pico_mux16"
-)
+# Per-user data directory (shared with the preset store via
+# src/data/paths.py — single source of truth).
+_USER_DATA_DIR = USER_DATA_DIR
 _DEFAULT_SETTINGS_FILE = os.path.join(
     _USER_DATA_DIR, "app_settings.json"
 )
 
 _LAST_PRESET_FILE_KEY = "last_preset_file"
 _EXPORT_DIR_KEY = "export_dir"
-
-
-def default_export_dir() -> str:
-    """Return the built-in default export directory for this build.
-
-    Resolution depends on how the app is running:
-
-    * **Frozen executable** (PyInstaller etc.): there is no source repo
-      and the install dir may be read-only, so default to a visible,
-      user-writable folder under the home directory
-      (``~/EmStatPicoMUX16/exports``).
-    * **Source/dev checkout:** the in-repo ``exports/`` folder, so an
-      agent or developer running from the tree keeps the familiar
-      location. ``app_settings.py`` lives at ``src/data/`` so the repo
-      root is three directories up.
-
-    This is only the *default* — :func:`get_export_dir` returns the
-    user's configured override when one is set.
-    """
-    if getattr(sys, "frozen", False):
-        return os.path.join(
-            os.path.expanduser("~"), "EmStatPicoMUX16", "exports"
-        )
-    repo_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
-    return os.path.join(repo_root, "exports")
 
 
 def _resolve_path(path: Optional[str]) -> str:

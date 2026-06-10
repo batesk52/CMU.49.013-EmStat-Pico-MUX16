@@ -46,6 +46,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressDialog,
     QScrollArea,
     QTabWidget,
     QVBoxLayout,
@@ -53,7 +54,11 @@ from PyQt6.QtWidgets import (
 )
 
 from src.comms.serial_connection import PicoConnection
-from src.data.exporters import PsSessionExporter
+from src.data.exporters import (
+    PsSessionExporter,
+    make_sequence_dir,
+    sequence_step_dirname,
+)
 from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
     ON_BOARD_RE_CE_CHANNEL,
@@ -88,24 +93,13 @@ logger = logging.getLogger(__name__)
 APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
 
-# Techniques whose exact MethodSCRIPT must always be recorded. For EIS/GEIS
-# the applied DC bias (the meas_loop_eis DC argument) and current-range /
-# autoranging settings live only in the script — they are NOT recoverable
-# from the saved CSV/.pssession data — so auto-save is forced on regardless
-# of the checkbox, guaranteeing a ``_script.mscr`` lands in every run folder.
-_ALWAYS_AUTOSAVE_TECHNIQUES = frozenset({"eis", "geis"})
-
-
-def _forces_auto_save(technique: str) -> bool:
-    """Return True if ``technique`` must always auto-save for provenance.
-
-    Args:
-        technique: Technique identifier (case-insensitive).
-
-    Returns:
-        True for techniques in :data:`_ALWAYS_AUTOSAVE_TECHNIQUES`.
-    """
-    return technique.lower() in _ALWAYS_AUTOSAVE_TECHNIQUES
+# Provenance auto-save policy lives in the data layer (shared with the
+# sequence runner, which applies the same forcing per step); aliases kept
+# so existing callers/tests keep working.
+from src.data.models import (  # noqa: E402
+    ALWAYS_AUTOSAVE_TECHNIQUES as _ALWAYS_AUTOSAVE_TECHNIQUES,
+    forces_auto_save as _forces_auto_save,
+)
 
 
 class _NoWheelScrollFilter(QObject):
@@ -201,12 +195,16 @@ class MainWindow(QMainWindow):
         # prompt (auto-save per step instead) and to keep the single-run
         # Start control disabled until the sequence ends (CMU.17.034).
         self._sequence_active = False
-        # Each step's result is retained during a sequence so the whole
-        # run can be saved at the end (the per-step export prompt is
-        # suppressed mid-run). Whether the run already auto-saved is
-        # captured at sequence start so completion knows to prompt or not.
+        # Results of sequence steps that did NOT auto-save are retained
+        # so the end-of-run prompt (fired from _on_sequence_stopped — the
+        # one terminal hook covering finish, stop, AND error) can offer
+        # to save them; auto-saved steps are already on disk and are not
+        # retained (no unbounded growth on long auto-saved runs).
         self._sequence_results: list[MeasurementResult] = []
-        self._sequence_autosaved = False
+        # Auto-save dir of the step currently finishing (set by the
+        # engine's auto_save_completed, cleared at each step start) —
+        # how the finished handler knows a step already saved itself.
+        self._step_autosave_dir: Optional[str] = None
         # Background worker for the (blocking) connect handshake.
         self._connect_worker: Optional[ConnectWorker] = None
         self._connect_port: str = ""
@@ -266,7 +264,6 @@ class MainWindow(QMainWindow):
         # Step counter for sequence tab labels; reset per sequence run.
         self._seq_plot_n = 0
         self._plot_container: Optional[EISPlotContainer] = None
-        self._plot = None
         # Seed one tab so the app opens with a plot and the technique
         # dropdown can preview before the first run.
         self._add_plot_tab("", "Live")
@@ -289,7 +286,6 @@ class MainWindow(QMainWindow):
         index = self._plot_tabs.addTab(container, label)
         self._plot_tabs.setCurrentIndex(index)
         self._plot_container = container
-        self._plot = container.nyquist
         return container
 
     def _reset_plot_tabs(self) -> None:
@@ -299,7 +295,6 @@ class MainWindow(QMainWindow):
             self._plot_tabs.removeTab(0)
             widget.deleteLater()
         self._plot_container = None
-        self._plot = None
 
     @pyqtSlot(object)
     def _route_data_point(self, data_point: object) -> None:
@@ -447,9 +442,6 @@ class MainWindow(QMainWindow):
         self._sequence_panel.sequence_stopped.connect(
             self._on_sequence_stopped
         )
-        self._sequence_panel.sequence_completed.connect(
-            self._on_sequence_completed
-        )
         dock.setWidget(self._sequence_panel)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         self._sequence_dock = dock
@@ -464,19 +456,18 @@ class MainWindow(QMainWindow):
             return self._connection
         return None
 
-    def _sequence_export_base(self) -> Optional[str]:
-        """Base dir for sequence per-step auto-save, or None if disabled.
+    def _sequence_export_base(self) -> tuple[str, bool]:
+        """Return ``(base_export_dir, auto_save_all)`` for a sequence run.
 
-        The sequencer honours the same opt-in auto-save policy as a
-        single run: nothing is written unless the user has enabled
-        auto-save in the GUI. When enabled, the base resolves like the
-        single-run path (an explicit auto-save folder, else the
-        configured export directory); the runner then writes each step
-        into a ``<stamp>_sequence/`` parent under it.
+        Mirrors the single-run policy exactly: the base resolves to the
+        explicit auto-save folder (else the configured export dir), and
+        ``auto_save_all`` is the GUI auto-save toggle. The base is ALWAYS
+        supplied because provenance-forced techniques (EIS/GEIS) must
+        auto-save their ``_script.mscr`` even when the toggle is off —
+        the runner applies that per-step forcing itself.
         """
-        if not self._meas_panel.is_auto_save_enabled():
-            return None
-        return self._meas_panel.auto_save_directory() or get_export_dir()
+        base = self._meas_panel.auto_save_directory() or get_export_dir()
+        return base, self._meas_panel.is_auto_save_enabled()
 
     def _build_menu_bar(self) -> None:
         """Create the menu bar with File, Device, and Help menus."""
@@ -867,55 +858,51 @@ class MainWindow(QMainWindow):
         # Fresh tab strip: one live-plot tab is added per step as it starts.
         self._seq_plot_n = 0
         self._reset_plot_tabs()
-        # Start collecting per-step results for an end-of-run save, and
-        # record whether this run auto-saves (so completion knows whether
-        # to prompt). Captured now because the toggle is locked mid-run.
+        # Start collecting the results of steps that don't auto-save, for
+        # the end-of-run save prompt.
         self._sequence_results = []
-        self._sequence_autosaved = self._meas_panel.is_auto_save_enabled()
         self._meas_panel.set_disabled()
         self._status_progress.setText("Sequence running")
 
     @pyqtSlot()
     def _on_sequence_stopped(self) -> None:
-        """Leave sequence mode and restore the single-run controls."""
+        """Leave sequence mode and offer to save any unsaved step data.
+
+        This is the SINGLE terminal hook — the panel emits
+        ``sequence_stopped`` on clean completion, user stop, and step
+        error alike — so no ending path can silently discard the
+        retained (non-auto-saved) step results.
+        """
         self._sequence_active = False
         # Restore Start only when a device is still connected; the engine
-        # is idle once the sequence has stopped.
+        # is idle (or winding down an abort) once the sequence has stopped.
         if self._connection.is_connected:
             self._meas_panel.set_idle()
         else:
             self._meas_panel.set_disabled()
         self._status_progress.setText("Idle")
+        # Never leave the central area tab-less (a first step that fails
+        # before measurement_started would otherwise leave zero tabs and
+        # a dead technique preview until the next run).
+        if self._plot_tabs.count() == 0:
+            self._add_plot_tab(
+                self._tech_panel.selected_technique() or "", "Live"
+            )
+        self._offer_sequence_save()
 
-    @pyqtSlot()
-    def _on_sequence_completed(self) -> None:
-        """Save (or confirm the auto-save of) a cleanly finished sequence.
-
-        Per-step export prompts are suppressed during the run, so without
-        this a sequence with auto-save off would finish having written
-        nothing and asked nothing. On clean completion we therefore:
-
-        * if the run auto-saved, report where (no prompt), else
-        * offer to save every retained step into one ``<stamp>_sequence``
-          folder so no data is silently lost.
-        """
+    def _offer_sequence_save(self) -> None:
+        """Prompt to save retained (non-auto-saved) sequence step data."""
         results = self._sequence_results
         self._sequence_results = []
         if not results:
             return
 
         n = len(results)
-        if self._sequence_autosaved:
-            self.statusBar().showMessage(
-                f"Sequence complete: {n} step(s) auto-saved."
-            )
-            return
-
         reply = QMessageBox.question(
             self,
-            "Sequence Complete",
-            f"Sequence finished ({n} step(s)). Auto-save was off — "
-            "save all step data now?",
+            "Save Sequence Data",
+            f"The sequence ended with {n} completed step(s) that were "
+            "not auto-saved. Save them now?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
@@ -943,10 +930,12 @@ class MainWindow(QMainWindow):
     ) -> str:
         """Write every retained step into one shared sequence folder.
 
-        Layout mirrors the auto-save case: a ``<stamp>_sequence`` parent
-        (alongside normal exports) with one ``stepNN_<technique>``
-        subfolder per step, each holding per-channel CSVs and a
-        ``.pssession``.
+        Uses the same layout helpers as the runner's live auto-save path
+        (``make_sequence_dir`` + ``sequence_step_dirname``), so both ways
+        of saving a sequence land as a ``<stamp>_sequence`` parent with
+        one ``stepNN_<technique>`` subfolder per step (per-channel CSVs
+        plus a ``.pssession`` each). A modal progress dialog keeps the
+        UI responsive on long multi-channel saves.
 
         Args:
             results: The per-step results collected during the run.
@@ -955,25 +944,39 @@ class MainWindow(QMainWindow):
             The absolute path of the created ``<stamp>_sequence`` parent.
         """
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        parent = os.path.join(get_export_dir(), f"{stamp}_sequence")
-        for i, result in enumerate(results):
-            technique = result.technique or "unknown"
-            step_dir = os.path.join(
-                parent, f"step{i + 1:02d}_{technique}"
-            )
-            os.makedirs(step_dir, exist_ok=True)
-            self._write_csv_files(result, step_dir)
-            try:
-                PsSessionExporter().export_pssession(
-                    result,
-                    os.path.join(step_dir, f"{technique}.pssession"),
+        parent = make_sequence_dir(get_export_dir(), stamp)
+        progress = QProgressDialog(
+            "Saving sequence steps...", None, 0, len(results), self
+        )
+        progress.setWindowModality(
+            Qt.WindowModality.ApplicationModal
+        )
+        progress.setMinimumDuration(500)
+        try:
+            for i, result in enumerate(results):
+                progress.setValue(i)
+                technique = result.technique or "unknown"
+                step_dir = os.path.join(
+                    parent, sequence_step_dirname(i, technique)
                 )
-            except Exception as exc:  # noqa: BLE001 - CSV already written
-                logger.error(
-                    "pssession export failed for step %d: %s",
-                    i + 1,
-                    exc,
-                )
+                os.makedirs(step_dir, exist_ok=True)
+                self._write_csv_files(result, step_dir)
+                try:
+                    PsSessionExporter().export_pssession(
+                        result,
+                        os.path.join(
+                            step_dir, f"{technique}.pssession"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - CSVs written
+                    logger.error(
+                        "pssession export failed for step %d: %s",
+                        i + 1,
+                        exc,
+                    )
+            progress.setValue(len(results))
+        finally:
+            progress.close()
         logger.info(
             "Saved %d sequence step(s) to %s", len(results), parent
         )
@@ -998,6 +1001,9 @@ class MainWindow(QMainWindow):
         # Prevent Export from silently writing the prior run's data
         # if the user invokes it before this run completes.
         self._last_result = None
+        # Fresh per-step auto-save tracking: auto_save_completed (emitted
+        # before measurement_finished) fills this in when the run wrote.
+        self._step_autosave_dir = None
         self._export_action.setEnabled(False)
         self._meas_panel.set_running()
         self._status_progress.setText(
@@ -1038,9 +1044,28 @@ class MainWindow(QMainWindow):
         # single-run Start control — the SequenceRunner drives the next
         # step and the sequence_stopped signal restores the controls.
         if self._sequence_active:
-            # Retain the step so the whole run can be saved at the end;
-            # the per-step export prompt stays suppressed mid-queue.
-            self._sequence_results.append(result)
+            # Per-step export prompts stay suppressed mid-queue. A step
+            # that auto-saved (its CSVs + _script.mscr are already on
+            # disk) gets its .pssession written into the same folder now
+            # — the convention is per-channel CSV + one .pssession per
+            # run — and is NOT retained. Steps that didn't auto-save are
+            # retained for the end-of-run save prompt.
+            if self._step_autosave_dir:
+                technique = result.technique or "unknown"
+                try:
+                    PsSessionExporter().export_pssession(
+                        result,
+                        os.path.join(
+                            self._step_autosave_dir,
+                            f"{technique}.pssession",
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - CSVs on disk
+                    logger.error(
+                        "Step .pssession export failed: %s", exc
+                    )
+            else:
+                self._sequence_results.append(result)
             self._auto_save_active = False
             return
 
@@ -1420,11 +1445,17 @@ class MainWindow(QMainWindow):
         else:
             self._chan_panel.set_channels(preset.channels)
 
-        # Auto-save is opt-in: a preset's saved auto_save flag never forces
-        # it on (the user enables it in the GUI). EIS/GEIS are the one
-        # exception, auto-saving for script provenance.
+        # Auto-save is opt-in and the user's checkbox choice is theirs:
+        # selecting a preset never CLEARS a manually enabled auto-save,
+        # and a preset's saved auto_save flag never forces it on. The one
+        # forcing exception is EIS/GEIS (script provenance), which turns
+        # the box on.
+        enable = (
+            self._meas_panel.is_auto_save_enabled()
+            or _forces_auto_save(preset.technique)
+        )
         self._meas_panel.set_auto_save(
-            _forces_auto_save(preset.technique), self._default_export_dir()
+            enable, self._default_export_dir()
         )
 
         self.statusBar().showMessage(
@@ -1434,7 +1465,14 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_auto_save_completed(self, output_dir: str) -> None:
-        """Update status bar when auto-save writes files."""
+        """Record the run's auto-save dir and update the status bar.
+
+        The engine emits this BEFORE ``measurement_finished``, so the
+        finished handler can tell an auto-saved sequence step (gets its
+        ``.pssession`` written here, not retained) from one that needs
+        retaining for the end-of-run save prompt.
+        """
+        self._step_autosave_dir = output_dir
         dirname = os.path.basename(output_dir)
         self.statusBar().showMessage(
             f"Auto-saved to: {dirname}"

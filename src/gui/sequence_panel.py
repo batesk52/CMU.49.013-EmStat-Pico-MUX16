@@ -54,11 +54,12 @@ _SEQUENCE_FILE_SUFFIX = ".mux16seq"
 # connection lifecycle.
 ConnectionProvider = Callable[[], object]
 
-# Type alias: a zero-arg callable returning the base export directory for
-# per-step auto-save, or ``None`` when auto-save is disabled (so the
-# sequence runs without writing anything). Injected so the panel never
-# decides the auto-save policy itself.
-ExportBaseProvider = Callable[[], Optional[str]]
+# Type alias: a zero-arg callable returning ``(base_export_dir,
+# auto_save_all)`` for per-step auto-save. ``auto_save_all`` mirrors the
+# GUI auto-save toggle (every step writes); even when it is False the
+# runner still auto-saves provenance-forced techniques (EIS/GEIS) into
+# the base dir. Injected so the panel never decides the policy itself.
+ExportBaseProvider = Callable[[], tuple[Optional[str], bool]]
 
 
 class SequencePanel(QWidget):
@@ -88,10 +89,10 @@ class SequencePanel(QWidget):
     """
 
     sequence_started = pyqtSignal()
+    # Emitted on EVERY terminal path — clean finish, user stop, or step
+    # error — so the main window restores controls and offers to save the
+    # retained step data in one place (no path can silently discard it).
     sequence_stopped = pyqtSignal()
-    # Emitted only on clean completion of the whole queue (not on stop or
-    # error), so the main window can offer to save the run's data.
-    sequence_completed = pyqtSignal()
 
     def __init__(
         self,
@@ -131,8 +132,10 @@ class SequencePanel(QWidget):
     ) -> None:
         """Inject the callable that decides per-step auto-save.
 
-        Returns the base export directory when auto-save is enabled, or
-        ``None`` to run the sequence without writing anything.
+        The provider returns ``(base_export_dir, auto_save_all)``: the
+        root exports directory (or ``None`` to disable all writing) and
+        whether every step should auto-save (the GUI toggle) rather than
+        just the provenance-forced EIS/GEIS steps.
         """
         self._export_base_provider = provider
 
@@ -427,6 +430,19 @@ class SequencePanel(QWidget):
                 "Sequencer is not wired to a preset store and engine.",
             )
             return
+        # Refuse a busy engine BEFORE emitting sequence_started: the main
+        # window reacts to that signal by resetting the plot tabs and
+        # locking the single-run controls, so letting the runner discover
+        # the busy engine afterwards would destroy the in-flight run's
+        # live plot and then re-enable Start while it is still running.
+        if hasattr(self._engine, "isRunning") and self._engine.isRunning():
+            QMessageBox.warning(
+                self,
+                "Engine Busy",
+                "A measurement is already running. Stop it before "
+                "starting a sequence.",
+            )
+            return
         sequence = self.build_sequence()
         if not sequence.steps:
             QMessageBox.information(
@@ -439,13 +455,13 @@ class SequencePanel(QWidget):
             if self._connection_provider is not None
             else None
         )
-        # Auto-save policy lives outside the panel: the provider returns a
-        # base dir when the user enabled auto-save, else None (run without
-        # writing). None keeps every step config's auto_save unset.
-        base_export_dir = (
+        # Auto-save policy lives outside the panel: the provider returns
+        # (base_dir, auto_save_all). Even with auto_save_all False the
+        # runner auto-saves provenance-forced techniques (EIS/GEIS).
+        base_export_dir, auto_save_all = (
             self._export_base_provider()
             if self._export_base_provider is not None
-            else None
+            else (None, False)
         )
 
         try:
@@ -455,6 +471,7 @@ class SequencePanel(QWidget):
                 sequence,
                 self._preset_mgr,
                 base_export_dir=base_export_dir,
+                auto_save_all=auto_save_all,
                 parent=self,
             )
         except (KeyError, ValueError) as exc:
@@ -503,12 +520,14 @@ class SequencePanel(QWidget):
 
     @pyqtSlot()
     def _on_finished(self) -> None:
-        """Restore controls when the sequence completes."""
+        """Restore controls when the sequence completes.
+
+        Teardown emits ``sequence_stopped`` — the single terminal hook
+        where the main window restores controls and offers to save any
+        retained step data (same as the stop and error paths).
+        """
         self._teardown_runner()
         self._progress_label.setText("Complete")
-        # Signal a CLEAN finish (teardown already emitted sequence_stopped
-        # to restore controls); the main window prompts to save here.
-        self.sequence_completed.emit()
 
     @pyqtSlot(str)
     def _on_error(self, message: str) -> None:

@@ -53,7 +53,9 @@ def parse_channels(text: str) -> list[int]:
     the WE list), so neither is silently reordered.
 
     Raises:
-        ValueError: On any non-numeric / malformed token.
+        ValueError: On any non-numeric / malformed token, or a reversed
+            range like ``"5-2"`` (which would otherwise silently parse
+            to an empty list).
     """
     out: list[int] = []
     for tok in text.replace(" ", "").split(","):
@@ -61,7 +63,10 @@ def parse_channels(text: str) -> list[int]:
             continue
         if "-" in tok:
             lo, hi = tok.split("-", 1)
-            out.extend(range(int(lo), int(hi) + 1))
+            lo_i, hi_i = int(lo), int(hi)
+            if lo_i > hi_i:
+                raise ValueError(f"Reversed channel range: {tok!r}")
+            out.extend(range(lo_i, hi_i + 1))
         else:
             out.append(int(tok))
     return out
@@ -264,6 +269,13 @@ class SequenceStepWidget(QFrame):
             channels = parse_channels(self._channels_edit.text())
         except ValueError:
             # Reject malformed input: restore the last good value.
+            self._channels_edit.setText(format_channels(self._step.channels))
+            return
+        if not channels:
+            # A step with zero WE channels would pass eager validation
+            # and only fail mid-run when the engine starts it ("No
+            # channels selected") — halting the rest of the queue.
+            # Reject it here like malformed input.
             self._channels_edit.setText(format_channels(self._step.channels))
             return
         self._step.channels = channels

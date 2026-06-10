@@ -253,13 +253,14 @@ def test_late_finish_after_stop_adds_no_phantom_step(qapp) -> None:
     assert finished == []
 
 
-def test_base_export_dir_enables_shared_per_step_auto_save(qapp) -> None:
-    """A base export dir auto-saves every step into one sequence folder.
+def test_auto_save_all_gives_every_entry_a_unique_step_dir(qapp) -> None:
+    """auto_save_all gives every queue entry its own stepNN exact dir.
 
-    All queue entries (repeats included) point at the SAME
-    ``<base>/<stamp>_sequence`` parent with auto-save enabled, so the
-    engine's writer drops each step's ``<ts>_<technique>_autosave`` leaf
-    inside that one folder.
+    Repeats expand into entries with DISTINCT directories under one
+    ``<base>/<stamp>_sequence`` parent, so two same-second runs of one
+    technique can never collide (the old shared-parent +
+    second-resolution writer leaf overwrote chNN.csv); ``exact_dir``
+    tells the writer not to add its own timestamped leaf.
     """
     from src.data.presets import Preset, PresetManager
     from src.data.sequence import Sequence, SequenceStep
@@ -277,18 +278,25 @@ def test_base_export_dir_enables_shared_per_step_auto_save(qapp) -> None:
 
     base = os.path.join("some", "export", "root")
     runner = SequenceRunner.from_sequence(
-        MockEngine(), None, seq, mgr, base_export_dir=base
+        MockEngine(), None, seq, mgr,
+        base_export_dir=base, auto_save_all=True,
     )
 
-    # repeat=2 -> 3 queued runs, all auto-saving into one shared parent.
+    # repeat=2 -> 3 queued runs, each with its OWN exact step dir.
     assert runner.total_steps == 3
-    parents = {e.config.auto_save.output_dir for e in runner._queue}
-    assert len(parents) == 1
-    parent = parents.pop()
-    assert parent.startswith(base)
-    assert os.path.basename(parent).endswith("_sequence")
+    dirs = [e.config.auto_save.output_dir for e in runner._queue]
+    assert len(set(dirs)) == 3  # unique per entry, repeats included
+    names = [os.path.basename(d) for d in dirs]
+    assert names == ["step01_cv", "step02_ca", "step03_ca"]
     assert all(e.config.auto_save.enabled for e in runner._queue)
-    assert runner.sequence_dir == parent
+    assert all(e.config.auto_save.exact_dir for e in runner._queue)
+    # All under one shared <stamp>_sequence parent == sequence_dir.
+    parents = {os.path.dirname(d) for d in dirs}
+    assert parents == {runner.sequence_dir}
+    assert runner.sequence_dir.startswith(base)
+    assert os.path.basename(runner.sequence_dir).endswith("_sequence")
+    # Repeat entries are independent config objects (no aliasing).
+    assert runner._queue[1].config is not runner._queue[2].config
 
 
 def test_no_base_export_dir_leaves_auto_save_unset(qapp) -> None:
@@ -304,6 +312,44 @@ def test_no_base_export_dir_leaves_auto_save_unset(qapp) -> None:
 
     assert all(e.config.auto_save is None for e in runner._queue)
     assert runner.sequence_dir is None
+
+
+def test_eis_step_forced_to_auto_save_without_toggle(qapp) -> None:
+    """EIS steps auto-save for provenance even with auto_save_all=False.
+
+    The single-run GUI forces auto-save for EIS/GEIS (their generating
+    script is unrecoverable from the data); the runner applies the same
+    per-step rule, while non-forced techniques stay unsaved.
+    """
+    from src.data.presets import Preset, PresetManager
+    from src.data.sequence import Sequence, SequenceStep
+
+    mgr = PresetManager(path=str(_tmp_store()))
+    mgr.add_preset("cv1", Preset(name="cv1", technique="cv", channels=[1]))
+    mgr.add_preset(
+        "eis1", Preset(name="eis1", technique="eis", channels=[1])
+    )
+    seq = Sequence(
+        name="s",
+        steps=[
+            SequenceStep(preset_name="cv1"),
+            SequenceStep(preset_name="eis1"),
+        ],
+    )
+
+    runner = SequenceRunner.from_sequence(
+        MockEngine(), None, seq, mgr,
+        base_export_dir=os.path.join("root"), auto_save_all=False,
+    )
+
+    cv_entry, eis_entry = runner._queue
+    assert cv_entry.config.auto_save is None  # toggle off, not forced
+    assert eis_entry.config.auto_save is not None  # provenance-forced
+    assert eis_entry.config.auto_save.enabled
+    assert os.path.basename(
+        eis_entry.config.auto_save.output_dir
+    ) == "step02_eis"
+    assert runner.sequence_dir is not None
 
 
 def _tmp_store():

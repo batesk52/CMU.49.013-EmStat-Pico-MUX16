@@ -60,6 +60,23 @@ def test_parse_and_format_channels() -> None:
     assert format_channels([1, 4, 7]) == "1,4,7"
     with pytest.raises(ValueError):
         parse_channels("1,x")
+    # A reversed range must error, not silently parse to an empty list.
+    with pytest.raises(ValueError):
+        parse_channels("5-2")
+
+
+def test_step_widget_rejects_empty_channel_list(qapp) -> None:
+    """Blank channel text is rejected (a 0-channel step would pass eager
+    validation and only fail mid-run, halting the rest of the queue)."""
+    preset = Preset(name="CV", technique="cv", params={}, channels=[1, 4])
+    step = SequenceStep.from_preset("cv", preset)
+    widget = SequenceStepWidget(step)
+
+    widget._channels_edit.setText("")  # noqa: SLF001
+    widget._commit_channels()  # noqa: SLF001
+
+    assert step.channels == [1, 4]  # unchanged
+    assert widget._channels_edit.text() == "1,4"  # noqa: SLF001 restored
 
 
 def test_step_widget_edits_write_back_to_step(qapp) -> None:
