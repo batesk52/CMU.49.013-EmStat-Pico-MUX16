@@ -3,3 +3,12 @@ __pycache__/
 *.pyo
 exports/
 .claude/
+
+# User-data preset / sequence stores (CMU.17.034). Presets are user data,
+# not code; the per-user store lives outside the repo, and any local
+# *.mux16 / *.mux16seq files a user drops in the tree stay untracked.
+# Built-in presets remain in code; presets/presets.json is the one-time
+# migration source -- untracked (git rm --cached) but kept on disk.
+*.mux16
+*.mux16seq
+/presets/presets.json

@@ -43,14 +43,24 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.data.app_settings import set_last_preset_file
 from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
     MODE_C_MAX_CHANNEL,
     ON_BOARD_RE_CE_CHANNEL,
 )
+from src.data.presets import PresetManager
 from src.techniques.scripts import supported_techniques, technique_params
 
 logger = logging.getLogger(__name__)
+
+# Sentinel ``itemData`` value marking the trailing "Import preset file..."
+# entry in the preset combo box.  Selecting it opens a file dialog rather
+# than loading a preset (CMU.17.034 — Phase 1).
+_IMPORT_PRESET_SENTINEL = "__import_preset__"
+
+# File dialog filter for externalized preset files (CMU.17.034).
+_PRESET_FILE_FILTER = "MUX16 presets (*.mux16)"
 
 # -----------------------------------------------------------------------
 # Friendly technique display names
@@ -317,6 +327,9 @@ class TechniquePanel(QGroupBox):
             the user selects a different technique.
         params_changed(): Emitted when any parameter value changes.
         save_preset_requested(): Emitted when the user clicks Save.
+        presets_imported(str): Emitted with the imported file path after
+            the user picks a new preset file via "Import preset file...".
+            The main window reacts by repopulating any preset-dependent UI.
     """
 
     technique_changed = pyqtSignal(str)
@@ -324,11 +337,22 @@ class TechniquePanel(QGroupBox):
     preset_selected = pyqtSignal(str)  # preset key
     save_preset_requested = pyqtSignal()
     delete_preset_requested = pyqtSignal(str)  # preset key to delete
+    presets_imported = pyqtSignal(str)  # imported preset file path
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Technique", parent)
         self._param_widgets: dict[str, QWidget] = {}
         self._deletable_keys: set[str] = set()
+        # PresetManager whose store the "Import preset file..." entry
+        # repoints.  Injected by the main window via set_preset_manager;
+        # without it the import entry is inert (no manager to load into).
+        self._preset_mgr: Optional[PresetManager] = None
+        # Path used to override the app-settings store in tests so the
+        # real per-user file is never touched.
+        self._settings_path: Optional[str] = None
+        # Combo index selected before the import dialog opened, so a
+        # cancelled dialog can restore the prior selection.
+        self._pre_import_index: int = 0
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -502,20 +526,135 @@ class TechniquePanel(QGroupBox):
         self._preset_combo.addItem("(No Preset)", "")
         for key, name in sorted(presets.items()):
             self._preset_combo.addItem(name, key)
+        # Trailing "Import preset file..." action entry (CMU.17.034).
+        # Always last so it reads as a command, not a preset.
+        self._preset_combo.addItem(
+            "Import preset file...", _IMPORT_PRESET_SENTINEL
+        )
         self._preset_combo.blockSignals(False)
         # Selection resets to "(No Preset)" after a rebuild.
         self._delete_preset_btn.setEnabled(False)
+
+    def set_preset_manager(
+        self,
+        manager: PresetManager,
+        settings_path: Optional[str] = None,
+    ) -> None:
+        """Inject the PresetManager the import entry loads into.
+
+        Args:
+            manager: Active :class:`PresetManager`; "Import preset
+                file..." calls ``load_from_path`` on it.
+            settings_path: Optional app-settings file override (tests
+                point this at a temp file so the real per-user store is
+                untouched).
+        """
+        self._preset_mgr = manager
+        self._settings_path = settings_path
 
     # ---- Internal --------------------------------------------------------
 
     def _on_preset_selected(self, index: int) -> None:
         """Handle preset combo box selection change."""
         key = self._preset_combo.itemData(index)
+        # The trailing "Import preset file..." entry is an action, not a
+        # preset: route to the file dialog and never treat it as a key.
+        if key == _IMPORT_PRESET_SENTINEL:
+            self._delete_preset_btn.setEnabled(False)
+            self._on_import_preset_file()
+            return
         self._delete_preset_btn.setEnabled(
             bool(key) and key in self._deletable_keys
         )
+        # Remember the last real selection so a cancelled import dialog
+        # can fall back to it.
+        self._pre_import_index = index
         if key:
             self.preset_selected.emit(key)
+
+    def _on_import_preset_file(self) -> None:
+        """Open a file dialog and load the chosen ``*.mux16`` store.
+
+        On a successful pick the manager's active store is repointed to
+        the file, the dropdown is repopulated, the path is remembered as
+        last-used, and ``presets_imported`` is emitted.  A cancelled
+        dialog (or a missing manager) restores the prior selection and
+        does nothing else.
+        """
+        if self._preset_mgr is None:
+            logger.warning(
+                "Import preset selected with no PresetManager set."
+            )
+            self._restore_pre_import_selection()
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import preset file",
+            "",
+            _PRESET_FILE_FILTER,
+        )
+        if not path:
+            # Cancelled: leave the manager untouched, restore selection.
+            self._restore_pre_import_selection()
+            return
+
+        try:
+            self._preset_mgr.load_from_path(path)
+        except OSError as exc:
+            logger.warning(
+                "Could not import preset file %s: %s", path, exc
+            )
+            self._restore_pre_import_selection()
+            return
+
+        # Persist the chosen file as last-used (CMU.17.034).
+        set_last_preset_file(path, path=self._settings_path)
+
+        # Repopulate the dropdown from the freshly loaded store.
+        presets = {
+            k: p.name for k, p in self._preset_mgr.get_all().items()
+        }
+        deletable = {
+            k for k in presets if not self._preset_mgr.is_builtin(k)
+        }
+        self.refresh_presets(presets, deletable=deletable)
+        # Land on the first real preset rather than "(No Preset)" so an
+        # import immediately surfaces a usable config (index 0 is the
+        # "(No Preset)" placeholder; index 1 is the first real preset when
+        # the imported store is non-empty).
+        self._select_first_real_preset()
+        self.presets_imported.emit(path)
+        logger.info("Imported preset file: %s", path)
+
+    def _select_first_real_preset(self) -> None:
+        """Select the first real preset entry after a dropdown rebuild.
+
+        Falls back to "(No Preset)" (index 0) when the store is empty.
+        The first real preset sits at index 1 (index 0 is the placeholder
+        and the trailing entry is the "Import preset file..." action).
+        """
+        first_real = -1
+        for i in range(self._preset_combo.count()):
+            key = self._preset_combo.itemData(i)
+            if key and key != _IMPORT_PRESET_SENTINEL:
+                first_real = i
+                break
+        idx = first_real if first_real >= 0 else 0
+        self._pre_import_index = idx
+        # currentIndexChanged fires _on_preset_selected, which emits
+        # preset_selected so the main window loads the config.
+        self._preset_combo.setCurrentIndex(idx)
+
+    def _restore_pre_import_selection(self) -> None:
+        """Restore the combo to the selection before the import dialog."""
+        count = self._preset_combo.count()
+        idx = self._pre_import_index
+        if idx < 0 or idx >= count:
+            idx = 0
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.setCurrentIndex(idx)
+        self._preset_combo.blockSignals(False)
 
     def _on_delete_clicked(self) -> None:
         """Emit delete request for the currently selected preset."""

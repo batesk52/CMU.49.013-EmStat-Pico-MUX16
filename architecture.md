@@ -212,6 +212,45 @@ On completion → Exporters write CSV / .pssession (or skip if auto-saved)
 **Where used:** Technique script generation
 **Why:** MethodSCRIPT requires specific command ordering (GPIO config → channel select → cell_on → measurement loop → on_finished). Templates ensure correct structure while allowing parameterization.
 
+### Preset Sequencer (CMU.17.034) — planned design (2026-06-09)
+**Status:** Plan only; Low priority. Blueprint checklist lives in `README.md`.
+
+**Goal:** A PSTrace-"Scripts" equivalent — stack saved presets as draggable
+blocks on a new sidebar tab and run them back-to-back on the MUX-16.
+
+**Decisions:**
+- **Preset schema unchanged.** `Preset` already carries `channels`,
+  `electrode_config_mode` (external=Mode A / on_board=Mode B / manual=Mode C),
+  and `re_ce_channels` (the Mode-C pairing). No redesign — only externalization
+  and a verification that the *save* path persists the live electrode mode.
+- **Presets externalized, imported via the dropdown.** Preset files live OUTSIDE
+  the repo. The only way to point at a file is an "Import preset file…" entry at
+  the bottom of the preset combobox (file dialog); the chosen path is remembered
+  as last-used and auto-loaded next launch. This avoids any hardcoded
+  Drive-vs-local default and matches how a user naturally re-selects a file on a
+  new run. On-disk format is JSON under a custom extension with a versioned
+  wrapper (`format`/`version`) so the loader can evolve.
+- **Sequences in a separate file** (`*.mux16seq`), not co-stored with presets.
+  Steps reference presets by name; the sequence file is portable on its own.
+- **Runner reuses the engine, not a new execution path.** `SequenceRunner`
+  chains `engine.start_measurement` calls, advancing on the existing
+  `measurement_finished` signal and gating on `isRunning()` so the single-run
+  guard is honoured. The interactive export prompt is suppressed in "sequence
+  mode"; auto-save is opt-in (the same GUI toggle as single runs). When enabled,
+  all steps share one `<export_dir>/<stamp>_sequence/` parent and the engine's
+  writer adds a `<ts>_<technique>_autosave/` leaf per step, so the run looks like
+  a normal export folder whose subfolders are each an ordinary per-step export.
+
+**Why not a device-side multi-method script?** The Pico's MethodSCRIPT can loop a
+single technique but not chain heterogeneous techniques with per-step electrode
+modes; orchestrating at the GUI/engine layer (one script per step) keeps each
+step a normal, fully-validated `TechniqueConfig` run and reuses all existing
+parsing, export, and the new RE/CE disconnect guard (CMU.17.035).
+
+**Risks:** engine single-run guard (must gate on completion + thread finish);
+Mode-C validation throws in `TechniqueConfig.__post_init__`, so the whole queue
+must be validated before the first step launches.
+
 ### Error Handling Strategy
 - Serial errors: catch in engine thread, emit `measurement_error` signal, auto-disconnect
 - Script errors: device returns error codes — parse and display in GUI status bar
