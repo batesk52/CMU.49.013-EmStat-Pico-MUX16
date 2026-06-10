@@ -244,6 +244,49 @@ def test_chat_view_figure_attachments(qapp, monkeypatch) -> None:
     assert opened == ["CV ch1"]
 
 
+def test_typing_indicator_lifecycle(qapp) -> None:
+    """The cycling-dots indicator tracks the reply-pending states.
+
+    Shown at turn start (slow first token never looks like a hang),
+    hidden when text streams or a tool chip takes over as the liveness
+    signal, shown again while waiting on the model after a tool result,
+    hidden at turn end. Never enters the transcript text.
+    """
+    from src.gui.agent_dock import ChatView
+
+    chat = ChatView()
+    chat.add_user("hi")
+
+    chat.show_typing()
+    assert chat.typing
+    assert chat._blink_timer.isActive()  # noqa: SLF001
+    assert chat._typing_label.text() in (".", "..", "...")  # noqa: SLF001
+
+    # Dots cycle 1 -> 2 -> 3 -> 1.
+    seen = []
+    for _ in range(4):
+        chat._on_blink_tick()  # noqa: SLF001
+        seen.append(len(chat._typing_label.text()))  # noqa: SLF001
+    assert set(seen) == {1, 2, 3}
+
+    # First streamed text hides it.
+    chat.append_agent("Here we go")
+    assert not chat.typing
+
+    # Tool flow: chip running (indicator off), then waiting again.
+    chat.add_tool_chip("c1", "run_cv", "{}")
+    chat.finish_tool_chip("c1", "done")
+    chat.show_typing()
+    assert chat.typing
+    chat.hide_typing()
+    assert not chat.typing
+    assert not chat._blink_timer.isActive()  # noqa: SLF001
+
+    # Ephemeral: never part of the transcript.
+    assert "typing" not in chat.text().lower()
+    assert chat.text().startswith("You: hi")
+
+
 def test_chat_input_enter_sends_shift_enter_newlines(qapp) -> None:
     """ChatInput submits on Enter and newlines on Shift+Enter."""
     from PyQt6.QtCore import Qt

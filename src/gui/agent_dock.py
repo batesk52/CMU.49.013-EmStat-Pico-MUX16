@@ -290,6 +290,22 @@ class ChatView(QScrollArea):
         self._figure_thumbs: list[QLabel] = []
         self._figure_pixmaps: list[QPixmap] = []
         self._figure_titles: list[str] = []
+        # Typing indicator: an agent-style bubble with cycling dots,
+        # shown while a reply is pending so a slow model never looks
+        # like a hang. Ephemeral — never enters _entries / text().
+        self._typing_on = False
+        self._typing_label = QLabel(".")
+        self._typing_label.setStyleSheet(self._AGENT_STYLE)
+        typing_row = QHBoxLayout()
+        typing_row.setContentsMargins(0, 0, 0, 0)
+        typing_row.addWidget(self._typing_label)
+        typing_row.addStretch(1)
+        self._typing_wrapper = QWidget()
+        self._typing_wrapper.setLayout(typing_row)
+        self._typing_wrapper.setVisible(False)
+        self._layout.insertWidget(
+            self._layout.count() - 1, self._typing_wrapper
+        )
         # Shared blink driver for running chips (started on demand).
         self._blink_phase = 0
         self._blink_timer = QTimer(self)
@@ -319,6 +335,8 @@ class ChatView(QScrollArea):
 
     def append_agent(self, delta: str) -> None:
         """Stream a delta into the open agent bubble (opens one)."""
+        if self._typing_on:
+            self.hide_typing()
         if self._open_agent is None:
             self._open_agent = self._add_bubble("Agent", "")
         self._entries[-1] = (
@@ -362,6 +380,44 @@ class ChatView(QScrollArea):
             else:
                 lines.append(f"{role}: {body}")
         return "\n".join(lines)
+
+    # ---- typing indicator ----------------------------------------------
+
+    def show_typing(self) -> None:
+        """Show the cycling-dots bubble (a reply is pending).
+
+        Re-anchored below the newest content so it always reads as
+        "the next message is being written".
+        """
+        self._placeholder.setVisible(False)
+        # Keep the indicator last (just above the stretch item).
+        self._layout.removeWidget(self._typing_wrapper)
+        self._layout.insertWidget(
+            self._layout.count() - 1, self._typing_wrapper
+        )
+        self._typing_on = True
+        self._render_typing()
+        self._typing_wrapper.setVisible(True)
+        if not self._blink_timer.isActive():
+            self._blink_timer.start()
+
+    def hide_typing(self) -> None:
+        """Hide the indicator (content arrived or the turn ended)."""
+        self._typing_on = False
+        self._typing_wrapper.setVisible(False)
+        if not any(
+            c["status"] == "running" for c in self._chips.values()
+        ):
+            self._blink_timer.stop()
+
+    @property
+    def typing(self) -> bool:
+        """Whether the typing indicator is currently shown."""
+        return self._typing_on
+
+    def _render_typing(self) -> None:
+        # 1, 2, 3 dots, then around again.
+        self._typing_label.setText("." * (self._blink_phase % 3 + 1))
 
     # ---- figure attachments --------------------------------------------
 
@@ -484,7 +540,7 @@ class ChatView(QScrollArea):
             return
         chip["status"] = status
         self._render_chip(call_id)
-        if not any(
+        if not self._typing_on and not any(
             c["status"] == "running" for c in self._chips.values()
         ):
             self._blink_timer.stop()
@@ -529,6 +585,8 @@ class ChatView(QScrollArea):
         for cid, chip in self._chips.items():
             if chip["status"] == "running":
                 self._render_chip(cid)
+        if self._typing_on:
+            self._render_typing()
 
     # ---- internals -----------------------------------------------------
 
@@ -856,6 +914,8 @@ class AgentDockPanel(QWidget):
     @pyqtSlot(object)
     def _on_tool_call_started(self, payload: object) -> None:
         """Add a blinking 'running' chip into the chat flow."""
+        # The chip's own animation takes over as the liveness signal.
+        self._chat.hide_typing()
         data = dict(payload) if isinstance(payload, dict) else {}
         self._chat.add_tool_chip(
             str(data.get("id", "")),
@@ -868,27 +928,33 @@ class AgentDockPanel(QWidget):
         """Resolve the matching chip to done."""
         data = dict(payload) if isinstance(payload, dict) else {}
         self._chat.finish_tool_chip(str(data.get("id", "")), "done")
+        # Waiting on the model's follow-up text now.
+        self._chat.show_typing()
 
     @pyqtSlot(object)
     def _on_tool_call_error(self, payload: object) -> None:
         """Resolve the matching chip to error."""
         data = dict(payload) if isinstance(payload, dict) else {}
         self._chat.finish_tool_chip(str(data.get("id", "")), "error")
+        self._chat.show_typing()
 
     @pyqtSlot()
     def _on_turn_started(self) -> None:
-        """Disable input while the turn is in flight."""
+        """Disable input and show the typing indicator."""
         self._set_in_flight(True)
+        self._chat.show_typing()
 
     @pyqtSlot()
     def _on_turn_done(self) -> None:
         """Re-enable input and close the streamed bubble."""
+        self._chat.hide_typing()
         self._chat.close_agent()
         self._set_in_flight(False)
 
     @pyqtSlot(str)
     def _on_agent_error(self, message: str) -> None:
         """Show an agent/API error distinctly in the transcript."""
+        self._chat.hide_typing()
         self._chat.add_notice(f"[Agent error] {message}")
 
     @pyqtSlot(object)
