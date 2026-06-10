@@ -60,6 +60,52 @@ _EMPTY_LINE = ""
 # firing) when a clean '+' END_MEAS marker isn't received.
 _EMPTY_CONFIRM_TIMEOUT = 2.0  # seconds
 
+# EIS/GEIS sweep one frequency per packet, and the device holds the serial
+# line silent for the entire duration of each point. That per-point time
+# climbs steeply as frequency falls — bench captures show ~1.4 s at 25 Hz,
+# ~5 s at 10 Hz, ~22 s at 5 Hz, roughly quadrupling every half-decade, which
+# puts a single point near 1 Hz well over 100 s. So the "expecting data"
+# read timeout is scaled to the lowest swept frequency (freq_end) instead of
+# the flat MEASUREMENT_TIMEOUT; otherwise a slow low-frequency point reads
+# empty mid-sweep, gets mistaken for end-of-measurement, and truncates a
+# multi-channel run after the first channel's sweep.
+_EIS_FAST_BAND_MIN_HZ = 2.0   # at/above this every point is < ~25 s (120 s
+                              # is ample) — kept identical to legacy behaviour
+_EIS_POINT_S_PER_HZ = 350.0   # silent-wait budget for one point at 1 Hz
+                              # (~2x the ~150 s a 1 Hz point actually takes)
+_EIS_READ_TIMEOUT_MAX = 900.0  # ceiling so a stalled device still ends in
+                               # <=15 min rather than hanging indefinitely
+
+
+def _eis_data_read_timeout(freq_end: float) -> float:
+    """Per-read timeout (seconds) for an EIS/GEIS sweep ending at ``freq_end``.
+
+    A single EIS point keeps the serial line silent for its whole duration,
+    which grows sharply at low frequency (~22 s at 5 Hz, >100 s near 1 Hz).
+    The read timeout must exceed the slowest point or the engine reads empty
+    mid-sweep, mistakes it for the end of the measurement, and stops before
+    later channels run.
+
+    At or above :data:`_EIS_FAST_BAND_MIN_HZ` every point finishes well inside
+    :data:`MEASUREMENT_TIMEOUT`, so the flat timeout is returned unchanged
+    (preserving legacy behaviour for the common high-frequency range). Below
+    it, the timeout scales inversely with ``freq_end`` and is clamped to
+    ``[MEASUREMENT_TIMEOUT, _EIS_READ_TIMEOUT_MAX]``.
+
+    Args:
+        freq_end: Lowest swept frequency in Hz (``params['freq_end']``).
+
+    Returns:
+        Read timeout in seconds.
+    """
+    if freq_end >= _EIS_FAST_BAND_MIN_HZ:
+        return MEASUREMENT_TIMEOUT
+    # Guard against a zero/negative freq_end from a malformed config so the
+    # division can't blow up; clamping below caps the result regardless.
+    safe_freq = max(freq_end, 1e-3)
+    scaled = _EIS_POINT_S_PER_HZ / safe_freq
+    return min(_EIS_READ_TIMEOUT_MAX, max(MEASUREMENT_TIMEOUT, scaled))
+
 
 class MeasurementEngine(QThread):
     """Background QThread that executes electrochemical measurements.
@@ -392,28 +438,26 @@ class MeasurementEngine(QThread):
             )
             avg_buffer: list[tuple[float, dict[str, float]]] = []
             consecutive_empty = 0
-            # Long timeout while expecting data; drops to the short confirm
-            # timeout after the first empty read so end-of-measurement is
-            # detected in seconds rather than minutes when '+' is missed.
-            read_timeout = MEASUREMENT_TIMEOUT
-            # EIS/GEIS sweep one frequency at a time; a single point at the
-            # lowest swept frequency (freq_end) can take many periods. At or
-            # above 0.1 Hz a point is only tens of seconds — well under
-            # MEASUREMENT_TIMEOUT — so the first empty read still reliably
-            # means "done" and fast-confirm is safe. Below 0.1 Hz a point can
-            # approach the timeout, so keep the full timeout there (preserving
-            # the original 3-consecutive-empty tolerance that resets on
-            # incoming data). Fast-cadence techniques (CA, CV, SWV, …) always
-            # fast-confirm — their packets arrive sub-second.
+            # Per-read timeout while expecting data. For EIS/GEIS this is
+            # scaled to the lowest swept frequency, because the device stays
+            # silent for the full (and at low frequency, long) duration of
+            # each point; a flat 120 s timeout reads empty mid-sweep on a
+            # ~1 Hz point and truncates multi-channel runs after channel 1.
+            # Fast-cadence techniques (CA, CV, SWV, …) keep the flat timeout —
+            # their packets arrive sub-second.
             if technique in ("eis", "geis"):
-                freq_end = float(params.get("freq_end", 0.1))
-                confirm_timeout = (
-                    _EMPTY_CONFIRM_TIMEOUT
-                    if freq_end >= 0.1
-                    else MEASUREMENT_TIMEOUT
+                data_read_timeout = _eis_data_read_timeout(
+                    float(params.get("freq_end", 0.1))
                 )
             else:
-                confirm_timeout = _EMPTY_CONFIRM_TIMEOUT
+                data_read_timeout = MEASUREMENT_TIMEOUT
+            read_timeout = data_read_timeout
+            # Once the device has stayed silent for a whole data-read timeout
+            # (already sized to outlast the slowest expected point), it is
+            # almost certainly finished, so confirm end-of-measurement with
+            # short reads instead of blocking another full timeout each. This
+            # keeps the "save?" prompt snappy when a clean '+' is missed.
+            confirm_timeout = _EMPTY_CONFIRM_TIMEOUT
 
             # -- Read one round of responses ------------------------------
             while not self._abort_requested:
@@ -449,10 +493,10 @@ class MeasurementEngine(QThread):
                     # (no-op for EIS/GEIS, which keep the full timeout).
                     read_timeout = confirm_timeout
                     continue
-                # Real data resumed: restore the long timeout for the next
-                # (possibly slow) inter-packet gap.
+                # Real data resumed: restore the long (per-technique) timeout
+                # for the next (possibly slow) inter-packet gap.
                 consecutive_empty = 0
-                read_timeout = MEASUREMENT_TIMEOUT
+                read_timeout = data_read_timeout
 
                 if line.startswith(_ERROR_PREFIX):
                     error_msg = f"Device error: {line}"

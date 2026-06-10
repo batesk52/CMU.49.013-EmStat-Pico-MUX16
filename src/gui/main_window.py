@@ -88,6 +88,25 @@ logger = logging.getLogger(__name__)
 APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
 
+# Techniques whose exact MethodSCRIPT must always be recorded. For EIS/GEIS
+# the applied DC bias (the meas_loop_eis DC argument) and current-range /
+# autoranging settings live only in the script — they are NOT recoverable
+# from the saved CSV/.pssession data — so auto-save is forced on regardless
+# of the checkbox, guaranteeing a ``_script.mscr`` lands in every run folder.
+_ALWAYS_AUTOSAVE_TECHNIQUES = frozenset({"eis", "geis"})
+
+
+def _forces_auto_save(technique: str) -> bool:
+    """Return True if ``technique`` must always auto-save for provenance.
+
+    Args:
+        technique: Technique identifier (case-insensitive).
+
+    Returns:
+        True for techniques in :data:`_ALWAYS_AUTOSAVE_TECHNIQUES`.
+    """
+    return technique.lower() in _ALWAYS_AUTOSAVE_TECHNIQUES
+
 
 class _NoWheelScrollFilter(QObject):
     """Stop the mouse-wheel from changing combo/spin box values, while
@@ -540,6 +559,10 @@ class MainWindow(QMainWindow):
         self._tech_panel.technique_changed.connect(
             self._on_technique_preview
         )
+        # Technique panel -> force auto-save default for EIS/GEIS
+        self._tech_panel.technique_changed.connect(
+            self._on_technique_changed_auto_save
+        )
 
         # Electrode-config panel -> swap visible channel panel
         self._electrode_config_panel.mode_changed.connect(
@@ -700,6 +723,26 @@ class MainWindow(QMainWindow):
     # Measurement lifecycle
     # ------------------------------------------------------------------
 
+    def _default_export_dir(self) -> str:
+        """Return the configured base directory for auto-saved run folders.
+
+        Delegates to the configurable export-dir setting so forced and
+        opt-in auto-save share one user-set location (File > Set Export
+        Folder), rather than the legacy in-repo ``exports/``.
+        """
+        return get_export_dir()
+
+    @pyqtSlot(str)
+    def _on_technique_changed_auto_save(self, technique: str) -> None:
+        """Reflect the forced-auto-save default in the checkbox.
+
+        EIS/GEIS always auto-save (see :func:`_forces_auto_save`); checking
+        the box keeps the UI consistent with what the run will actually do.
+        Other techniques are left as the operator set them.
+        """
+        if _forces_auto_save(technique):
+            self._meas_panel.set_auto_save(True, self._default_export_dir())
+
     @pyqtSlot()
     def _on_start_measurement(self) -> None:
         """Gather config from panels and start the measurement engine."""
@@ -744,17 +787,23 @@ class MainWindow(QMainWindow):
             else:  # on_board
                 re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
 
-        # Build auto-save config if enabled. Reset first so a stale True
-        # from a previous run that ended in error can't mislabel this run.
+        # Build auto-save config. EIS/GEIS always auto-save so the exact
+        # MethodSCRIPT (DC bias + current ranging) is recorded as
+        # _script.mscr in the run folder — those settings are not otherwise
+        # recoverable from the saved data; other techniques honour the
+        # checkbox. Reset the active flag first so a stale True from a
+        # previous run that ended in error can't mislabel this run.
         auto_save = None
         self._auto_save_active = False
-        if self._meas_panel.is_auto_save_enabled():
-            auto_dir = self._meas_panel.auto_save_directory()
-            if not auto_dir:
-                auto_dir = get_export_dir()
-            auto_save = AutoSaveConfig(
-                enabled=True, output_dir=auto_dir
+        if (
+            _forces_auto_save(technique)
+            or self._meas_panel.is_auto_save_enabled()
+        ):
+            auto_dir = (
+                self._meas_panel.auto_save_directory()
+                or self._default_export_dir()
             )
+            auto_save = AutoSaveConfig(enabled=True, output_dir=auto_dir)
             self._auto_save_active = True
 
         try:
@@ -1371,11 +1420,12 @@ class MainWindow(QMainWindow):
         else:
             self._chan_panel.set_channels(preset.channels)
 
-        default_dir = get_export_dir()
-        # Auto-save is opt-in: never let a preset silently enable it.
-        # The user turns auto-save on explicitly in the GUI; we still seed
-        # the directory so it's ready the moment they do.
-        self._meas_panel.set_auto_save(False, default_dir)
+        # Auto-save is opt-in: a preset's saved auto_save flag never forces
+        # it on (the user enables it in the GUI). EIS/GEIS are the one
+        # exception, auto-saving for script provenance.
+        self._meas_panel.set_auto_save(
+            _forces_auto_save(preset.technique), self._default_export_dir()
+        )
 
         self.statusBar().showMessage(
             f"Loaded preset: {preset.name}"
