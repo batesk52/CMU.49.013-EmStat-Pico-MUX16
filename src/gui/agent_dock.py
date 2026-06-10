@@ -1,4 +1,4 @@
-"""Agent dock panel: chat UI, tool-call cards and analysis figures.
+"""Agent dock panel: messenger-style chat, inline tool chips, figures.
 
 ``AgentDockPanel`` is the QWidget the MainWindow places inside the
 "Agent" QDockWidget.  It owns the :class:`~src.agent.agent_worker.
@@ -23,12 +23,13 @@ pixmap on the GUI thread.  The agent thread never touches a widget.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 from typing import Any, Callable, Optional
 
-from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QPixmap, QTextDocument
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -55,7 +56,6 @@ __all__ = [
     "AgentSettingsDialog",
     "ChatView",
     "FigureSink",
-    "ToolCallCard",
 ]
 
 #: Models offered in the picker (default first).
@@ -142,6 +142,20 @@ class AgentSettingsDialog(QDialog):
         )
 
 
+def _markdown_to_html(text: str) -> str:
+    """Convert agent markdown to HTML via Qt's built-in parser.
+
+    QTextDocument understands GitHub-flavored basics (bold, italics,
+    lists, headers, inline/fenced code) — enough for the agent's
+    summaries to render formatted instead of showing literal ``**``
+    markers. No external dependency. (LaTeX math is NOT rendered; it
+    would need mathtext-to-image treatment.)
+    """
+    doc = QTextDocument()
+    doc.setMarkdown(text)
+    return doc.toHtml()
+
+
 class ChatView(QScrollArea):
     """Messenger-style transcript: word-wrapped bubbles per message.
 
@@ -176,6 +190,13 @@ class ChatView(QScrollArea):
         self._entries: list[tuple[str, str]] = []
         self._bubbles: list[QLabel] = []
         self._open_agent: Optional[QLabel] = None
+        # Tool chips by call id: {"label", "name", "preview", "status"}.
+        self._chips: dict[str, dict[str, Any]] = {}
+        # Shared blink driver for running chips (started on demand).
+        self._blink_phase = 0
+        self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(400)
+        self._blink_timer.timeout.connect(self._on_blink_tick)
 
         self._placeholder = QLabel(
             "Ask the agent to run measurements or analyze data..."
@@ -206,7 +227,10 @@ class ChatView(QScrollArea):
             "Agent",
             self._entries[-1][1] + delta,
         )
-        self._open_agent.setText(self._entries[-1][1])
+        raw = self._entries[-1][1]
+        self._open_agent.setProperty("raw", raw)
+        self._open_agent.setText(_markdown_to_html(raw))
+        self._fit_bubble(self._open_agent)
 
     def close_agent(self) -> None:
         """Finish the streamed agent bubble (turn end)."""
@@ -229,16 +253,114 @@ class ChatView(QScrollArea):
         for role, body in self._entries:
             if role == "notice":
                 lines.append(body)
+            elif role == "tool":
+                chip = self._chips.get(body, {})
+                lines.append(
+                    f"[tool {chip.get('name', '?')}:"
+                    f" {chip.get('status', '?')}]"
+                )
             else:
                 lines.append(f"{role}: {body}")
         return "\n".join(lines)
+
+    # ---- tool chips (live MCP/tool-call indicators in the flow) --------
+
+    def add_tool_chip(
+        self, call_id: str, name: str, preview: str
+    ) -> None:
+        """Insert a small left-aligned chip for a starting tool call.
+
+        Closes the open agent bubble first, so the agent's text after
+        the tool runs starts a FRESH bubble — the conversation reads as
+        text, tool activity, text instead of one merged block. The chip
+        blinks (animated dots + alternating accent border) while the
+        call is running.
+        """
+        self._close_open_agent()
+        self._placeholder.setVisible(False)
+        label = QLabel()
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._chips[call_id] = {
+            "label": label,
+            "name": name,
+            "preview": preview,
+            "status": "running",
+        }
+        self._entries.append(("tool", call_id))
+        self._render_chip(call_id)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(14, 0, 0, 0)  # slight indent in the flow
+        row.addWidget(label)
+        row.addStretch(1)
+        wrapper = QWidget()
+        wrapper.setLayout(row)
+        self._layout.insertWidget(self._layout.count() - 1, wrapper)
+        if not self._blink_timer.isActive():
+            self._blink_timer.start()
+
+    def finish_tool_chip(self, call_id: str, status: str) -> None:
+        """Resolve a chip to ``done``/``error`` and stop its blink."""
+        chip = self._chips.get(call_id)
+        if chip is None:
+            return
+        chip["status"] = status
+        self._render_chip(call_id)
+        if not any(
+            c["status"] == "running" for c in self._chips.values()
+        ):
+            self._blink_timer.stop()
+
+    def tool_states(self) -> list[dict[str, str]]:
+        """Chips as ``{"id", "name", "status"}`` dicts (for tests)."""
+        return [
+            {"id": cid, "name": c["name"], "status": c["status"]}
+            for cid, c in self._chips.items()
+        ]
+
+    def _render_chip(self, call_id: str) -> None:
+        chip = self._chips[call_id]
+        name = html.escape(str(chip["name"]))
+        preview = html.escape(str(chip["preview"]))
+        status = chip["status"]
+        if status == "running":
+            dots = "." * (self._blink_phase % 4)
+            tail = f"<span style='color:#7aa2c9;'>running{dots}</span>"
+            border = (
+                "#7aa2c9" if self._blink_phase % 2 == 0 else "#3a4a5a"
+            )
+        elif status == "done":
+            tail = "<span style='color:#5cb85c;'>done</span>"
+            border = "#4a4a4a"
+        else:
+            tail = f"<span style='color:#d9534f;'>{status}</span>"
+            border = "#6a3a3a"
+        chip["label"].setStyleSheet(
+            "QLabel { background-color: #262626;"
+            f" border: 1px solid {border};"
+            " border-radius: 6px; padding: 4px 8px;"
+            " color: #c8c8c8; font-size: 11px; }"
+        )
+        chip["label"].setText(
+            f"<span style='color:#9fc5e8;'>{name}</span>"
+            f" <span style='color:#888;'>{preview}</span>  {tail}"
+        )
+
+    def _on_blink_tick(self) -> None:
+        self._blink_phase += 1
+        for cid, chip in self._chips.items():
+            if chip["status"] == "running":
+                self._render_chip(cid)
 
     # ---- internals -----------------------------------------------------
 
     def _add_bubble(self, role: str, text: str) -> QLabel:
         self._placeholder.setVisible(False)
         self._entries.append((role, text))
-        label = QLabel(text)
+        label = QLabel()
         label.setWordWrap(True)
         label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
@@ -246,8 +368,17 @@ class ChatView(QScrollArea):
         label.setStyleSheet(
             self._USER_STYLE if role == "You" else self._AGENT_STYLE
         )
-        label.setMaximumWidth(self._bubble_max_width())
+        # Agent replies are markdown (bold, lists, code, headers) and
+        # render as rich text; user input stays literal plain text.
+        label.setProperty("raw", text)
+        if role == "Agent":
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setText(_markdown_to_html(text))
+        else:
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setText(text)
         self._bubbles.append(label)
+        self._fit_bubble(label)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -269,12 +400,33 @@ class ChatView(QScrollArea):
         """Cap bubbles at ~82% of the viewport (min floor for docks)."""
         return max(240, int(self.viewport().width() * 0.82))
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        """Re-cap every bubble's width when the dock is resized."""
-        super().resizeEvent(event)
+    def _fit_bubble(self, label: QLabel) -> None:
+        """Size a bubble to its content, up to the width cap.
+
+        A word-wrapped QLabel left to the layout picks a narrow
+        preferred width (user messages wrapped at ~half the panel);
+        fixing the width to the text's natural extent (plus padding)
+        makes bubbles hug short messages and expand to the cap for long
+        ones — proper messenger behavior for BOTH roles.
+        """
         cap = self._bubble_max_width()
+        metrics = label.fontMetrics()
+        raw = label.property("raw") or ""
+        natural = max(
+            (
+                metrics.horizontalAdvance(line)
+                for line in str(raw).splitlines()
+            ),
+            default=0,
+        )
+        # Stylesheet padding (10px x2) + border allowance.
+        label.setFixedWidth(min(natural + 26, cap))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Re-fit every bubble when the dock is resized."""
+        super().resizeEvent(event)
         for label in self._bubbles:
-            label.setMaximumWidth(cap)
+            self._fit_bubble(label)
 
 
 class FigureSink(QObject):
@@ -288,80 +440,6 @@ class FigureSink(QObject):
     """
 
     figure_ready = pyqtSignal(object)  # {"title": str, "tool": str, "png": bytes}
-
-
-class ToolCallCard(QFrame):
-    """Small visual card for one tool call: name, input, status, result."""
-
-    _STATUS_STYLE = {
-        "running": "color: #c8a000; font-weight: bold;",
-        "done": "color: #2e8b57; font-weight: bold;",
-        "error": "color: #c0392b; font-weight: bold;",
-    }
-
-    def __init__(
-        self,
-        call_id: str,
-        name: str,
-        input_preview: str,
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        """Build the card in the 'running' state.
-
-        Args:
-            call_id: The tool_use block id (card lookup key).
-            name: Tool name.
-            input_preview: Compact one-line input rendering.
-            parent: Optional parent widget.
-        """
-        super().__init__(parent)
-        self.call_id = call_id
-        self.tool_name = name
-        self.status = "running"
-
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(2)
-
-        header = QHBoxLayout()
-        name_label = QLabel(name)
-        name_label.setStyleSheet("font-weight: bold;")
-        self._status_label = QLabel("running")
-        self._status_label.setStyleSheet(self._STATUS_STYLE["running"])
-        header.addWidget(name_label)
-        header.addStretch()
-        header.addWidget(self._status_label)
-        layout.addLayout(header)
-
-        self._input_label = QLabel(input_preview)
-        self._input_label.setWordWrap(True)
-        self._input_label.setStyleSheet(
-            "color: #909090; font-size: 11px;"
-        )
-        layout.addWidget(self._input_label)
-
-        self._result_label = QLabel("")
-        self._result_label.setWordWrap(True)
-        self._result_label.setStyleSheet("font-size: 11px;")
-        self._result_label.setVisible(False)
-        layout.addWidget(self._result_label)
-
-    def finish(self, status: str, result_preview: str) -> None:
-        """Move the card to its terminal state.
-
-        Args:
-            status: ``"done"`` or ``"error"``.
-            result_preview: Compact result rendering.
-        """
-        self.status = status
-        self._status_label.setText(status)
-        self._status_label.setStyleSheet(
-            self._STATUS_STYLE.get(status, "")
-        )
-        if result_preview:
-            self._result_label.setText(result_preview)
-            self._result_label.setVisible(True)
 
 
 def _preview(value: Any) -> str:
@@ -378,8 +456,8 @@ class AgentDockPanel(QWidget):
 
     Layout, top to bottom:
 
-    * Splitter with the streaming transcript, the tool-call card list,
-      and the figure strip.
+    * Splitter with the bubble transcript (tool calls render inline as
+      blinking chips) and the figure strip.
     * Input row: message field + Send (Enter sends) + Stop.  Input is
       disabled while a turn is in flight.
 
@@ -428,7 +506,6 @@ class AgentDockPanel(QWidget):
         self._figures: list[dict[str, Any]] = []
         self._figure_labels: list[QLabel] = []
         self._figure_captions: list[QLabel] = []
-        self._tool_cards: dict[str, ToolCallCard] = {}
 
         self._sink = FigureSink(self)
         self._sink.figure_ready.connect(self._on_figure_ready)
@@ -470,18 +547,7 @@ class AgentDockPanel(QWidget):
         self._chat = ChatView()
         splitter.addWidget(self._chat)
 
-        # Tool-call cards.
-        cards_container = QWidget()
-        self._cards_layout = QVBoxLayout(cards_container)
-        self._cards_layout.setContentsMargins(2, 2, 2, 2)
-        self._cards_layout.setSpacing(3)
-        self._cards_layout.addStretch()
-        cards_scroll = QScrollArea()
-        cards_scroll.setWidgetResizable(True)
-        cards_scroll.setWidget(cards_container)
-        splitter.addWidget(cards_scroll)
-
-        # Figures.
+        # Figures. (Tool activity renders inline in the chat as chips.)
         figures_container = QWidget()
         self._figures_layout = QVBoxLayout(figures_container)
         self._figures_layout.setContentsMargins(2, 2, 2, 2)
@@ -492,9 +558,8 @@ class AgentDockPanel(QWidget):
         self._figures_scroll.setWidget(figures_container)
         splitter.addWidget(self._figures_scroll)
 
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 3)
+        splitter.setStretchFactor(0, 7)
+        splitter.setStretchFactor(1, 3)
         layout.addWidget(splitter, stretch=1)
 
         # Input row.
@@ -577,15 +642,12 @@ class AgentDockPanel(QWidget):
         return self._chat.text()
 
     def tool_card_states(self) -> list[dict[str, str]]:
-        """Tool cards as ``{"id", "name", "status"}`` dicts (for tests)."""
-        return [
-            {
-                "id": card.call_id,
-                "name": card.tool_name,
-                "status": card.status,
-            }
-            for card in self._tool_cards.values()
-        ]
+        """Tool chips as ``{"id", "name", "status"}`` dicts (for tests).
+
+        Name kept from the card era so the smoke gates' assertions hold;
+        tool activity now renders as inline chat chips.
+        """
+        return self._chat.tool_states()
 
     def figure_count(self) -> int:
         """Number of figures rendered into the figure strip."""
@@ -631,29 +693,25 @@ class AgentDockPanel(QWidget):
 
     @pyqtSlot(object)
     def _on_tool_call_started(self, payload: object) -> None:
-        """Add a 'running' card for the announced tool call."""
+        """Add a blinking 'running' chip into the chat flow."""
         data = dict(payload) if isinstance(payload, dict) else {}
-        call_id = str(data.get("id", ""))
-        card = ToolCallCard(
-            call_id,
+        self._chat.add_tool_chip(
+            str(data.get("id", "")),
             str(data.get("name", "?")),
             _preview(data.get("input", {})),
-        )
-        self._tool_cards[call_id] = card
-        # Insert above the trailing stretch item.
-        self._cards_layout.insertWidget(
-            self._cards_layout.count() - 1, card
         )
 
     @pyqtSlot(object)
     def _on_tool_call_finished(self, payload: object) -> None:
-        """Mark the matching card done."""
-        self._finish_card(payload, "done")
+        """Resolve the matching chip to done."""
+        data = dict(payload) if isinstance(payload, dict) else {}
+        self._chat.finish_tool_chip(str(data.get("id", "")), "done")
 
     @pyqtSlot(object)
     def _on_tool_call_error(self, payload: object) -> None:
-        """Mark the matching card errored."""
-        self._finish_card(payload, "error")
+        """Resolve the matching chip to error."""
+        data = dict(payload) if isinstance(payload, dict) else {}
+        self._chat.finish_tool_chip(str(data.get("id", "")), "error")
 
     @pyqtSlot()
     def _on_turn_started(self) -> None:
@@ -711,18 +769,6 @@ class AgentDockPanel(QWidget):
             old_label.deleteLater()
 
     # ---- Internals -----------------------------------------------------------------
-
-    def _finish_card(self, payload: object, status: str) -> None:
-        """Resolve a card to done/error from a worker payload."""
-        data = dict(payload) if isinstance(payload, dict) else {}
-        call_id = str(data.get("id", ""))
-        card = self._tool_cards.get(call_id)
-        if card is None:
-            logger.warning(
-                "Tool result for unknown call id %r.", call_id
-            )
-            return
-        card.finish(status, _preview(data.get("result", "")))
 
     def _set_in_flight(self, in_flight: bool) -> None:
         """Toggle the input row for turn-in-flight state."""

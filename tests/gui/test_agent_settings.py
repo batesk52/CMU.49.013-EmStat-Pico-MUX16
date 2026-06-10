@@ -160,6 +160,57 @@ def test_chat_view_bubbles_and_transcript(qapp) -> None:
     assert chat.text().endswith("Agent: Second turn.")
 
 
+def test_chat_view_tool_chips_lifecycle(qapp) -> None:
+    """Tool chips blink while running, resolve to done, split bubbles."""
+    from src.gui.agent_dock import ChatView
+
+    chat = ChatView()
+    chat.append_agent("Let me check the device.")
+    chat.add_tool_chip("call_1", "run_cv", "{'channels': [1]}")
+
+    # Chip inserted, blink driver running, agent bubble closed.
+    assert chat.tool_states() == [
+        {"id": "call_1", "name": "run_cv", "status": "running"}
+    ]
+    assert chat._blink_timer.isActive()  # noqa: SLF001
+    # Post-tool deltas open a NEW bubble (text-tool-text reading order).
+    chat.append_agent("CV finished cleanly.")
+    assert len(chat._bubbles) == 2  # noqa: SLF001
+
+    chat.finish_tool_chip("call_1", "done")
+    assert chat.tool_states()[0]["status"] == "done"
+    assert not chat._blink_timer.isActive()  # noqa: SLF001
+
+    # Transcript interleaves the tool line between the two bubbles.
+    assert chat.text() == (
+        "Agent: Let me check the device.\n"
+        "[tool run_cv: done]\n"
+        "Agent: CV finished cleanly."
+    )
+
+
+def test_agent_bubbles_render_markdown(qapp) -> None:
+    """Agent markdown renders as rich text; user text stays literal."""
+    from PyQt6.QtCore import Qt
+
+    from src.gui.agent_dock import ChatView
+
+    chat = ChatView()
+    chat.add_user("**not bold** for users")
+    chat.append_agent("**Technique:** CV")
+    chat.close_agent()
+
+    user_label, agent_label = chat._bubbles  # noqa: SLF001
+    assert user_label.textFormat() == Qt.TextFormat.PlainText
+    assert user_label.text() == "**not bold** for users"
+    assert agent_label.textFormat() == Qt.TextFormat.RichText
+    # Markdown converted: no literal ** markers; bold markup present.
+    assert "**" not in agent_label.text()
+    assert "font-weight" in agent_label.text()
+    # text() still returns the raw markdown (smoke-gate contract).
+    assert "Agent: **Technique:** CV" in chat.text()
+
+
 def test_handler_persists_and_pushes(qapp, monkeypatch) -> None:
     """Accepting the dialog persists settings and updates the worker."""
     saved = {}
