@@ -1135,7 +1135,21 @@ class MainWindow(QMainWindow):
         """Handle measurement_finished signal from engine.
 
         Stores the result, updates UI to idle, and prompts for export.
+        Agent-driven runs are delegated to the modal-free handler.
         """
+        # A run the agent started on the REAL engine must never pop a
+        # modal mid-conversation: delegate to the modal-free handler.
+        # (Mock-mode agent runs connect to it directly and never reach
+        # here; the engine-identity guard keeps a concurrent mock-run
+        # flag from suppressing a user run's export prompt.)
+        if (
+            self._agent_adapter is not None
+            and self._agent_engine is self._engine
+            and self._agent_adapter.consume_agent_run()
+        ):
+            self._on_agent_measurement_finished(result)
+            return
+
         self._last_result = result
         self._export_action.setEnabled(True)
         if self._plot_container is not None:
@@ -1202,6 +1216,17 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_measurement_error(self, message: str) -> None:
         """Handle measurement_error signal from engine."""
+        # Consume agent attribution FIRST (every termination emits
+        # exactly one of finished/error, so the flag must be taken on
+        # both paths). An agent-driven run's error is already returned
+        # to the agent as a structured tool result — surfacing it again
+        # as a blocking dialog mid-conversation helps nobody; status
+        # bar + log retain the record.
+        agent_run = (
+            self._agent_adapter is not None
+            and self._agent_engine is self._engine
+            and self._agent_adapter.consume_agent_run()
+        )
         self._meas_panel.set_idle()
         # Clear the auto-save flag: a run that ended in error (including a
         # user abort, which routes through measurement_error) must not
@@ -1220,7 +1245,7 @@ class MainWindow(QMainWindow):
             self._last_result = self._engine.result
             self._export_action.setEnabled(True)
 
-        if "aborted" not in message.lower():
+        if "aborted" not in message.lower() and not agent_run:
             QMessageBox.critical(
                 self, "Measurement Error", message
             )

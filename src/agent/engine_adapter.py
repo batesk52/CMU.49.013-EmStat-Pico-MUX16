@@ -170,6 +170,39 @@ class EngineAdapter:
         """
         self._engine = engine
         self._connection = connection
+        # True while the run currently in (or just out of) the engine
+        # was started by the agent. GUI-thread-confined: set inside the
+        # run_on_gui start closure, consumed by the main window's
+        # finished/error handlers (also GUI thread), so the window can
+        # suppress its modal prompts for agent-driven runs without any
+        # cross-thread race.
+        self._agent_run_active = False
+
+    def consume_agent_run(self) -> bool:
+        """Return whether the finishing run was agent-started, and clear.
+
+        Call from the GUI thread (the engine's finished/error handler).
+        Consume-once semantics: every engine termination emits exactly
+        one of finished/error, so whichever handler runs takes the flag
+        and the next user-started run can never be misattributed.
+        """
+        was = self._agent_run_active
+        self._agent_run_active = False
+        return was
+
+    def _start_agent_run(self, config: TechniqueConfig) -> None:
+        """GUI-thread helper: mark the run agent-initiated, then start.
+
+        Marking and starting happen in one GUI-thread closure so the
+        flag is always set before any engine signal can be delivered to
+        the GUI handlers; a start failure unwinds the mark.
+        """
+        self._agent_run_active = True
+        try:
+            self._engine.start_measurement(self._connection, config)
+        except Exception:
+            self._agent_run_active = False
+            raise
 
     # ---- Measurement tools -------------------------------------------------
 
@@ -235,9 +268,7 @@ class EngineAdapter:
             timeout=timeout,
         )
         try:
-            await run_on_gui(
-                self._engine.start_measurement, self._connection, config
-            )
+            await run_on_gui(self._start_agent_run, config)
         except Exception as exc:
             # E.g. RuntimeError from a busy engine that won the race
             # against our isRunning() pre-check. Cancelling detaches
