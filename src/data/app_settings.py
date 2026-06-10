@@ -23,8 +23,12 @@ from src.data.paths import USER_DATA_DIR, default_export_dir
 
 __all__ = [
     "default_export_dir",
+    "get_agent_api_key",
+    "get_agent_model",
     "get_export_dir",
     "get_last_preset_file",
+    "set_agent_api_key",
+    "set_agent_model",
     "set_export_dir",
     "set_last_preset_file",
 ]
@@ -40,6 +44,8 @@ _DEFAULT_SETTINGS_FILE = os.path.join(
 
 _LAST_PRESET_FILE_KEY = "last_preset_file"
 _EXPORT_DIR_KEY = "export_dir"
+_AGENT_API_KEY_KEY = "agent_api_key"
+_AGENT_MODEL_KEY = "agent_model"
 
 
 def _resolve_path(path: Optional[str]) -> str:
@@ -126,6 +132,68 @@ def set_last_preset_file(
         data[_LAST_PRESET_FILE_KEY] = preset_file
     else:
         data.pop(_LAST_PRESET_FILE_KEY, None)
+    _write(data, path)
+
+
+def get_agent_api_key(path: Optional[str] = None) -> Optional[str]:
+    """Return the stored Anthropic API key, or ``None`` if unset.
+
+    ``None`` means "fall back to the ``ANTHROPIC_API_KEY`` environment
+    variable" (the Anthropic SDK reads it automatically when no key is
+    passed).
+
+    Args:
+        path: Optional settings-file path override (for tests).
+    """
+    value = _read(path).get(_AGENT_API_KEY_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_agent_api_key(
+    key: Optional[str], path: Optional[str] = None
+) -> None:
+    """Store (or clear) the agent's Anthropic API key.
+
+    The key is persisted in the per-user settings file (plain JSON in
+    the user's home directory, same trust level as a ``.env`` file).
+    Passing ``None``/"" clears it so the environment variable is used.
+
+    Args:
+        key: API key to remember, or ``None``/"" to clear.
+        path: Optional settings-file path override (for tests).
+    """
+    data = _read(path)
+    if key:
+        data[_AGENT_API_KEY_KEY] = key
+    else:
+        data.pop(_AGENT_API_KEY_KEY, None)
+    _write(data, path)
+
+
+def get_agent_model(path: Optional[str] = None) -> Optional[str]:
+    """Return the stored agent model id, or ``None`` if unset.
+
+    Args:
+        path: Optional settings-file path override (for tests).
+    """
+    value = _read(path).get(_AGENT_MODEL_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def set_agent_model(
+    model: Optional[str], path: Optional[str] = None
+) -> None:
+    """Store (or clear) the agent model id.
+
+    Args:
+        model: Model id to remember, or ``None``/"" to clear.
+        path: Optional settings-file path override (for tests).
+    """
+    data = _read(path)
+    if model:
+        data[_AGENT_MODEL_KEY] = model
+    else:
+        data.pop(_AGENT_MODEL_KEY, None)
     _write(data, path)
 
 

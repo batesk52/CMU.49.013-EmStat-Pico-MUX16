@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
+    QDialog,
     QDockWidget,
     QHBoxLayout,
     QFileDialog,
@@ -72,8 +73,12 @@ from src.data.models import (
     TechniqueConfig,
 )
 from src.data.app_settings import (
+    get_agent_api_key,
+    get_agent_model,
     get_export_dir,
     get_last_preset_file,
+    set_agent_api_key,
+    set_agent_model,
     set_export_dir,
 )
 from src.data.presets import Preset, PresetManager
@@ -86,7 +91,7 @@ from src.gui.controls import (
     MeasurementControlPanel,
     TechniquePanel,
 )
-from src.gui.agent_dock import AgentDockPanel
+from src.gui.agent_dock import AgentDockPanel, AgentSettingsDialog
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
 from src.gui.sequence_panel import SequencePanel
@@ -479,7 +484,13 @@ class MainWindow(QMainWindow):
 
         self._agent_adapter = EngineAdapter(engine, connection)
         self._agent_registry = build_registry(self._agent_adapter)
-        self._agent_panel = AgentDockPanel(self._agent_registry)
+        # API key + model are configuration (File > Agent Settings...),
+        # persisted in app settings; the panel just receives them.
+        self._agent_panel = AgentDockPanel(
+            self._agent_registry,
+            api_key=get_agent_api_key(),
+            model=get_agent_model(),
+        )
         for tool_def, handler in build_analysis_tools(
             figure_sink=self._agent_panel.figure_sink
         ):
@@ -599,6 +610,10 @@ class MainWindow(QMainWindow):
         set_export_dir_action = QAction("Set Export &Folder...", self)
         set_export_dir_action.triggered.connect(self._on_set_export_dir)
         file_menu.addAction(set_export_dir_action)
+
+        agent_settings_action = QAction("&Agent Settings...", self)
+        agent_settings_action.triggered.connect(self._on_agent_settings)
+        file_menu.addAction(agent_settings_action)
 
         file_menu.addSeparator()
 
@@ -1304,6 +1319,31 @@ class MainWindow(QMainWindow):
                 "No Data",
                 "No measurement results to export.",
             )
+
+    @pyqtSlot()
+    def _on_agent_settings(self) -> None:
+        """Edit + persist the agent's API key and model.
+
+        Configuration lives here (File menu + app settings), not in the
+        chat panel. Accepted values are persisted across launches and
+        pushed to the running agent worker (effective next turn). An
+        empty key clears the stored one so the ANTHROPIC_API_KEY
+        environment variable is used.
+        """
+        dlg = AgentSettingsDialog(
+            api_key=get_agent_api_key() or "",
+            model=get_agent_model() or "",
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        key, model = dlg.values()
+        set_agent_api_key(key or None)
+        set_agent_model(model or None)
+        self._agent_panel.set_api_key(key or None)
+        self._agent_panel.set_model(model)
+        self.statusBar().showMessage("Agent settings saved.")
+        logger.info("Agent settings updated (model=%s).", model)
 
     @pyqtSlot()
     def _on_set_export_dir(self) -> None:

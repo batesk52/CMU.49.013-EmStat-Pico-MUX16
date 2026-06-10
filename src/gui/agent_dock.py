@@ -31,11 +31,13 @@ from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -48,7 +50,13 @@ from src.agent.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AgentDockPanel", "FigureSink", "ToolCallCard"]
+__all__ = [
+    "AgentDockPanel",
+    "AgentSettingsDialog",
+    "ChatView",
+    "FigureSink",
+    "ToolCallCard",
+]
 
 #: Models offered in the picker (default first).
 AGENT_MODELS = [
@@ -67,6 +75,206 @@ _FIGURE_WIDTH = 420
 # Oldest figures are dropped beyond this count so a long lab session
 # cannot grow the figure strip (and its pixmaps) without bound.
 _MAX_FIGURES = 12
+
+
+class AgentSettingsDialog(QDialog):
+    """Modal dialog for the agent's API key and model (File menu).
+
+    Configuration lives here — not in the chat panel — and is persisted
+    by the caller (main window) via app settings. An empty key field
+    means "use the ``ANTHROPIC_API_KEY`` environment variable".
+    """
+
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = DEFAULT_MODEL,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """Build the dialog pre-filled with the current settings.
+
+        Args:
+            api_key: Currently stored key ("" when unset).
+            model: Currently selected model id.
+            parent: Optional parent widget.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Agent Settings")
+        form = QFormLayout(self)
+
+        self._key_edit = QLineEdit()
+        self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_edit.setPlaceholderText(
+            "blank = use ANTHROPIC_API_KEY env var"
+        )
+        self._key_edit.setText(api_key)
+        self._key_edit.setMinimumWidth(320)
+        form.addRow("API key:", self._key_edit)
+
+        self._model_combo = QComboBox()
+        self._model_combo.addItems(AGENT_MODELS)
+        if model and self._model_combo.findText(model) < 0:
+            self._model_combo.addItem(model)
+        self._model_combo.setCurrentText(model or DEFAULT_MODEL)
+        form.addRow("Model:", self._model_combo)
+
+        note = QLabel(
+            "Stored in ~/.emstat_pico_mux16/app_settings.json "
+            "(plain text, same trust level as a .env file)."
+        )
+        note.setStyleSheet("color: #888; font-size: 11px;")
+        note.setWordWrap(True)
+        form.addRow(note)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> tuple[str, str]:
+        """Return ``(api_key, model)`` as currently edited."""
+        return (
+            self._key_edit.text().strip(),
+            self._model_combo.currentText(),
+        )
+
+
+class ChatView(QScrollArea):
+    """Messenger-style transcript: word-wrapped bubbles per message.
+
+    User messages render right-aligned in accent-colored bubbles, agent
+    replies left-aligned in neutral bubbles (streaming deltas grow the
+    open agent bubble in place), and notices (errors, stop) render as
+    centered captions. Bubble text is mouse-selectable for copy/paste.
+    """
+
+    # Bubble fill colors (dark theme).
+    _USER_STYLE = (
+        "QLabel { background-color: #2d5a88; color: #f0f0f0;"
+        " border-radius: 9px; padding: 7px 10px; }"
+    )
+    _AGENT_STYLE = (
+        "QLabel { background-color: #3a3a3a; color: #e8e8e8;"
+        " border-radius: 9px; padding: 7px 10px; }"
+    )
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._container = QWidget()
+        self._layout = QVBoxLayout(self._container)
+        self._layout.setContentsMargins(6, 6, 6, 6)
+        self._layout.setSpacing(6)
+        self._layout.addStretch(1)
+        self.setWidget(self._container)
+
+        # (role, text) per entry — also the source for text().
+        self._entries: list[tuple[str, str]] = []
+        self._bubbles: list[QLabel] = []
+        self._open_agent: Optional[QLabel] = None
+
+        self._placeholder = QLabel(
+            "Ask the agent to run measurements or analyze data..."
+        )
+        self._placeholder.setStyleSheet(
+            "color: #777; font-style: italic;"
+        )
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._layout.insertWidget(0, self._placeholder)
+
+        # Follow the newest message as content grows.
+        self.verticalScrollBar().rangeChanged.connect(
+            lambda _lo, hi: self.verticalScrollBar().setValue(hi)
+        )
+
+    # ---- message API -------------------------------------------------
+
+    def add_user(self, text: str) -> None:
+        """Append a right-aligned user bubble."""
+        self._close_open_agent()
+        self._add_bubble("You", text)
+
+    def append_agent(self, delta: str) -> None:
+        """Stream a delta into the open agent bubble (opens one)."""
+        if self._open_agent is None:
+            self._open_agent = self._add_bubble("Agent", "")
+        self._entries[-1] = (
+            "Agent",
+            self._entries[-1][1] + delta,
+        )
+        self._open_agent.setText(self._entries[-1][1])
+
+    def close_agent(self) -> None:
+        """Finish the streamed agent bubble (turn end)."""
+        self._close_open_agent()
+
+    def add_notice(self, text: str) -> None:
+        """Append a centered, muted notice line (errors, stop)."""
+        self._close_open_agent()
+        self._entries.append(("notice", text))
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #999; font-size: 11px;")
+        self._layout.insertWidget(self._layout.count() - 1, label)
+        self._placeholder.setVisible(False)
+
+    def text(self) -> str:
+        """Plain-text transcript (``You:``/``Agent:`` prefixed lines)."""
+        lines = []
+        for role, body in self._entries:
+            if role == "notice":
+                lines.append(body)
+            else:
+                lines.append(f"{role}: {body}")
+        return "\n".join(lines)
+
+    # ---- internals -----------------------------------------------------
+
+    def _add_bubble(self, role: str, text: str) -> QLabel:
+        self._placeholder.setVisible(False)
+        self._entries.append((role, text))
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        label.setStyleSheet(
+            self._USER_STYLE if role == "You" else self._AGENT_STYLE
+        )
+        label.setMaximumWidth(self._bubble_max_width())
+        self._bubbles.append(label)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        if role == "You":
+            row.addStretch(1)
+            row.addWidget(label)
+        else:
+            row.addWidget(label)
+            row.addStretch(1)
+        wrapper = QWidget()
+        wrapper.setLayout(row)
+        self._layout.insertWidget(self._layout.count() - 1, wrapper)
+        return label
+
+    def _close_open_agent(self) -> None:
+        self._open_agent = None
+
+    def _bubble_max_width(self) -> int:
+        """Cap bubbles at ~82% of the viewport (min floor for docks)."""
+        return max(240, int(self.viewport().width() * 0.82))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        """Re-cap every bubble's width when the dock is resized."""
+        super().resizeEvent(event)
+        cap = self._bubble_max_width()
+        for label in self._bubbles:
+            label.setMaximumWidth(cap)
 
 
 class FigureSink(QObject):
@@ -170,13 +378,15 @@ class AgentDockPanel(QWidget):
 
     Layout, top to bottom:
 
-    * Header row: API-key field (password echo, prefilled from
-      ``ANTHROPIC_API_KEY``) and model picker; changes are pushed to
-      the worker via ``set_api_key`` / ``set_model``.
     * Splitter with the streaming transcript, the tool-call card list,
       and the figure strip.
     * Input row: message field + Send (Enter sends) + Stop.  Input is
       disabled while a turn is in flight.
+
+    API key and model are CONFIGURATION, not chat UI: they live in the
+    File > Agent Settings dialog (persisted in app settings) and are
+    injected here at construction, with live updates pushed via
+    :meth:`set_api_key` / :meth:`set_model`.
 
     The panel owns the AgentWorker: it is constructed here (through
     ``worker_factory`` for testability) and its thread starts lazily on
@@ -190,6 +400,8 @@ class AgentDockPanel(QWidget):
         worker_factory: Optional[
             Callable[[ToolRegistry, Optional[str], str], AgentWorker]
         ] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         """Build the panel and its (not yet started) worker.
@@ -203,12 +415,15 @@ class AgentDockPanel(QWidget):
                 ``worker_factory(registry, api_key, model)`` and
                 returning an :class:`AgentWorker`-compatible object.
                 Default builds the real worker.
+            api_key: Anthropic API key, or ``None`` to fall back to the
+                ``ANTHROPIC_API_KEY`` environment variable (the SDK
+                reads it automatically).
+            model: Model id; ``None`` uses :data:`DEFAULT_MODEL`.
             parent: Optional parent widget.
         """
         super().__init__(parent)
         self._registry = registry
         self._shutdown_done = False
-        self._stream_open = False  # an "Agent:" block is being streamed
 
         self._figures: list[dict[str, Any]] = []
         self._figure_labels: list[QLabel] = []
@@ -220,8 +435,8 @@ class AgentDockPanel(QWidget):
 
         self._build_ui()
 
-        api_key = self._api_key_edit.text().strip() or None
-        model = self._model_combo.currentText()
+        api_key = api_key or os.environ.get("ANTHROPIC_API_KEY") or None
+        model = model or DEFAULT_MODEL
         if worker_factory is None:
             self._worker: AgentWorker = AgentWorker(
                 registry, api_key=api_key, model=model
@@ -229,6 +444,17 @@ class AgentDockPanel(QWidget):
         else:
             self._worker = worker_factory(registry, api_key, model)
         self._connect_worker(self._worker)
+
+    # ---- configuration (pushed from the Agent Settings dialog) -----------
+
+    def set_api_key(self, key: Optional[str]) -> None:
+        """Push a new API key to the worker (takes effect next turn)."""
+        self._worker.set_api_key(key or None)
+
+    def set_model(self, model: str) -> None:
+        """Push a new model id to the worker (takes effect next turn)."""
+        if model:
+            self._worker.set_model(model)
 
     # ---- UI construction ------------------------------------------------------
 
@@ -238,38 +464,11 @@ class AgentDockPanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # Header: API key + model picker.
-        header = QHBoxLayout()
-        header.addWidget(QLabel("API key:"))
-        self._api_key_edit = QLineEdit()
-        self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key_edit.setPlaceholderText("ANTHROPIC_API_KEY")
-        self._api_key_edit.setText(
-            os.environ.get("ANTHROPIC_API_KEY", "")
-        )
-        self._api_key_edit.editingFinished.connect(
-            self._on_api_key_edited
-        )
-        header.addWidget(self._api_key_edit, stretch=1)
-        header.addWidget(QLabel("Model:"))
-        self._model_combo = QComboBox()
-        self._model_combo.addItems(AGENT_MODELS)
-        self._model_combo.setCurrentText(DEFAULT_MODEL)
-        self._model_combo.currentTextChanged.connect(
-            self._on_model_changed
-        )
-        header.addWidget(self._model_combo)
-        layout.addLayout(header)
-
         splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # Transcript (streaming).
-        self._transcript = QPlainTextEdit()
-        self._transcript.setReadOnly(True)
-        self._transcript.setPlaceholderText(
-            "Ask the agent to run measurements or analyze data..."
-        )
-        splitter.addWidget(self._transcript)
+        # Transcript: messenger-style bubbles (user right, agent left).
+        self._chat = ChatView()
+        splitter.addWidget(self._chat)
 
         # Tool-call cards.
         cards_container = QWidget()
@@ -375,7 +574,7 @@ class AgentDockPanel(QWidget):
 
     def transcript_text(self) -> str:
         """Full transcript text (for tests)."""
-        return self._transcript.toPlainText()
+        return self._chat.text()
 
     def tool_card_states(self) -> list[dict[str, str]]:
         """Tool cards as ``{"id", "name", "status"}`` dicts (for tests)."""
@@ -409,8 +608,7 @@ class AgentDockPanel(QWidget):
         # Lazy thread start: the agent thread spins up on first use.
         if not self._worker.isRunning():
             self._worker.start()
-        self._close_stream()
-        self._append_line(f"You: {text}")
+        self._chat.add_user(text)
         self._input_edit.clear()
         self._worker.submit_user_message(text)
 
@@ -419,37 +617,17 @@ class AgentDockPanel(QWidget):
         """Stop the worker thread entirely (app-close style stop)."""
         if self._shutdown_done:
             return
-        self._close_stream()
-        self._append_line("[Agent stopped by user]")
+        self._chat.add_notice("[Agent stopped by user]")
         self._set_in_flight(False)
         self._send_button.setEnabled(False)
         self._input_edit.setEnabled(False)
         self._stop_button.setEnabled(False)
         self.shutdown()
 
-    @pyqtSlot()
-    def _on_api_key_edited(self) -> None:
-        """Push the edited API key to the worker (next turn)."""
-        if self._shutdown_done:
-            return
-        self._worker.set_api_key(
-            self._api_key_edit.text().strip() or None
-        )
-
-    @pyqtSlot(str)
-    def _on_model_changed(self, model: str) -> None:
-        """Push the selected model to the worker (next turn)."""
-        if self._shutdown_done:
-            return
-        self._worker.set_model(model)
-
     @pyqtSlot(str)
     def _on_text_delta(self, text: str) -> None:
-        """Append one streamed assistant chunk to the transcript."""
-        if not self._stream_open:
-            self._append_text("Agent: ")
-            self._stream_open = True
-        self._append_text(text)
+        """Stream one assistant chunk into the open agent bubble."""
+        self._chat.append_agent(text)
 
     @pyqtSlot(object)
     def _on_tool_call_started(self, payload: object) -> None:
@@ -484,15 +662,14 @@ class AgentDockPanel(QWidget):
 
     @pyqtSlot()
     def _on_turn_done(self) -> None:
-        """Re-enable input and close the streamed block."""
-        self._close_stream()
+        """Re-enable input and close the streamed bubble."""
+        self._chat.close_agent()
         self._set_in_flight(False)
 
     @pyqtSlot(str)
     def _on_agent_error(self, message: str) -> None:
         """Show an agent/API error distinctly in the transcript."""
-        self._close_stream()
-        self._append_line(f"[Agent error] {message}")
+        self._chat.add_notice(f"[Agent error] {message}")
 
     @pyqtSlot(object)
     def _on_figure_ready(self, payload: object) -> None:
@@ -553,23 +730,3 @@ class AgentDockPanel(QWidget):
             return
         self._send_button.setEnabled(not in_flight)
         self._input_edit.setEnabled(not in_flight)
-
-    def _append_text(self, text: str) -> None:
-        """Append raw text at the end of the transcript (no newline)."""
-        cursor = self._transcript.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        cursor.insertText(text)
-        self._transcript.setTextCursor(cursor)
-        self._transcript.ensureCursorVisible()
-
-    def _append_line(self, line: str) -> None:
-        """Append *line* on its own transcript line."""
-        if self._transcript.toPlainText():
-            self._append_text("\n")
-        self._append_text(line + "\n")
-
-    def _close_stream(self) -> None:
-        """Terminate the current streamed 'Agent:' block, if any."""
-        if self._stream_open:
-            self._append_text("\n")
-            self._stream_open = False
