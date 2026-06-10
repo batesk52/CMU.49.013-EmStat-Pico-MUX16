@@ -211,6 +211,77 @@ def test_agent_bubbles_render_markdown(qapp) -> None:
     assert "Agent: **Technique:** CV" in chat.text()
 
 
+def test_chat_view_figure_attachments(qapp, monkeypatch) -> None:
+    """Figures render as clickable in-chat attachments with a lightbox."""
+    from PyQt6.QtGui import QPixmap
+
+    import src.gui.agent_dock as agent_dock_mod
+    from src.gui.agent_dock import ChatView
+
+    chat = ChatView()
+    pixmap = QPixmap(400, 300)
+    pixmap.fill()
+    chat.add_figure("CV ch1", "analyze_cv", pixmap)
+
+    assert chat.figure_count() == 1
+    thumb = chat.figure_thumb(0)
+    assert thumb.pixmap() is not None
+    assert thumb.pixmap().width() <= 240  # small preview
+    assert "[figure: CV ch1]" in chat.text()
+
+    # Clicking the preview opens the lightbox (stubbed exec).
+    opened: list[str] = []
+
+    class StubViewer:
+        def __init__(self, pm, title, parent=None):
+            opened.append(title)
+
+        def exec(self):
+            return 0
+
+    monkeypatch.setattr(agent_dock_mod, "FigureViewer", StubViewer)
+    thumb.clicked.emit()
+    assert opened == ["CV ch1"]
+
+
+def test_chat_input_enter_sends_shift_enter_newlines(qapp) -> None:
+    """ChatInput submits on Enter and newlines on Shift+Enter."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent
+
+    from src.gui.agent_dock import ChatInput
+
+    box = ChatInput()
+    submits: list[bool] = []
+    box.submit.connect(lambda: submits.append(True))
+
+    box.setText("hello")
+    enter = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Return,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    box.keyPressEvent(enter)
+    assert submits == [True]
+    assert box.text() == "hello"  # Enter did not insert a newline
+
+    shift_enter = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Return,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    box.keyPressEvent(shift_enter)
+    assert submits == [True]  # no extra submit
+    assert "\n" in box.text()  # newline inserted
+
+    # QLineEdit-compatible aliases (smoke gates use them).
+    box.setText("multi\nline")
+    assert box.text() == "multi\nline"
+    # Sized for ~3-5 lines, not a single cramped row.
+    assert box.minimumHeight() > 2 * box.fontMetrics().lineSpacing()
+
+
 def test_handler_persists_and_pushes(qapp, monkeypatch) -> None:
     """Accepting the dialog persists settings and updates the worker."""
     saved = {}

@@ -31,6 +31,7 @@ from typing import Any, Callable, Optional
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QPixmap, QTextDocument
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -39,9 +40,9 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -142,6 +143,97 @@ class AgentSettingsDialog(QDialog):
         )
 
 
+class ChatInput(QPlainTextEdit):
+    """Multi-line chat input: Enter sends, Shift+Enter inserts a newline.
+
+    Sized to ~3 text lines so longer prompts are comfortable to write
+    and review (the single-line field was too cramped). Exposes
+    ``text``/``setText`` aliases so callers written against QLineEdit
+    keep working.
+    """
+
+    submit = pyqtSignal()
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setTabChangesFocus(True)
+        line = self.fontMetrics().lineSpacing()
+        self.setMinimumHeight(int(line * 3) + 14)
+        self.setMaximumHeight(int(line * 5) + 14)
+
+    def text(self) -> str:
+        """QLineEdit-compatible accessor."""
+        return self.toPlainText()
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt naming
+        """QLineEdit-compatible setter."""
+        self.setPlainText(text)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ) and not (
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+        ):
+            self.submit.emit()
+            return
+        super().keyPressEvent(event)
+
+
+class _ClickableLabel(QLabel):
+    """QLabel that emits ``clicked`` on a left-button press."""
+
+    clicked = pyqtSignal()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class FigureViewer(QDialog):
+    """Full-size figure lightbox: Escape or a click closes it."""
+
+    def __init__(
+        self,
+        pixmap: QPixmap,
+        title: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setStyleSheet("background-color: #1c1c1c;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        # Fit within ~90% of the available screen, never upscale.
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            max_w = int(avail.width() * 0.9)
+            max_h = int(avail.height() * 0.9)
+            if pixmap.width() > max_w or pixmap.height() > max_h:
+                pixmap = pixmap.scaled(
+                    max_w,
+                    max_h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+        label = QLabel()
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+
+        hint = QLabel("Esc or click to close")
+        hint.setStyleSheet("color: #777; font-size: 10px;")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hint)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        self.accept()  # click anywhere closes; Esc closes via QDialog
+
+
 def _markdown_to_html(text: str) -> str:
     """Convert agent markdown to HTML via Qt's built-in parser.
 
@@ -192,6 +284,12 @@ class ChatView(QScrollArea):
         self._open_agent: Optional[QLabel] = None
         # Tool chips by call id: {"label", "name", "preview", "status"}.
         self._chips: dict[str, dict[str, Any]] = {}
+        # Figure attachments: thumbnail labels + retained pixmaps for
+        # the lightbox (full resolution for the newest _MAX_FIGURES,
+        # thumbnail fallback beyond that to bound memory).
+        self._figure_thumbs: list[QLabel] = []
+        self._figure_pixmaps: list[QPixmap] = []
+        self._figure_titles: list[str] = []
         # Shared blink driver for running chips (started on demand).
         self._blink_phase = 0
         self._blink_timer = QTimer(self)
@@ -259,9 +357,86 @@ class ChatView(QScrollArea):
                     f"[tool {chip.get('name', '?')}:"
                     f" {chip.get('status', '?')}]"
                 )
+            elif role == "figure":
+                lines.append(f"[figure: {body}]")
             else:
                 lines.append(f"{role}: {body}")
         return "\n".join(lines)
+
+    # ---- figure attachments --------------------------------------------
+
+    def add_figure(
+        self, title: str, tool: str, pixmap: QPixmap
+    ) -> None:
+        """Append a figure as an agent image attachment.
+
+        Renders a small clickable preview in the flow (left-aligned,
+        like a shared image in a messenger); clicking opens the
+        full-size figure in a lightbox that closes on Escape or click.
+        """
+        self._close_open_agent()
+        self._placeholder.setVisible(False)
+
+        index = len(self._figure_thumbs)
+        thumb_pm = pixmap
+        if thumb_pm.width() > 240:
+            thumb_pm = thumb_pm.scaledToWidth(
+                240, Qt.TransformationMode.SmoothTransformation
+            )
+        thumb = _ClickableLabel()
+        thumb.setPixmap(thumb_pm)
+        thumb.setCursor(Qt.CursorShape.PointingHandCursor)
+        thumb.setToolTip("Click to view full size (Esc closes)")
+        thumb.setStyleSheet(
+            "QLabel { background-color: #3a3a3a; border-radius: 9px;"
+            " padding: 6px; }"
+        )
+        thumb.clicked.connect(lambda i=index: self._show_figure(i))
+
+        caption = QLabel(f"{title}  ({tool})")
+        caption.setStyleSheet("color: #909090; font-size: 11px;")
+
+        box = QVBoxLayout()
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(2)
+        box.addWidget(thumb)
+        box.addWidget(caption)
+        inner = QWidget()
+        inner.setLayout(box)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(inner)
+        row.addStretch(1)
+        wrapper = QWidget()
+        wrapper.setLayout(row)
+        self._layout.insertWidget(self._layout.count() - 1, wrapper)
+
+        self._figure_thumbs.append(thumb)
+        self._figure_pixmaps.append(pixmap)
+        self._figure_titles.append(title)
+        self._entries.append(("figure", title))
+        # Bound full-resolution retention: older figures fall back to
+        # their (still-displayed) thumbnail in the lightbox.
+        for i in range(len(self._figure_pixmaps) - _MAX_FIGURES):
+            old = self._figure_thumbs[i].pixmap()
+            if old is not None:
+                self._figure_pixmaps[i] = old
+
+    def figure_count(self) -> int:
+        """Number of figure attachments in the flow."""
+        return len(self._figure_thumbs)
+
+    def figure_thumb(self, index: int) -> QLabel:
+        """The thumbnail label of figure *index* (for tests)."""
+        return self._figure_thumbs[index]
+
+    def _show_figure(self, index: int) -> None:
+        """Open figure *index* in the lightbox (Esc/click closes)."""
+        FigureViewer(
+            self._figure_pixmaps[index],
+            self._figure_titles[index],
+            parent=self,
+        ).exec()
 
     # ---- tool chips (live MCP/tool-call indicators in the flow) --------
 
@@ -503,9 +678,6 @@ class AgentDockPanel(QWidget):
         self._registry = registry
         self._shutdown_done = False
 
-        self._figures: list[dict[str, Any]] = []
-        self._figure_labels: list[QLabel] = []
-        self._figure_captions: list[QLabel] = []
 
         self._sink = FigureSink(self)
         self._sink.figure_ready.connect(self._on_figure_ready)
@@ -541,32 +713,19 @@ class AgentDockPanel(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
-
-        # Transcript: messenger-style bubbles (user right, agent left).
+        # One surface: the conversation. Tool activity renders inline
+        # as chips and figures as image attachments, so no splitter or
+        # side strips are needed.
         self._chat = ChatView()
-        splitter.addWidget(self._chat)
-
-        # Figures. (Tool activity renders inline in the chat as chips.)
-        figures_container = QWidget()
-        self._figures_layout = QVBoxLayout(figures_container)
-        self._figures_layout.setContentsMargins(2, 2, 2, 2)
-        self._figures_layout.setSpacing(4)
-        self._figures_layout.addStretch()
-        self._figures_scroll = QScrollArea()
-        self._figures_scroll.setWidgetResizable(True)
-        self._figures_scroll.setWidget(figures_container)
-        splitter.addWidget(self._figures_scroll)
-
-        splitter.setStretchFactor(0, 7)
-        splitter.setStretchFactor(1, 3)
-        layout.addWidget(splitter, stretch=1)
+        layout.addWidget(self._chat, stretch=1)
 
         # Input row.
         input_row = QHBoxLayout()
-        self._input_edit = QLineEdit()
-        self._input_edit.setPlaceholderText("Message the agent...")
-        self._input_edit.returnPressed.connect(self._on_send_clicked)
+        self._input_edit = ChatInput()
+        self._input_edit.setPlaceholderText(
+            "Message the agent...  (Enter sends, Shift+Enter = newline)"
+        )
+        self._input_edit.submit.connect(self._on_send_clicked)
         input_row.addWidget(self._input_edit, stretch=1)
         self._send_button = QPushButton("Send")
         self._send_button.clicked.connect(self._on_send_clicked)
@@ -650,12 +809,12 @@ class AgentDockPanel(QWidget):
         return self._chat.tool_states()
 
     def figure_count(self) -> int:
-        """Number of figures rendered into the figure strip."""
-        return len(self._figure_labels)
+        """Number of figure attachments in the chat."""
+        return self._chat.figure_count()
 
     def figure_label(self, index: int) -> QLabel:
-        """The QLabel holding figure *index* (for tests)."""
-        return self._figure_labels[index]
+        """The thumbnail QLabel of figure *index* (for tests)."""
+        return self._chat.figure_thumb(index)
 
     # ---- GUI-thread slots -------------------------------------------------------
 
@@ -741,32 +900,11 @@ class AgentDockPanel(QWidget):
                 data.get("tool"),
             )
             return
-        if pixmap.width() > _FIGURE_WIDTH:
-            pixmap = pixmap.scaledToWidth(
-                _FIGURE_WIDTH,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        caption = QLabel(
-            f"{data.get('title', 'Figure')}  ({data.get('tool', '?')})"
+        self._chat.add_figure(
+            str(data.get("title", "Figure")),
+            str(data.get("tool", "?")),
+            pixmap,
         )
-        caption.setStyleSheet("font-size: 11px; color: #909090;")
-        label = QLabel()
-        label.setPixmap(pixmap)
-        insert_at = self._figures_layout.count() - 1
-        self._figures_layout.insertWidget(insert_at, caption)
-        self._figures_layout.insertWidget(insert_at + 1, label)
-        self._figures.append(data)
-        self._figure_labels.append(label)
-        self._figure_captions.append(caption)
-        # Bound the strip: drop the oldest figure pair beyond the cap.
-        while len(self._figure_labels) > _MAX_FIGURES:
-            old_caption = self._figure_captions.pop(0)
-            old_label = self._figure_labels.pop(0)
-            self._figures.pop(0)
-            self._figures_layout.removeWidget(old_caption)
-            self._figures_layout.removeWidget(old_label)
-            old_caption.deleteLater()
-            old_label.deleteLater()
 
     # ---- Internals -----------------------------------------------------------------
 
