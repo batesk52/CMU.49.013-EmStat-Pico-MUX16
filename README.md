@@ -247,6 +247,103 @@ CMU.49.013-EmStat-Pico-MUX16/
 
 ---
 
+## Embedded Claude Agent (feature/e-cheMCP) - Implementation Blueprint
+
+An in-app Claude agent dock panel: the agent's tools drive the SAME live pyqtgraph plots the user
+sees by building TechniqueConfigs and calling the app's existing MeasurementEngine instance, and call
+vendored CMU.49.011 analysis code to import sessions and characterize electrode responses. Full clean
+rewrite of the tool/agent layer; existing measurement/plot/serial code is reused as-is.
+
+See architecture.md "Embedded Claude Agent - Threading/Async Bridge" for the single mandatory
+concurrency model every implementation follows.
+
+### Constraints (apply to EVERY task)
+- No emojis anywhere (source, logs, prints, markdown) - Windows cp1252.
+- Eager-import native deps (numpy/scipy, matplotlib Agg backend, pandas) at module top, before any
+  asyncio loop - avoids the Windows DLL-load deadlock against asyncio threads.
+- Vendored 49.011 code is READ-ONLY. Fixes go upstream in CMU.49.011 then re-copy; never edit
+  src/vendor/ in place.
+- Agent-created test/validation scripts live in claude_test_files/, never src/ or tests/.
+- Thinking is ADAPTIVE only on Fable 5: thinking={"type":"adaptive"}. Do NOT send budget_tokens,
+  temperature, top_p, top_k. Do NOT send thinking={"type":"disabled"} (omit to disable).
+- Default agent model id: claude-fable-5 (configurable in panel; API key from panel or
+  ANTHROPIC_API_KEY). The agent module MUST import with no API key set.
+- New deps: anthropic, mcp[cli]. Add pandas, scipy, matplotlib for vendored analysis.
+
+### Validation Gate (EVERY batch - must pass with NO hardware and NO API key)
+A headless smoke script under claude_test_files/ that imports the tool layer, builds the tool
+registry, constructs the mock engine + mock connection, runs one mock CV through the engine adapter
+to completion, and exits 0. The agent loop module must import without an API key.
+
+### Batch 1 - src/agent/ foundation
+- [x] **src/agent/bridge.py** - Qt<->asyncio marshaling primitives
+  * run_on_gui(callable) queued onto a GUI-thread QObject; await-able from the asyncio loop
+  * await_signal(...) -> concurrent.futures.Future resolved by one-shot GUI-thread slots, consumed
+    via asyncio.wrap_future. No Qt widget imports; pure QtCore. Eager imports at module top.
+  * Validate: `python -c "from src.agent.bridge import run_on_gui, await_signal"`
+- [x] **src/agent/mock_engine.py** - MockMeasurementEngine + MockConnection (no-hardware path)
+  * Same signals (data_point_ready, measurement_finished, measurement_error, channel_changed) and
+    start_measurement(conn, cfg)/isRunning()/result surface as the real engine; emits synthetic
+    DataPoints then measurement_finished via QTimer; MockConnection.is_connected=True
+  * Validate: `python -c "from src.agent.mock_engine import MockMeasurementEngine, MockConnection; MockMeasurementEngine()"`
+- [x] **src/agent/engine_adapter.py** - EngineAdapter: config builders + await-completion bridge + device tools
+  * Builds TechniqueConfig for cv/ca/cp/eis/geis from src.techniques.scripts defaults, merging tool args
+  * async run_cv/run_ca/run_eis/run_cp: marshal start_measurement onto GUI thread, await finish/error
+    future, return compact summary; reject when isRunning(). Device tools: list ports, connect/
+    disconnect/status; mock-aware. Engine + connection injected so the mock substitutes cleanly.
+  * Validate: `python claude_test_files/smoke_engine_adapter.py` (mock CV to completion, exit 0)
+
+### Batch 2 - tool surface + agent runtime
+- [x] **src/agent/tools.py** - Anthropic tool definitions + dispatch over the EngineAdapter
+  * JSON-schema tool defs (run_cv/run_ca/run_eis/run_cp, list_ports/connect/disconnect/device_status)
+  * build_registry(adapter) -> name->async-handler map + tool spec list; analysis tools stubbed here,
+    filled in Batch 3. Importable with no API key; no network at import.
+  * Validate: `python claude_test_files/smoke_tools.py` (build registry over mock adapter, run one mock CV via dispatch, exit 0)
+- [x] **src/agent/agent_worker.py** - AgentWorker(QThread) async streaming agentic loop
+  * run() creates its own asyncio loop; AsyncAnthropic streaming manual tool-use loop (stream text
+    deltas, execute tool handlers, feed tool_result back, loop to end_turn). Model configurable
+    (default claude-fable-5); thinking={"type":"adaptive"}; client constructed lazily at start.
+  * Emits agent_text_delta/tool_call_started/tool_call_finished/tool_call_error/agent_turn_done via a
+    QObject bridge; importable with no API key.
+  * Validate: `python -c "import src.agent.agent_worker"` AND `python claude_test_files/smoke_agent.py`
+
+### Batch 3 - dock UI, analysis tools, vendoring, wiring
+- [x] **src/gui/agent_dock.py** - AgentDockPanel chat UI + tool cards + figures
+  * Chat transcript with streaming text; input box + send; API-key field + model picker; live tool-call
+    cards (running/done/error); results/figure area (render matplotlib Agg figures). Slots update
+    widgets on the GUI thread only; subscribes to AgentWorker signals.
+  * Validate: `python claude_test_files/smoke_agent_dock.py` (offscreen QApplication, instantiate panel, feed a fake tool-card + text delta, exit 0)
+- [x] **src/agent/vendor_analysis.py** - analysis tools over vendored 49.011
+  * load_session, analyze_cv, analyze_ecsa, analyze_ca, analyze_eis, analyze_cic, analyze_cp calling
+    src.vendor.electrochem_analysis.*; return summaries + matplotlib Agg figures handed to the panel;
+    registered into tools.py. Eager-import numpy/scipy/matplotlib(Agg)/pandas at module top.
+  * Validate: `python claude_test_files/smoke_analysis_tools.py` (analyze a bundled sample session headlessly, exit 0)
+- [x] **src/vendor/electrochem_analysis/** - copy 49.011 src/analysis + src/dataloaders + src/utils, READ-ONLY, import-rewritten
+  * Copy all modules; rewrite `from src.` / `import src.` -> `src.vendor.electrochem_analysis.`; add
+    package __init__.py with a PROVENANCE note (source repo + commit) in its docstring. No behavioral edits.
+  * Validate: `python -c "from src.vendor.electrochem_analysis.analysis import cv, ca, cp, eis, ecsa, cic"`
+- [x] **src/gui/main_window.py** - EDIT: add right dock, wire AgentWorker + EngineAdapter to the EXISTING engine
+  * addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, agent_dock); construct
+    EngineAdapter(self._engine, self._connection) and AgentWorker; mock toggle when no hardware. No
+    change to existing measurement/plot/serial code paths.
+  * Validate: `python claude_test_files/smoke_main_window.py` (offscreen, construct MainWindow with mock, assert right dock present, exit 0)
+
+### Batch 4 - headless MCP server (LOWEST priority)
+- [x] **src/mcp_server/stdio_server.py** - thin MCP stdio server exposing the same tool defs for Claude Code
+  * Reuses tools.py defs; headless (mock engine when no GUI); eager native imports; no emojis.
+  * Validate: `python claude_test_files/smoke_mcp_server.py` (start server in-proc, list tools, call one mock-CV tool, exit 0)
+
+### Follow-up - run -> characterize chain
+- [x] **export_session tool** - saves the last finished run via the existing PsSessionExporter and
+  returns the absolute .pssession path, closing the gap between run_* (live summaries) and
+  analyze_* (which read .pssession files). Optional `path` arg (file or directory); defaults to
+  ./agent_exports/ (gitignored). Registered in tools.py, so the dock agent and the MCP server both
+  expose it (chain: run_cv -> export_session -> analyze_cv).
+  * Validate: `python claude_test_files/smoke_export_session.py` (mock CV -> export -> vendored
+    loader + CVAnalyzer round-trip, exit 0)
+
+---
+
 ## CMU.17.034 — Preset Sequencer (IMPLEMENTED 2026-06-09)
 
 A PSTrace-"Scripts"-equivalent for the MUX-16: a new sidebar tab where saved

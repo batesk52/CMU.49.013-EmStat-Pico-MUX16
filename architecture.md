@@ -278,3 +278,57 @@ PyQt6>=6.5
 pyqtgraph>=0.13
 numpy>=1.21
 ```
+
+---
+
+## Embedded Claude Agent - Threading/Async Bridge (feature/e-cheMCP)
+
+Three independent execution contexts must interact through exactly one discipline.
+
+**Contexts**
+- GUI thread - owns Qt widgets, the MeasurementEngine object, the PicoConnection, and all pyqtgraph
+  plots. NEVER block it. NEVER touch serial here.
+- Engine thread - the existing MeasurementEngine(QThread). Owns serial I/O. Unchanged. Communicates
+  outward ONLY via its existing Qt signals.
+- Agent thread - AgentWorker(QThread) that, in its run(), creates and runs its OWN asyncio event loop
+  (asyncio.new_event_loop() / loop.run_until_complete(...)). The AsyncAnthropic streaming agentic loop
+  lives here. NEVER touches a Qt widget, the engine, or the connection directly.
+
+**The single rule:** the agent thread touches the engine/GUI only by marshaling onto the GUI thread,
+and awaits engine completion via a thread-safe future resolved by a one-shot GUI-thread signal
+connection.
+
+Every tool that drives hardware follows this exact sequence (implemented once in bridge.py +
+engine_adapter.py, reused by all tools):
+1. Tool handler runs INSIDE the agent thread's asyncio loop (it is an async def).
+2. It builds a TechniqueConfig (pure data - safe on any thread).
+3. To start the measurement it calls `await run_on_gui(fn)` where fn is a zero-arg callable executed
+   on the GUI thread, marshaled via a GUI-thread QObject plus QMetaObject.invokeMethod(...,
+   Qt.QueuedConnection) (or a queued-signal trampoline). The GUI-thread fn:
+   a. checks engine.isRunning() - if busy, signal back "engine busy" (tool returns an error result, no raise);
+   b. connects ONE-SHOT slots to measurement_finished, measurement_error (and optionally
+      channel_changed/data_point_ready for progress) that resolve a concurrent.futures.Future;
+   c. calls engine.start_measurement(connection, config) - the SAME engine instance the plots are
+      already wired to, so plots animate automatically with NO separate render path;
+   d. returns immediately (does not wait).
+4. Back in the asyncio loop, the tool does `result = await asyncio.wrap_future(future)` - non-blocking
+   for the GUI; the agent thread's loop simply suspends this coroutine until the signal fires.
+5. The one-shot slots (GUI thread) set the future's result (MeasurementResult / error string) and
+   disconnect themselves so they never fire for the next run.
+6. Tool returns a compact text/JSON summary (channels, point counts, key metrics) to the agent; large
+   arrays are NOT dumped into the model context.
+
+**Streaming out:** the agent loop emits Qt signals (agent_text_delta(str), tool_call_started(dict),
+tool_call_finished(dict), tool_call_error(dict), agent_turn_done()) via a QObject bridge; the dock
+panel slots run on the GUI thread and update the chat/tool-cards/figures. The agent thread NEVER calls
+a widget method.
+
+**Why this and not alternatives:** running the Anthropic async client in the GUI thread's event loop
+would require qasync and risks blocking on serial-bound awaits; running tools that call engine.wait()
+on the engine thread would deadlock signal delivery. One asyncio loop in a worker QThread +
+future-bridged completion signals keeps the GUI responsive, reuses the existing engine/plot wiring
+untouched, and is identically implementable by every coder.
+
+**Mock parity:** MockMeasurementEngine exposes the identical signal set and start_measurement(conn,
+cfg); it emits a short synthetic DataPoint stream then measurement_finished on a QTimer, so the
+bridge, tools, plots, and validation gate exercise the real code path with zero hardware.

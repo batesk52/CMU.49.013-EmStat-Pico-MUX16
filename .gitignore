@@ -4,6 +4,9 @@ __pycache__/
 exports/
 .claude/
 
+# Agent-initiated .pssession exports (export_session tool default dir)
+agent_exports/
+
 # User-data preset / sequence stores (CMU.17.034). Presets are user data,
 # not code; the per-user store lives outside the repo, and any local
 # *.mux16 / *.mux16seq files a user drops in the tree stay untracked.

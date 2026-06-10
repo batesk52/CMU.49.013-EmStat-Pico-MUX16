@@ -38,6 +38,7 @@ from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QComboBox,
+    QDialog,
     QDockWidget,
     QHBoxLayout,
     QFileDialog,
@@ -53,6 +54,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.agent import bridge as agent_bridge
+from src.agent.engine_adapter import EngineAdapter
+from src.agent.mock_engine import MockConnection, MockMeasurementEngine
+from src.agent.tools import build_registry
+from src.agent.vendor_analysis import build_analysis_tools
 from src.comms.serial_connection import PicoConnection
 from src.data.exporters import (
     PsSessionExporter,
@@ -67,8 +73,12 @@ from src.data.models import (
     TechniqueConfig,
 )
 from src.data.app_settings import (
+    get_agent_api_key,
+    get_agent_model,
     get_export_dir,
     get_last_preset_file,
+    set_agent_api_key,
+    set_agent_model,
     set_export_dir,
 )
 from src.data.presets import Preset, PresetManager
@@ -81,6 +91,7 @@ from src.gui.controls import (
     MeasurementControlPanel,
     TechniquePanel,
 )
+from src.gui.agent_dock import AgentDockPanel, AgentSettingsDialog
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
 from src.gui.sequence_panel import SequencePanel
@@ -238,6 +249,9 @@ class MainWindow(QMainWindow):
 
         # Wire signals
         self._wire_signals()
+
+        # Embedded Claude agent (right dock + worker + tool registry)
+        self._build_agent_dock()
 
         # Load presets into UI
         self._load_presets_into_ui()
@@ -415,6 +429,117 @@ class MainWindow(QMainWindow):
         )
         logging.getLogger().addHandler(self._log_handler)
 
+    def _build_agent_dock(self) -> None:
+        """Build the right 'Agent' dock and the agent tool stack.
+
+        Creates the EngineAdapter + ToolRegistry (built-in measurement/
+        device tools plus the vendored-analysis tools) and the
+        AgentDockPanel that owns the AgentWorker.  ``agent_bridge.
+        install()`` is called here, on the GUI thread, before any tool
+        can run (idempotent).
+
+        Mock toggle: when the EMSTAT_AGENT_MOCK environment variable is
+        truthy ("1"/"true"/"yes"/"on"), the AGENT drives a
+        MockMeasurementEngine + MockConnection instead of the real
+        hardware pair, and the mock engine's signals are connected to
+        the SAME plot/handler slots as the real engine (mirroring
+        _wire_signals) so the live plots animate during agent-driven
+        mock runs.  The real engine path is untouched either way.
+        """
+        # The bridge must exist before any agent tool marshals onto the
+        # GUI thread; install() is idempotent and GUI-thread-checked.
+        agent_bridge.install()
+
+        mock_flag = os.environ.get("EMSTAT_AGENT_MOCK", "")
+        if mock_flag.strip().lower() in ("1", "true", "yes", "on"):
+            engine = MockMeasurementEngine(parent=self)
+            connection = MockConnection()
+            connection.connect("MOCK1")
+            # Mirror the real-engine wiring (_wire_signals) so agent-
+            # driven mock measurements animate the same live plots.
+            # _on_measurement_started creates and configures the run's
+            # plot tab (tabbed live plots), so no separate plot-prep
+            # handler is needed; data points route to the active tab.
+            engine.measurement_started.connect(
+                self._on_measurement_started
+            )
+            engine.data_point_ready.connect(self._route_data_point)
+            engine.measurement_finished.connect(
+                self._on_agent_measurement_finished
+            )
+            engine.measurement_error.connect(
+                self._on_measurement_error
+            )
+            engine.channel_changed.connect(
+                self._on_channel_changed
+            )
+            logger.info(
+                "EMSTAT_AGENT_MOCK set: agent uses the mock engine."
+            )
+        else:
+            engine = self._engine
+            connection = self._connection
+        self._agent_engine = engine
+        self._agent_connection = connection
+
+        self._agent_adapter = EngineAdapter(engine, connection)
+        self._agent_registry = build_registry(self._agent_adapter)
+        # API key + model are configuration (File > Agent Settings...),
+        # persisted in app settings; the panel just receives them.
+        self._agent_panel = AgentDockPanel(
+            self._agent_registry,
+            api_key=get_agent_api_key(),
+            model=get_agent_model(),
+        )
+        for tool_def, handler in build_analysis_tools(
+            figure_sink=self._agent_panel.figure_sink
+        ):
+            self._agent_registry.register(tool_def, handler)
+
+        dock = QDockWidget("Agent", self)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        dock.setWidget(self._agent_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        # Sane first-open width so the dock does not crush the plots.
+        self._agent_panel.setMinimumWidth(340)
+        self.resizeDocks([dock], [420], Qt.Orientation.Horizontal)
+        self._agent_dock = dock
+
+    @pyqtSlot(object)
+    def _on_agent_measurement_finished(
+        self, result: MeasurementResult
+    ) -> None:
+        """Finish handling for agent-driven (mock) runs.
+
+        Mirrors ``_on_measurement_finished`` minus the modal dialogs:
+        an agent-initiated run must never pop a blocking export/auto-
+        save prompt mid-conversation. The result stays exportable via
+        File > Export.
+
+        Args:
+            result: The finished run's MeasurementResult.
+        """
+        self._last_result = result
+        self._meas_panel.set_idle()
+        self._export_action.setEnabled(True)
+        self._status_progress.setText("Idle")
+        if self._plot_container is not None:
+            self._plot_container.on_measurement_finished()
+        n_points = result.num_points
+        n_channels = len(result.measured_channels)
+        self.statusBar().showMessage(
+            f"Agent measurement complete: {n_points} points "
+            f"across {n_channels} channel(s)"
+        )
+        logger.info(
+            "Agent measurement complete: %d points, %d channel(s).",
+            n_points,
+            n_channels,
+        )
+
     def _build_sequence_dock(self) -> None:
         """Build the Sequence dock hosting the preset sequencer panel.
 
@@ -485,6 +610,10 @@ class MainWindow(QMainWindow):
         set_export_dir_action = QAction("Set Export &Folder...", self)
         set_export_dir_action.triggered.connect(self._on_set_export_dir)
         file_menu.addAction(set_export_dir_action)
+
+        agent_settings_action = QAction("&Agent Settings...", self)
+        agent_settings_action.triggered.connect(self._on_agent_settings)
+        file_menu.addAction(agent_settings_action)
 
         file_menu.addSeparator()
 
@@ -1021,7 +1150,21 @@ class MainWindow(QMainWindow):
         """Handle measurement_finished signal from engine.
 
         Stores the result, updates UI to idle, and prompts for export.
+        Agent-driven runs are delegated to the modal-free handler.
         """
+        # A run the agent started on the REAL engine must never pop a
+        # modal mid-conversation: delegate to the modal-free handler.
+        # (Mock-mode agent runs connect to it directly and never reach
+        # here; the engine-identity guard keeps a concurrent mock-run
+        # flag from suppressing a user run's export prompt.)
+        if (
+            self._agent_adapter is not None
+            and self._agent_engine is self._engine
+            and self._agent_adapter.consume_agent_run()
+        ):
+            self._on_agent_measurement_finished(result)
+            return
+
         self._last_result = result
         self._export_action.setEnabled(True)
         if self._plot_container is not None:
@@ -1088,6 +1231,17 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_measurement_error(self, message: str) -> None:
         """Handle measurement_error signal from engine."""
+        # Consume agent attribution FIRST (every termination emits
+        # exactly one of finished/error, so the flag must be taken on
+        # both paths). An agent-driven run's error is already returned
+        # to the agent as a structured tool result — surfacing it again
+        # as a blocking dialog mid-conversation helps nobody; status
+        # bar + log retain the record.
+        agent_run = (
+            self._agent_adapter is not None
+            and self._agent_engine is self._engine
+            and self._agent_adapter.consume_agent_run()
+        )
         self._meas_panel.set_idle()
         # Clear the auto-save flag: a run that ended in error (including a
         # user abort, which routes through measurement_error) must not
@@ -1106,7 +1260,7 @@ class MainWindow(QMainWindow):
             self._last_result = self._engine.result
             self._export_action.setEnabled(True)
 
-        if "aborted" not in message.lower():
+        if "aborted" not in message.lower() and not agent_run:
             QMessageBox.critical(
                 self, "Measurement Error", message
             )
@@ -1165,6 +1319,31 @@ class MainWindow(QMainWindow):
                 "No Data",
                 "No measurement results to export.",
             )
+
+    @pyqtSlot()
+    def _on_agent_settings(self) -> None:
+        """Edit + persist the agent's API key and model.
+
+        Configuration lives here (File menu + app settings), not in the
+        chat panel. Accepted values are persisted across launches and
+        pushed to the running agent worker (effective next turn). An
+        empty key clears the stored one so the ANTHROPIC_API_KEY
+        environment variable is used.
+        """
+        dlg = AgentSettingsDialog(
+            api_key=get_agent_api_key() or "",
+            model=get_agent_model() or "",
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        key, model = dlg.values()
+        set_agent_api_key(key or None)
+        set_agent_model(model or None)
+        self._agent_panel.set_api_key(key or None)
+        self._agent_panel.set_model(model)
+        self.statusBar().showMessage("Agent settings saved.")
+        logger.info("Agent settings updated (model=%s).", model)
 
     @pyqtSlot()
     def _on_set_export_dir(self) -> None:
@@ -1523,6 +1702,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Ensure clean shutdown on window close."""
+        # Stop the agent worker thread first so no tool can marshal
+        # work onto the GUI/engine while the window tears down.
+        if getattr(self, "_agent_panel", None) is not None:
+            self._agent_panel.shutdown()
         if self._engine.isRunning():
             self._engine.abort()
             self._engine.wait(3000)
