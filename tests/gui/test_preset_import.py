@@ -67,6 +67,36 @@ def test_import_entry_present_after_refresh(qapp) -> None:
     assert keys.count(_IMPORT_PRESET_SENTINEL) == 1
 
 
+def test_refresh_preserves_current_selection(qapp) -> None:
+    """A rebuild keeps the selected preset selected (review finding #9).
+
+    The main window re-runs its populate path right after an import;
+    without preservation the dropdown visually reset to "(No Preset)"
+    while the parameter form still showed the imported preset.
+    """
+    panel = TechniquePanel()
+    panel.refresh_presets(
+        {"a": "Alpha", "b": "Beta"}, deletable={"a", "b"}
+    )
+    combo = panel._preset_combo  # noqa: SLF001
+    combo.setCurrentIndex(combo.findData("b"))
+    assert combo.currentData() == "b"
+
+    # A second refresh (same store) must keep "b" selected and keep the
+    # delete button enabled for a deletable key.
+    panel.refresh_presets(
+        {"a": "Alpha", "b": "Beta"}, deletable={"a", "b"}
+    )
+    assert combo.currentData() == "b"
+    assert panel._delete_preset_btn.isEnabled()  # noqa: SLF001
+
+    # If the selected key disappears from the store, fall back to
+    # "(No Preset)" with delete disabled.
+    panel.refresh_presets({"a": "Alpha"}, deletable={"a"})
+    assert combo.currentData() == ""
+    assert not panel._delete_preset_btn.isEnabled()  # noqa: SLF001
+
+
 def test_import_loads_repopulates_and_persists(
     qapp, tmp_path, monkeypatch
 ) -> None:

@@ -369,6 +369,7 @@ class MeasurementEngine(QThread):
                 device_info=self.result.device_info,
                 channels=channels,
                 output_dir=config.auto_save.output_dir,
+                exact_dir=config.auto_save.exact_dir,
             )
             logger.info("Auto-save enabled: %s", auto_dir)
             script_save_path = os.path.join(auto_dir, "_script.mscr")

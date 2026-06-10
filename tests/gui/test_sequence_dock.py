@@ -246,22 +246,25 @@ def test_single_run_uses_one_replaced_tab(qapp) -> None:
 
 
 def test_sequence_export_base_respects_auto_save_toggle(qapp) -> None:
-    """The sequencer auto-saves only when the GUI auto-save toggle is on.
+    """The export-base provider mirrors the GUI auto-save toggle.
 
-    Off by default -> no base dir (the sequence writes nothing). Enabling
-    the auto-save toggle opts the sequence in, sharing the single-run
-    policy rather than forcing saves on.
+    The base dir is ALWAYS supplied (provenance-forced EIS/GEIS steps
+    auto-save even with the toggle off — the runner applies that rule);
+    ``auto_save_all`` carries the toggle for everything else.
     """
     window = MainWindow()
     try:
-        # Opt-in default: auto-save off -> no export base.
+        # Opt-in default: toggle off -> base present, all-flag False.
         assert window._meas_panel.is_auto_save_enabled() is False  # noqa: SLF001
-        assert window._sequence_export_base() is None  # noqa: SLF001
-
-        # User enables auto-save -> the sequencer gets a real base dir.
-        window._meas_panel.set_auto_save(True, "")  # noqa: SLF001
-        base = window._sequence_export_base()  # noqa: SLF001
+        base, save_all = window._sequence_export_base()  # noqa: SLF001
         assert base
+        assert save_all is False
+
+        # User enables auto-save -> all-flag True.
+        window._meas_panel.set_auto_save(True, "")  # noqa: SLF001
+        base, save_all = window._sequence_export_base()  # noqa: SLF001
+        assert base
+        assert save_all is True
     finally:
         window.close()
 
@@ -298,33 +301,76 @@ def test_preset_selection_does_not_enable_auto_save(
         window.close()
 
 
-def test_sequence_completion_autosaved_does_not_prompt(
-    qapp, monkeypatch
+def test_preset_selection_preserves_user_enabled_auto_save(
+    qapp, tmp_path
 ) -> None:
-    """When the run already auto-saved, completion reports without a prompt."""
-    from src.data.models import MeasurementResult
+    """Selecting a non-EIS preset never CLEARS a user-enabled auto-save.
 
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(_no_modal))
+    Review finding #5: the select handler used to force the checkbox to
+    the technique's forced state, silently unchecking a manual choice.
+    """
+    from src.data.presets import Preset, PresetManager
+
     window = MainWindow()
     try:
-        window._sequence_autosaved = True  # noqa: SLF001
-        window._sequence_results = [  # noqa: SLF001
-            MeasurementResult(technique="cv")
-        ]
-        # Must not raise via _no_modal (no prompt on the auto-saved path).
-        window._on_sequence_completed()  # noqa: SLF001
-        assert window._sequence_results == []  # noqa: SLF001
+        mgr = PresetManager(path=str(tmp_path / "store.mux16"))
+        mgr.add_preset(
+            "plain_cv",
+            Preset(name="plain_cv", technique="cv", channels=[1]),
+        )
+        window._preset_mgr = mgr  # noqa: SLF001
+
+        # User manually enables auto-save, then browses to a CV preset.
+        window._meas_panel.set_auto_save(True, "")  # noqa: SLF001
+        window._on_preset_selected("plain_cv")  # noqa: SLF001
+        assert window._meas_panel.is_auto_save_enabled() is True  # noqa: SLF001
     finally:
         window.close()
 
 
-def test_sequence_completion_saves_all_steps_when_accepted(
+def test_sequence_stop_never_leaves_zero_plot_tabs(qapp) -> None:
+    """The terminal hook restores a tab if a run created none.
+
+    Review finding #8: a first step failing before measurement_started
+    left zero tabs and a dead technique preview until the next run.
+    """
+    window = MainWindow()
+    try:
+        window._on_sequence_started()  # noqa: SLF001 (resets tabs to 0)
+        assert window._plot_tabs.count() == 0  # noqa: SLF001
+        # Sequence errors out before any measurement_started fires.
+        window._on_sequence_stopped()  # noqa: SLF001
+        assert window._plot_tabs.count() == 1  # noqa: SLF001
+        assert window._plot_container is not None  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_no_retained_results_means_no_prompt(qapp, monkeypatch) -> None:
+    """With nothing retained (everything auto-saved), no prompt appears.
+
+    Auto-saved steps are not retained at all (their data is already on
+    disk), so the terminal hook has nothing to offer and must not raise
+    a dialog.
+    """
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_no_modal))
+    window = MainWindow()
+    try:
+        window._sequence_results = []  # noqa: SLF001
+        # Must not raise via _no_modal (nothing to save -> no prompt).
+        window._offer_sequence_save()  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_end_saves_all_steps_when_accepted(
     qapp, tmp_path, monkeypatch
 ) -> None:
-    """Auto-save off + accept the prompt -> every step is written.
+    """Retained steps + accept the prompt -> every step is written.
 
     Lands one ``<stamp>_sequence`` parent with a ``stepNN_<technique>``
-    subfolder per step (each an ordinary per-step export).
+    subfolder per step — the SAME layout the runner's live auto-save
+    path produces (shared helpers).
     """
     from src.data.models import DataPoint, MeasurementResult
 
@@ -353,12 +399,11 @@ def test_sequence_completion_saves_all_steps_when_accepted(
             )
             return r
 
-        window._sequence_autosaved = False  # noqa: SLF001
         window._sequence_results = [  # noqa: SLF001
             _result("cv"),
             _result("eis"),
         ]
-        window._on_sequence_completed()  # noqa: SLF001
+        window._offer_sequence_save()  # noqa: SLF001
 
         seq_dirs = list(tmp_path.glob("*_sequence"))
         assert len(seq_dirs) == 1
@@ -370,10 +415,55 @@ def test_sequence_completion_saves_all_steps_when_accepted(
         window.close()
 
 
-def test_sequence_completion_declined_saves_nothing(
+def test_stopped_sequence_still_offers_to_save(
     qapp, tmp_path, monkeypatch
 ) -> None:
-    """Declining the completion prompt writes no files."""
+    """A stopped/errored sequence offers its completed steps for save.
+
+    The save offer hangs off sequence_stopped — the one terminal hook
+    fired on finish, stop, AND error — so an early end can no longer
+    silently discard the completed steps' retained data.
+    """
+    from src.data.models import DataPoint, MeasurementResult
+
+    monkeypatch.setattr(
+        main_window_mod, "get_export_dir", lambda: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *a, **k: None)
+    )
+    window = MainWindow()
+    try:
+        r = MeasurementResult(technique="ca")
+        r.add_point(
+            DataPoint(
+                timestamp=0.1,
+                channel=1,
+                variables={"potential": 0.1, "current": 1e-5},
+            )
+        )
+        window._sequence_active = True  # noqa: SLF001
+        window._sequence_results = [r]  # noqa: SLF001
+        # Simulate the user stopping mid-run: the terminal hook fires.
+        window._on_sequence_stopped()  # noqa: SLF001
+
+        seq_dirs = list(tmp_path.glob("*_sequence"))
+        assert len(seq_dirs) == 1
+        assert (seq_dirs[0] / "step01_ca" / "ch01.csv").exists()
+        assert window._sequence_results == []  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_end_declined_saves_nothing(
+    qapp, tmp_path, monkeypatch
+) -> None:
+    """Declining the save prompt writes no files."""
     from src.data.models import MeasurementResult
 
     monkeypatch.setattr(
@@ -386,13 +476,52 @@ def test_sequence_completion_declined_saves_nothing(
     )
     window = MainWindow()
     try:
-        window._sequence_autosaved = False  # noqa: SLF001
         window._sequence_results = [  # noqa: SLF001
             MeasurementResult(technique="cv")
         ]
-        window._on_sequence_completed()  # noqa: SLF001
+        window._offer_sequence_save()  # noqa: SLF001
         assert list(tmp_path.glob("*_sequence")) == []
         assert window._sequence_results == []  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_autosaved_sequence_step_gets_pssession(
+    qapp, tmp_path, monkeypatch
+) -> None:
+    """An auto-saved sequence step gets a .pssession in its step dir.
+
+    The live auto-save path streams CSVs only; the finished handler
+    completes the convention (CSV + .pssession per run) by exporting the
+    session file into the step's auto-save dir, and the step is NOT
+    retained for the end prompt.
+    """
+    from src.data.models import DataPoint, MeasurementResult
+
+    window = MainWindow()
+    try:
+        step_dir = tmp_path / "step01_eis"
+        step_dir.mkdir()
+        r = MeasurementResult(technique="eis")
+        r.add_point(
+            DataPoint(
+                timestamp=0.1,
+                channel=1,
+                variables={
+                    "zreal": 100.0,
+                    "zimag": -50.0,
+                    "set_frequency": 1000.0,
+                },
+            )
+        )
+        window._sequence_active = True  # noqa: SLF001
+        window._sequence_results = []  # noqa: SLF001
+        # Engine order: auto_save_completed fires before finished.
+        window._on_auto_save_completed(str(step_dir))  # noqa: SLF001
+        window._on_measurement_finished(r)  # noqa: SLF001
+
+        assert (step_dir / "eis.pssession").exists()
+        assert window._sequence_results == []  # noqa: SLF001 (not retained)
     finally:
         window.close()
 

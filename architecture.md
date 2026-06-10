@@ -236,10 +236,15 @@ blocks on a new sidebar tab and run them back-to-back on the MUX-16.
   chains `engine.start_measurement` calls, advancing on the existing
   `measurement_finished` signal and gating on `isRunning()` so the single-run
   guard is honoured. The interactive export prompt is suppressed in "sequence
-  mode"; auto-save is opt-in (the same GUI toggle as single runs). When enabled,
-  all steps share one `<export_dir>/<stamp>_sequence/` parent and the engine's
-  writer adds a `<ts>_<technique>_autosave/` leaf per step, so the run looks like
-  a normal export folder whose subfolders are each an ordinary per-step export.
+  mode"; auto-save is opt-in (the same GUI toggle as single runs), with EIS/GEIS
+  steps provenance-forced per step (`forces_auto_save` in `models.py`) so their
+  `_script.mscr` always lands. Auto-saving entries each write into their own
+  `<export_dir>/<stamp>_sequence/stepNN_<technique>/` dir (`exact_dir` writer
+  mode — unique per entry, repeats included, so same-second runs can't collide),
+  and the finished handler adds each auto-saved step's `.pssession`. Steps that
+  did NOT auto-save are retained and offered for save from the single terminal
+  hook (`sequence_stopped` — fired on finish, stop, AND error), producing the
+  identical `stepNN_<technique>` layout via shared helpers in `exporters.py`.
 
 **Why not a device-side multi-method script?** The Pico's MethodSCRIPT can loop a
 single technique but not chain heterogeneous techniques with per-step electrode

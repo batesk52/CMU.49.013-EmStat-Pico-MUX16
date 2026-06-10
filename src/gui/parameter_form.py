@@ -1,14 +1,16 @@
 """Reusable per-technique parameter editor (CMU.17.034).
 
-``ParameterForm`` builds an editable grid of spin boxes / combos for a
-technique's parameters, seeded from a values dict and read back via
-:meth:`get_params`. It is the same form the single-run technique panel
-renders, factored out so each sequence step can embed its own editable
-copy (a PSTrace-"Scripts"-style block).
+This module is the single authority for parameter-editing widgets: the
+label/unit table, the current-range and bandwidth option lists, the
+spin-step heuristic, and the widget factory/reader. Both the single-run
+technique panel (``controls.py``) and each sequence step's embedded
+editor build their forms through these helpers, so the two editors
+cannot drift (a new combo-backed parameter or range tweak lands in both
+at once). ``controls.py`` imports from here — never the reverse.
 
-The widget-building logic and label/range constants are shared with
-``controls.py`` (imported here) so both editors stay in lock-step; this
-module never imports anything that would import it back.
+``ParameterForm`` is the ready-made editable grid used by the sequence
+step blocks: seed it with :meth:`set_config`, read back via
+:meth:`get_params`.
 """
 
 from __future__ import annotations
@@ -25,16 +27,75 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-# Reuse the single-run panel's label/range tables and step heuristic so
-# the two editors render identically. These are module-level constants in
-# controls.py; importing them (rather than duplicating) keeps them in sync.
-from src.gui.controls import (
-    _BANDWIDTH_HZ,
-    _CURRENT_RANGES,
-    _PARAM_LABELS,
-    _guess_step,
-)
 from src.techniques.scripts import technique_params
+
+# Parameter display names and units for field labels.
+PARAM_LABELS: dict[str, tuple[str, str]] = {
+    "e_begin": ("E begin", "V"),
+    "e_end": ("E end", "V"),
+    "e_step": ("E step", "V"),
+    "e_vertex1": ("E vertex 1", "V"),
+    "e_vertex2": ("E vertex 2", "V"),
+    "e_pulse": ("E pulse", "V"),
+    "e_dc": ("E DC", "V"),
+    "e_ac": ("E AC", "V"),
+    "e_cond": ("E conditioning", "V"),
+    "e_dep": ("E deposition", "V"),
+    "e_eq": ("E equilibration", "V"),
+    "scan_rate": ("Scan rate", "V/s"),
+    "t_pulse": ("t pulse", "s"),
+    "t_run": ("t run", "s"),
+    "t_interval": ("t interval", "s"),
+    "t_base": ("t base", "s"),
+    "t_cond": ("t conditioning", "s"),
+    "t_dep": ("t deposition", "s"),
+    "t_eq": ("t equilibration", "s"),
+    "amplitude": ("Amplitude", "V"),
+    "frequency": ("Frequency", "Hz"),
+    "freq_start": ("Freq start", "Hz"),
+    "freq_end": ("Freq end", "Hz"),
+    "i_dc": ("I DC", "A"),
+    "i_ac": ("I AC", "A"),
+    "n_scans": ("# Scans", ""),
+    "n_freq": ("# Frequencies", ""),
+    "settle_time": ("Settle time", "s"),
+    "samples_per_visit": ("Samples per channel visit", ""),
+    "cr": ("Current range", ""),
+    "bw_hz": ("Max Bandwidth", "Hz"),
+}
+
+# Current range options for combo box.
+CURRENT_RANGES = [
+    "100n", "2u", "4u", "8u", "16u",
+    "32u", "63u", "100u", "1m", "10m", "100m",
+]
+
+# Max bandwidth options for combo box (Hz).
+# Mode-2 sweep range; default 400 preserves legacy behavior.
+BANDWIDTH_HZ = [0.4, 4, 40, 400, 4000, 40000, 200000]
+
+
+def guess_step(value: float) -> float:
+    """Guess a reasonable spin box step size from a default value.
+
+    Args:
+        value: The default parameter value.
+
+    Returns:
+        A step size (order-of-magnitude smaller than the value).
+    """
+    if value == 0:
+        return 0.001
+    abs_val = abs(value)
+    if abs_val >= 100:
+        return 1.0
+    if abs_val >= 1:
+        return 0.1
+    if abs_val >= 0.01:
+        return 0.001
+    if abs_val >= 0.0001:
+        return 0.00001
+    return abs_val / 10.0
 
 
 def create_param_widget(name: str, default: Any, on_change) -> QWidget:
@@ -54,7 +115,7 @@ def create_param_widget(name: str, default: Any, on_change) -> QWidget:
     """
     if name == "cr":
         combo = QComboBox()
-        for cr in _CURRENT_RANGES:
+        for cr in CURRENT_RANGES:
             combo.addItem(cr)
         idx = combo.findText(str(default))
         if idx >= 0:
@@ -64,7 +125,7 @@ def create_param_widget(name: str, default: Any, on_change) -> QWidget:
 
     if name == "bw_hz":
         combo = QComboBox()
-        for hz in _BANDWIDTH_HZ:
+        for hz in BANDWIDTH_HZ:
             label = str(int(hz)) if float(hz).is_integer() else str(hz)
             combo.addItem(label, hz)
         try:
@@ -91,7 +152,7 @@ def create_param_widget(name: str, default: Any, on_change) -> QWidget:
     spin = QDoubleSpinBox()
     spin.setDecimals(6)
     spin.setRange(-10.0, 1e8)
-    spin.setSingleStep(_guess_step(default))
+    spin.setSingleStep(guess_step(default))
     spin.setValue(float(default))
     spin.valueChanged.connect(lambda: on_change())
     return spin
@@ -162,7 +223,7 @@ class ParameterForm(QWidget):
 
         row = 0
         for name, value in merged.items():
-            label_text, unit = _PARAM_LABELS.get(name, (name, ""))
+            label_text, unit = PARAM_LABELS.get(name, (name, ""))
             display = f"{label_text} ({unit})" if unit else label_text
             self._grid.addWidget(QLabel(display), row, 0)
             widget = create_param_widget(
