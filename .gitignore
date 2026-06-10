@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 exports/
 .claude/
+
+# Agent-initiated .pssession exports (export_session tool default dir)
+agent_exports/

@@ -58,7 +58,7 @@ WATCHDOG_SECONDS = 30.0
 EXPECTED_TOOLS = {
     "run_cv", "run_ca", "run_cp", "run_eis", "run_geis",
     "list_ports", "connect_device", "disconnect_device",
-    "device_status", "abort_measurement",
+    "device_status", "abort_measurement", "export_session",
 }
 CV_INPUT = {
     "channels": [1, 2],

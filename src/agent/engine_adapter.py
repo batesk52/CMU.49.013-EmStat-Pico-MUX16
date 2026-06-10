@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from datetime import datetime
 from typing import Any, Optional
 
 # Eager import per the blueprint constraint: native/third-party deps are
@@ -35,10 +37,16 @@ from typing import Any, Optional
 from serial.tools import list_ports as _serial_list_ports
 
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
+from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
 from src.techniques.scripts import supported_techniques, technique_params
 
 logger = logging.getLogger(__name__)
+
+# Default directory for agent-initiated .pssession exports (relative to
+# the process working directory, i.e. the repo root when launched the
+# documented way).
+_DEFAULT_EXPORT_DIR = "agent_exports"
 
 __all__ = ["EngineAdapter", "build_technique_config"]
 
@@ -317,6 +325,86 @@ class EngineAdapter:
                 "'Measurement aborted by user.'"
             ),
         }
+
+    def export_session(
+        self, path: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Export the last finished measurement to a .pssession file.
+
+        Bridges the run -> characterize gap: the analysis tools only
+        read .pssession files, so the agent chains run_* ->
+        export_session -> analyze_*. Uses the app's existing
+        ``PsSessionExporter`` (PSTrace-fidelity validated), reading
+        ``engine.result`` after the engine is idle -- pure data-to-file
+        work, so no GUI-thread marshaling is required.
+
+        Args:
+            path: Optional output file or directory. A directory (or a
+                trailing slash) gets an auto-generated
+                ``<technique>_<timestamp>.pssession`` name; a file path
+                without the .pssession suffix has it appended; omitted
+                entirely, the file goes to ``agent_exports/``.
+
+        Returns:
+            ``{"ok": True, "path": ..., "technique": ...,
+            "num_points": ..., "channels": [...]}`` on success,
+            ``{"ok": False, "error": ...}`` otherwise.
+        """
+        if self._engine.isRunning():
+            return {
+                "ok": False,
+                "error": (
+                    "A measurement is still running; wait for it to "
+                    "finish (or abort_measurement) before exporting."
+                ),
+            }
+        result = getattr(self._engine, "result", None)
+        if result is None or result.num_points == 0:
+            return {
+                "ok": False,
+                "error": (
+                    "No finished measurement to export. Run a "
+                    "measurement first."
+                ),
+            }
+
+        if path:
+            out = str(path)
+            if out.endswith(("/", "\\")) or os.path.isdir(out):
+                out = os.path.join(out, self._export_name(result))
+            elif not out.lower().endswith(".pssession"):
+                out = out + ".pssession"
+        else:
+            out = os.path.join(
+                _DEFAULT_EXPORT_DIR, self._export_name(result)
+            )
+
+        try:
+            abs_path = PsSessionExporter().export_pssession(result, out)
+        except Exception as exc:  # noqa: BLE001 - surfaced to the model
+            logger.exception("export_session failed")
+            return {
+                "ok": False,
+                "error": (
+                    f"Export failed: {type(exc).__name__}: {exc}"
+                ),
+            }
+        logger.info("Agent exported session: %s", abs_path)
+        return {
+            "ok": True,
+            "path": abs_path,
+            "technique": result.technique,
+            "num_points": result.num_points,
+            "channels": result.measured_channels,
+        }
+
+    @staticmethod
+    def _export_name(result: Any) -> str:
+        """Build ``<technique>_<timestamp>.pssession`` for *result*."""
+        started = getattr(result, "start_time", None) or datetime.now()
+        stamp = started.strftime("%Y%m%d_%H%M%S")
+        technique = getattr(result, "technique", "") or "session"
+        return f"{technique}_{stamp}.pssession"
 
     # ---- Device tools --------------------------------------------------------
 

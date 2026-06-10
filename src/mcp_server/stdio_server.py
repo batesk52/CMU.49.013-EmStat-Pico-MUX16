@@ -2,7 +2,7 @@
 
 Thin Model Context Protocol (MCP) server for Claude Code and other MCP
 clients.  It exposes EXACTLY the tool definitions of the in-app agent
--- the ten measurement/device tools from :func:`src.agent.tools.
+-- the eleven measurement/device/export tools from :func:`src.agent.tools.
 build_registry` plus the seven vendored-analysis tools from
 :func:`src.agent.vendor_analysis.build_analysis_tools` -- and routes
 every tool call through :func:`src.agent.tools.dispatch_tool`, so

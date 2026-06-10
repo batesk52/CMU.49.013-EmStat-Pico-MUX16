@@ -332,3 +332,12 @@ to completion, and exits 0. The agent loop module must import without an API key
 - [x] **src/mcp_server/stdio_server.py** - thin MCP stdio server exposing the same tool defs for Claude Code
   * Reuses tools.py defs; headless (mock engine when no GUI); eager native imports; no emojis.
   * Validate: `python claude_test_files/smoke_mcp_server.py` (start server in-proc, list tools, call one mock-CV tool, exit 0)
+
+### Follow-up - run -> characterize chain
+- [x] **export_session tool** - saves the last finished run via the existing PsSessionExporter and
+  returns the absolute .pssession path, closing the gap between run_* (live summaries) and
+  analyze_* (which read .pssession files). Optional `path` arg (file or directory); defaults to
+  ./agent_exports/ (gitignored). Registered in tools.py, so the dock agent and the MCP server both
+  expose it (chain: run_cv -> export_session -> analyze_cv).
+  * Validate: `python claude_test_files/smoke_export_session.py` (mock CV -> export -> vendored
+    loader + CVAnalyzer round-trip, exit 0)

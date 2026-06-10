@@ -414,6 +414,36 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "export_session",
+            "description": (
+                "Save the most recent FINISHED measurement to a "
+                "PSTrace-compatible .pssession file and return its "
+                "absolute path. Call this after a run completes "
+                "whenever the user wants the data saved, and as the "
+                "FIRST step of characterization: the analyze_* tools "
+                "only read .pssession files, so chain run_* -> "
+                "export_session -> analyze_* (pass the returned "
+                "path). Fails cleanly if a measurement is still "
+                "running or none has finished yet."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Optional output file or directory. A "
+                            "directory gets an auto-generated "
+                            "<technique>_<timestamp>.pssession name; "
+                            "omitted entirely, the file goes to "
+                            "./agent_exports/."
+                        ),
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
@@ -533,8 +563,8 @@ def build_registry(
             plug in here (or call ``registry.register`` later).
 
     Returns:
-        A :class:`ToolRegistry` with the ten built-in tools (plus any
-        extras) registered.
+        A :class:`ToolRegistry` with the eleven built-in tools (plus
+        any extras) registered.
     """
     defs = {d["name"]: d for d in build_tool_defs()}
     registry = ToolRegistry()
@@ -569,11 +599,15 @@ def build_registry(
     async def _abort(_tool_input: dict[str, Any]) -> dict[str, Any]:
         return adapter.abort_measurement()
 
+    async def _export(tool_input: dict[str, Any]) -> dict[str, Any]:
+        return adapter.export_session((tool_input or {}).get("path"))
+
     registry.register(defs["list_ports"], _list_ports)
     registry.register(defs["connect_device"], _connect)
     registry.register(defs["disconnect_device"], _disconnect)
     registry.register(defs["device_status"], _status)
     registry.register(defs["abort_measurement"], _abort)
+    registry.register(defs["export_session"], _export)
 
     for tool_def, handler in extra_tools or ():
         registry.register(tool_def, handler)
