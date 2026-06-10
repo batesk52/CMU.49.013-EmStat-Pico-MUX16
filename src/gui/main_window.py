@@ -372,7 +372,7 @@ class MainWindow(QMainWindow):
                 self._on_measurement_started
             )
             engine.measurement_finished.connect(
-                self._on_measurement_finished
+                self._on_agent_measurement_finished
             )
             engine.measurement_error.connect(
                 self._on_measurement_error
@@ -404,6 +404,9 @@ class MainWindow(QMainWindow):
         )
         dock.setWidget(self._agent_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        # Sane first-open width so the dock does not crush the plots.
+        self._agent_panel.setMinimumWidth(340)
+        self.resizeDocks([dock], [420], Qt.Orientation.Horizontal)
         self._agent_dock = dock
 
     @pyqtSlot(str)
@@ -420,6 +423,37 @@ class MainWindow(QMainWindow):
         """
         self._plot_container.clear_plot()
         self._plot_container.set_technique(technique)
+
+    @pyqtSlot(object)
+    def _on_agent_measurement_finished(
+        self, result: MeasurementResult
+    ) -> None:
+        """Finish handling for agent-driven (mock) runs.
+
+        Mirrors ``_on_measurement_finished`` minus the modal dialogs:
+        an agent-initiated run must never pop a blocking export/auto-
+        save prompt mid-conversation. The result stays exportable via
+        File > Export.
+
+        Args:
+            result: The finished run's MeasurementResult.
+        """
+        self._last_result = result
+        self._meas_panel.set_idle()
+        self._export_action.setEnabled(True)
+        self._status_progress.setText("Idle")
+        self._plot_container.on_measurement_finished()
+        n_points = result.num_points
+        n_channels = len(result.measured_channels)
+        self.statusBar().showMessage(
+            f"Agent measurement complete: {n_points} points "
+            f"across {n_channels} channel(s)"
+        )
+        logger.info(
+            "Agent measurement complete: %d points, %d channel(s).",
+            n_points,
+            n_channels,
+        )
 
     def _build_menu_bar(self) -> None:
         """Create the menu bar with File, Device, and Help menus."""

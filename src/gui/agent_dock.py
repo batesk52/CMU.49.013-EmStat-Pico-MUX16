@@ -64,6 +64,10 @@ _CARD_PREVIEW_CHARS = 160
 #: Displayed width of analysis figures (pixels; aspect preserved).
 _FIGURE_WIDTH = 420
 
+# Oldest figures are dropped beyond this count so a long lab session
+# cannot grow the figure strip (and its pixmaps) without bound.
+_MAX_FIGURES = 12
+
 
 class FigureSink(QObject):
     """Thread-safe funnel for analysis figures into the GUI.
@@ -208,6 +212,7 @@ class AgentDockPanel(QWidget):
 
         self._figures: list[dict[str, Any]] = []
         self._figure_labels: list[QLabel] = []
+        self._figure_captions: list[QLabel] = []
         self._tool_cards: dict[str, ToolCallCard] = {}
 
         self._sink = FigureSink(self)
@@ -333,10 +338,15 @@ class AgentDockPanel(QWidget):
         """Agent-thread-safe callable for ``build_analysis_tools``.
 
         The analysis handlers build the ``{"title", "tool", "png"}``
-        dict themselves, so the sink callable is simply the queued
-        signal's emit.
+        dict themselves; the payload is shallow-copied at this boundary
+        so no dict is ever shared by reference across threads.
         """
-        return self._sink.figure_ready.emit
+        emit = self._sink.figure_ready.emit
+
+        def _sink_callable(payload: dict[str, Any]) -> None:
+            emit(dict(payload))
+
+        return _sink_callable
 
     def shutdown(self, wait_ms: int = 5000) -> None:
         """Stop the worker thread and wait for it (idempotent).
@@ -512,6 +522,16 @@ class AgentDockPanel(QWidget):
         self._figures_layout.insertWidget(insert_at + 1, label)
         self._figures.append(data)
         self._figure_labels.append(label)
+        self._figure_captions.append(caption)
+        # Bound the strip: drop the oldest figure pair beyond the cap.
+        while len(self._figure_labels) > _MAX_FIGURES:
+            old_caption = self._figure_captions.pop(0)
+            old_label = self._figure_labels.pop(0)
+            self._figures.pop(0)
+            self._figures_layout.removeWidget(old_caption)
+            self._figures_layout.removeWidget(old_label)
+            old_caption.deleteLater()
+            old_label.deleteLater()
 
     # ---- Internals -----------------------------------------------------------------
 
