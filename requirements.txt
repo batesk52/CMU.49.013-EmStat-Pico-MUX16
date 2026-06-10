@@ -2,3 +2,12 @@ pyserial>=3.5
 PyQt6>=6.5
 pyqtgraph>=0.13
 numpy>=1.21
+
+# Embedded Claude agent (feature/e-cheMCP)
+anthropic>=0.109
+mcp[cli]>=1.0
+
+# Vendored CMU.49.011 analysis (src/vendor/electrochem_analysis)
+pandas>=2.0
+scipy>=1.10
+matplotlib>=3.7
