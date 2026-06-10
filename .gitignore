@@ -15,3 +15,6 @@ agent_exports/
 *.mux16
 *.mux16seq
 /presets/presets.json
+
+# Raw serial bench-capture logs (EMSTAT_RAW_CAPTURE diagnostics)
+bench_captures/
