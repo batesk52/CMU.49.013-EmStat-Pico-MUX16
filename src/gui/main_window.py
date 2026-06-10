@@ -52,6 +52,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.agent import bridge as agent_bridge
+from src.agent.engine_adapter import EngineAdapter
+from src.agent.mock_engine import MockConnection, MockMeasurementEngine
+from src.agent.tools import build_registry
+from src.agent.vendor_analysis import build_analysis_tools
 from src.comms.serial_connection import PicoConnection
 from src.data.exporters import PsSessionExporter
 from src.data.models import (
@@ -71,6 +76,7 @@ from src.gui.controls import (
     MeasurementControlPanel,
     TechniquePanel,
 )
+from src.gui.agent_dock import AgentDockPanel
 from src.gui.eis_plot_container import EISPlotContainer
 from src.gui.plot_widget import LivePlotWidget
 from src.gui.toggle_switch import ToggleSwitch
@@ -198,6 +204,9 @@ class MainWindow(QMainWindow):
         # Wire signals
         self._wire_signals()
 
+        # Embedded Claude agent (right dock + worker + tool registry)
+        self._build_agent_dock()
+
         # Load presets into UI
         self._load_presets_into_ui()
 
@@ -320,6 +329,97 @@ class MainWindow(QMainWindow):
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
         logging.getLogger().addHandler(self._log_handler)
+
+    def _build_agent_dock(self) -> None:
+        """Build the right 'Agent' dock and the agent tool stack.
+
+        Creates the EngineAdapter + ToolRegistry (built-in measurement/
+        device tools plus the vendored-analysis tools) and the
+        AgentDockPanel that owns the AgentWorker.  ``agent_bridge.
+        install()`` is called here, on the GUI thread, before any tool
+        can run (idempotent).
+
+        Mock toggle: when the EMSTAT_AGENT_MOCK environment variable is
+        truthy ("1"/"true"/"yes"/"on"), the AGENT drives a
+        MockMeasurementEngine + MockConnection instead of the real
+        hardware pair, and the mock engine's signals are connected to
+        the SAME plot/handler slots as the real engine (mirroring
+        _wire_signals) so the live plots animate during agent-driven
+        mock runs.  The real engine path is untouched either way.
+        """
+        # The bridge must exist before any agent tool marshals onto the
+        # GUI thread; install() is idempotent and GUI-thread-checked.
+        agent_bridge.install()
+
+        mock_flag = os.environ.get("EMSTAT_AGENT_MOCK", "")
+        if mock_flag.strip().lower() in ("1", "true", "yes", "on"):
+            engine = MockMeasurementEngine(parent=self)
+            connection = MockConnection()
+            connection.connect("MOCK1")
+            # Mirror the real-engine wiring (_wire_signals) so agent-
+            # driven mock measurements animate the same live plots.
+            # Plot prep first: GUI-started runs get clear_plot/
+            # set_technique from _on_start_measurement, but agent runs
+            # bypass that handler, so the variable mapping must be set
+            # before the first data point arrives.
+            engine.measurement_started.connect(
+                self._on_agent_measurement_started
+            )
+            engine.data_point_ready.connect(
+                self._plot_container.on_data_point
+            )
+            engine.measurement_started.connect(
+                self._on_measurement_started
+            )
+            engine.measurement_finished.connect(
+                self._on_measurement_finished
+            )
+            engine.measurement_error.connect(
+                self._on_measurement_error
+            )
+            engine.channel_changed.connect(
+                self._on_channel_changed
+            )
+            logger.info(
+                "EMSTAT_AGENT_MOCK set: agent uses the mock engine."
+            )
+        else:
+            engine = self._engine
+            connection = self._connection
+        self._agent_engine = engine
+        self._agent_connection = connection
+
+        self._agent_adapter = EngineAdapter(engine, connection)
+        self._agent_registry = build_registry(self._agent_adapter)
+        self._agent_panel = AgentDockPanel(self._agent_registry)
+        for tool_def, handler in build_analysis_tools(
+            figure_sink=self._agent_panel.figure_sink
+        ):
+            self._agent_registry.register(tool_def, handler)
+
+        dock = QDockWidget("Agent", self)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable
+            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        dock.setWidget(self._agent_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self._agent_dock = dock
+
+    @pyqtSlot(str)
+    def _on_agent_measurement_started(self, technique: str) -> None:
+        """Prepare the live plot for an agent-driven (mock) run.
+
+        Mirrors the clear_plot/set_technique step that
+        ``_on_start_measurement`` performs for GUI-started runs, so
+        agent-driven measurements render with the correct axis
+        variable mapping.
+
+        Args:
+            technique: Technique identifier from measurement_started.
+        """
+        self._plot_container.clear_plot()
+        self._plot_container.set_technique(technique)
 
     def _build_menu_bar(self) -> None:
         """Create the menu bar with File, Device, and Help menus."""
@@ -1062,6 +1162,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Ensure clean shutdown on window close."""
+        # Stop the agent worker thread first so no tool can marshal
+        # work onto the GUI/engine while the window tears down.
+        if getattr(self, "_agent_panel", None) is not None:
+            self._agent_panel.shutdown()
         if self._engine.isRunning():
             self._engine.abort()
             self._engine.wait(3000)
