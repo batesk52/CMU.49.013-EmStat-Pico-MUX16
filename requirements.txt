@@ -11,3 +11,6 @@ mcp[cli]>=1.0
 pandas>=2.0
 scipy>=1.10
 matplotlib>=3.7
+
+# Test/validation harness deps (claude_test_files smoke gates)
+psutil>=5.9
