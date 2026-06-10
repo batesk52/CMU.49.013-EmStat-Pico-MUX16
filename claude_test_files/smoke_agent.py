@@ -66,7 +66,7 @@ CV_INPUT = {
     "channels": [1, 2],
     "e_begin": -0.2,
     "e_vertex1": 0.3,
-    "e_vertex2": -0.3,
+    "e_vertex2": -0.2,  # closed cycle: must equal e_begin on hardware
     "e_step": 0.05,
     "scan_rate": 0.5,
 }

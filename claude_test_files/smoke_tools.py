@@ -64,7 +64,7 @@ CV_INPUT = {
     "channels": [1, 2],
     "e_begin": -0.2,
     "e_vertex1": 0.3,
-    "e_vertex2": -0.3,
+    "e_vertex2": -0.2,  # closed cycle: must equal e_begin on hardware
     "e_step": 0.05,
     "scan_rate": 0.5,
 }
@@ -166,12 +166,13 @@ async def _scenario(registry, failures: list[str]) -> None:
     if "run_cv" not in payload.get("error", ""):
         failures.append("unknown-tool error does not list available tools")
 
-    # Structured failure (bad param) -> ok=False but is_error=False.
+    # Structured failure (bad param) -> ok=False AND is_error=True so
+    # the agent loop emits tool_call_error and the model sees a failure.
     result_json, is_error = await dispatch_tool(
         registry, "run_cv", {"channels": [1], "bogus_param": 1.0}
     )
     payload = json.loads(result_json)
-    if is_error or payload.get("ok") is not False or (
+    if not is_error or payload.get("ok") is not False or (
         "bogus_param" not in payload.get("error", "")
     ):
         failures.append(
@@ -185,12 +186,13 @@ async def _scenario(registry, failures: list[str]) -> None:
     if not is_error or "RuntimeError" not in payload.get("error", ""):
         failures.append(f"handler-exception path wrong: {payload!r}")
 
-    # abort with nothing running -> structured ok=False, not is_error.
+    # abort with nothing running -> structured ok=False, flagged as
+    # is_error like every other structured failure.
     result_json, is_error = await dispatch_tool(
         registry, "abort_measurement", {}
     )
     payload = json.loads(result_json)
-    if is_error or payload.get("ok") is not False:
+    if not is_error or payload.get("ok") is not False:
         failures.append(f"abort-idle path wrong: {payload!r}")
 
 

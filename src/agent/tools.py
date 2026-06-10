@@ -165,17 +165,22 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "(1-16). The potential sweeps e_begin -> e_vertex1 -> "
                 "e_vertex2 -> e_begin (all in volts) at scan_rate "
                 "(V/s) in e_step (V) increments, repeated n_scans "
-                "times." + _RUN_RULES
+                "times. IMPORTANT: the device requires a closed "
+                "cycle, so e_vertex2 must equal e_begin; an open "
+                "cycle is rejected at script generation on real "
+                "hardware." + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "e_begin": _num(
-                    "Start potential in volts (default -0.5)."
+                    "Start potential in volts (default -0.5). Must "
+                    "equal e_vertex2 (closed cycle)."
                 ),
                 "e_vertex1": _num(
                     "First vertex potential in volts (default 0.5)."
                 ),
                 "e_vertex2": _num(
-                    "Second vertex potential in volts (default -0.5)."
+                    "Second vertex potential in volts (default -0.5). "
+                    "Must equal e_begin (closed cycle)."
                 ),
                 "e_step": _num(
                     "Potential step in volts (default 0.01)."
@@ -229,8 +234,10 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "for t_run seconds, sampling every t_interval "
                 "seconds. Call this whenever the user asks for CP, "
                 "galvanostatic hold, constant-current charging or "
-                "discharging, or an E-t curve on channels 1-16."
-                + _RUN_RULES
+                "discharging, or an E-t curve on channels 1-16. "
+                "WARNING: CP requires a galvanostat (EmStat4/Nexus); "
+                "the EmStat Pico rejects CP at runtime, so warn the "
+                "user before attempting it on a Pico." + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "i_dc": _num(
@@ -592,8 +599,9 @@ async def dispatch_tool(
     Never raises into the caller: unknown tools and handler exceptions
     are converted into structured error JSON with ``is_error=True``.
     Handlers returning structured failures (``{"ok": false, ...}``)
-    are passed through with ``is_error=False`` -- they are valid tool
-    results the model is expected to read and react to.
+    also carry ``is_error=True`` so the agent loop emits
+    tool_call_error and the model sees an explicit error result
+    (engine busy, invalid parameters, ...).
 
     Args:
         registry: The registry to resolve *name* in.
@@ -631,7 +639,11 @@ async def dispatch_tool(
         )
 
     try:
-        return _dumps(result), False
+        # Structured failures from the adapter ({"ok": False, ...}) are
+        # flagged as errors so tool cards and the model both see them
+        # as failures rather than successful results.
+        failed = isinstance(result, dict) and result.get("ok") is False
+        return _dumps(result), failed
     except (TypeError, ValueError) as exc:
         logger.exception("Tool %r returned unserializable result", name)
         return (
