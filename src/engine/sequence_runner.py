@@ -17,8 +17,12 @@ Design (see ``architecture.md`` -> "Preset Sequencer (CMU.17.034)"):
   step's ``delay_s`` is applied only AFTER the last repeat, inserted via
   ``QTimer.singleShot`` so the GUI event loop keeps spinning.
 * ``sequence_mode`` is exposed so the main window can suppress the
-  interactive export prompt and auto-save each step into a
-  ``*_sequence/stepNN_<technique>/`` tree.
+  interactive export prompt. When a ``base_export_dir`` is supplied (only
+  when the user has enabled auto-save), every step auto-saves into one
+  shared ``<base>/<stamp>_sequence/`` parent; the engine's incremental
+  writer adds a ``<ts>_<technique>_autosave/`` leaf per step, so the run
+  looks like a normal export folder whose subfolders are each an ordinary
+  per-step export. Without a base dir the sequence runs without writing.
 
 Signals:
     sequence_progress(int, int): Emitted as ``(completed, total)`` each
@@ -37,7 +41,7 @@ from typing import Optional
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
-from src.data.models import TechniqueConfig
+from src.data.models import AutoSaveConfig, TechniqueConfig
 from src.data.presets import PresetManager
 from src.data.sequence import Sequence, build_config
 
@@ -97,6 +101,7 @@ class SequenceRunner(QObject):
         engine: object,
         connection: object,
         queue: list[_QueueEntry],
+        base_export_dir: Optional[str] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -111,6 +116,14 @@ class SequenceRunner(QObject):
         # Timestamped parent dir for per-step auto-save; fixed once at
         # construction so every step in the run shares one folder.
         self._run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # When an export base dir is supplied, every step auto-saves into
+        # one shared <base>/<stamp>_sequence/ parent so a sequence run
+        # looks like a normal export with per-step subfolders. The engine's
+        # incremental writer adds the <ts>_<technique>_autosave leaf, so
+        # each step subfolder is identical to a standalone auto-save export.
+        self._sequence_dir: Optional[str] = None
+        if base_export_dir:
+            self._attach_step_auto_save(base_export_dir)
 
         # Chain on the engine's lifecycle signals.  Done once here so the
         # connections survive across all steps.
@@ -126,6 +139,7 @@ class SequenceRunner(QObject):
         connection: object,
         sequence: Sequence,
         preset_manager: PresetManager,
+        base_export_dir: Optional[str] = None,
         parent: Optional[QObject] = None,
     ) -> "SequenceRunner":
         """Build a runner by resolving a sequence against a preset store.
@@ -153,19 +167,29 @@ class SequenceRunner(QObject):
         """
         queue: list[_QueueEntry] = []
         for step in sequence.steps:
-            preset = preset_manager.get_preset(step.preset_name)
-            if preset is None:
-                raise KeyError(
-                    f"Sequence step references unknown preset: "
-                    f"{step.preset_name!r}"
-                )
+            # Embedded steps carry their own config; only legacy
+            # reference steps still need the preset store.
+            preset = None
+            if not step.is_embedded:
+                preset = preset_manager.get_preset(step.preset_name)
+                if preset is None:
+                    raise KeyError(
+                        f"Sequence step references unknown preset: "
+                        f"{step.preset_name!r}"
+                    )
             config = build_config(step, preset)
             repeat = max(1, int(step.repeat))
             for rep in range(repeat):
                 # Delay only after the final repeat of the step.
                 delay = step.delay_s if rep == repeat - 1 else 0.0
                 queue.append(_QueueEntry(config=config, delay_s=delay))
-        return cls(engine, connection, queue, parent=parent)
+        return cls(
+            engine,
+            connection,
+            queue,
+            base_export_dir=base_export_dir,
+            parent=parent,
+        )
 
     # -- public API --------------------------------------------------------
 
@@ -183,34 +207,34 @@ class SequenceRunner(QObject):
         """Total number of queued step runs (repeats expanded)."""
         return len(self._queue)
 
-    def step_output_dir(self, base_dir: str, index: int) -> str:
-        """Return the per-step auto-save directory for ``index``.
+    @property
+    def sequence_dir(self) -> Optional[str]:
+        """Shared parent dir all steps auto-save into (None if disabled)."""
+        return self._sequence_dir
 
-        Layout (CMU.17.034)::
+    def _attach_step_auto_save(self, base_export_dir: str) -> None:
+        """Enable per-step auto-save into one shared sequence folder.
 
-            <base_dir>/<stamp>_sequence/stepNN_<technique>/
+        Every step's config is pointed at ``<base>/<stamp>_sequence/``.
+        The engine's incremental writer then creates a
+        ``<ts>_<technique>_autosave/`` leaf per step, so the run lands as
+        a normal-looking export folder whose subfolders are each an
+        ordinary per-step export::
 
-        ``NN`` is the 1-indexed step number zero-padded to two digits.
-        The directory is not created here -- the caller (engine
-        auto-save) materializes it.
+            <base>/<stamp>_sequence/
+                <ts>_<technique>_autosave/   <- step 1
+                <ts>_<technique>_autosave/   <- step 2
 
         Args:
-            base_dir: Root exports directory.
-            index: 0-indexed position into the queue.
-
-        Returns:
-            The composed per-step output directory path.
+            base_export_dir: Root export directory the user configured.
         """
-        entry = self._queue[index]
-        technique = entry.config.technique or "unknown"
-        parent = os.path.join(base_dir, f"{self._run_stamp}_sequence")
-        return os.path.join(
-            parent, f"step{index + 1:02d}_{technique}"
+        self._sequence_dir = os.path.join(
+            base_export_dir, f"{self._run_stamp}_sequence"
         )
-
-    def current_output_dir(self, base_dir: str) -> str:
-        """Return the auto-save dir for the step about to run / running."""
-        return self.step_output_dir(base_dir, self._index)
+        for entry in self._queue:
+            entry.config.auto_save = AutoSaveConfig(
+                enabled=True, output_dir=self._sequence_dir
+            )
 
     def start(self) -> None:
         """Launch the first step.

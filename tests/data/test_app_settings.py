@@ -12,8 +12,13 @@ never touched.
 
 from __future__ import annotations
 
+import os
+
 from src.data.app_settings import (
+    default_export_dir,
+    get_export_dir,
     get_last_preset_file,
+    set_export_dir,
     set_last_preset_file,
 )
 from src.data.presets import Preset, PresetManager
@@ -44,6 +49,49 @@ def test_missing_settings_file_returns_none(tmp_path) -> None:
     """A never-written settings file yields no pointer (no crash)."""
     settings = tmp_path / "does_not_exist.json"
     assert get_last_preset_file(path=str(settings)) is None
+
+
+def test_export_dir_defaults_when_unset(tmp_path) -> None:
+    """With no override, get_export_dir falls back to the build default."""
+    settings = tmp_path / "app_settings.json"
+    assert get_export_dir(path=str(settings)) == default_export_dir()
+
+
+def test_export_dir_set_then_get_round_trip(tmp_path) -> None:
+    """A stored export dir reads back identically and overrides default."""
+    settings = tmp_path / "app_settings.json"
+    target = str(tmp_path / "my_results")
+
+    set_export_dir(target, path=str(settings))
+    assert get_export_dir(path=str(settings)) == target
+    assert get_export_dir(path=str(settings)) != default_export_dir()
+
+
+def test_export_dir_clear_reverts_to_default(tmp_path) -> None:
+    """Clearing the override reverts get_export_dir to the default."""
+    settings = tmp_path / "app_settings.json"
+    set_export_dir(str(tmp_path / "x"), path=str(settings))
+    assert get_export_dir(path=str(settings)) != default_export_dir()
+
+    set_export_dir(None, path=str(settings))
+    assert get_export_dir(path=str(settings)) == default_export_dir()
+
+
+def test_default_export_dir_is_absolute(tmp_path) -> None:
+    """The build default is an absolute path ending in 'exports'."""
+    d = default_export_dir()
+    assert os.path.isabs(d)
+    assert os.path.basename(d) == "exports"
+
+
+def test_export_dir_independent_of_preset_pointer(tmp_path) -> None:
+    """Export dir and last-preset pointer don't clobber each other."""
+    settings = tmp_path / "app_settings.json"
+    set_last_preset_file("store.mux16", path=str(settings))
+    set_export_dir(str(tmp_path / "out"), path=str(settings))
+
+    assert get_last_preset_file(path=str(settings)) == "store.mux16"
+    assert get_export_dir(path=str(settings)) == str(tmp_path / "out")
 
 
 def test_auto_load_returns_presets_from_saved_file(tmp_path) -> None:

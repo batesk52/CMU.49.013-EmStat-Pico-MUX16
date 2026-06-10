@@ -100,14 +100,18 @@ def test_sequence_dock_exists(qapp) -> None:
 def test_sequence_suppresses_export_and_locks_start(
     qapp, tmp_path, monkeypatch
 ) -> None:
-    """A running sequence raises no modal and keeps Start disabled."""
-    # Block every modal entry point used on the finished path so a stray
-    # prompt fails loudly.
-    for name in ("question", "information", "critical", "warning"):
+    """A sequence raises no per-step modal and keeps Start disabled.
+
+    The only modal allowed is the end-of-run save prompt (auto-save is
+    off), which we decline with No; any per-step prompt fails loudly.
+    """
+    # No per-step modal may block the queue.
+    for name in ("information", "critical", "warning"):
         monkeypatch.setattr(QMessageBox, name, staticmethod(_no_modal))
-    monkeypatch.setattr(
-        main_window_mod.QMessageBox, "question", staticmethod(_no_modal)
-    )
+    # The completion save-prompt is expected -- decline it (No).
+    decline = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
+    monkeypatch.setattr(QMessageBox, "question", decline)
+    monkeypatch.setattr(main_window_mod.QMessageBox, "question", decline)
 
     window = MainWindow()
     try:
@@ -171,6 +175,224 @@ def test_sequence_suppresses_export_and_locks_start(
         assert window._sequence_active is False  # noqa: SLF001
         # Start re-enabled now the sequence is done (device connected).
         assert window._meas_panel._start_btn.isEnabled() is True  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_measurement_started_switches_plot_technique(qapp) -> None:
+    """Each engine ``measurement_started`` retargets the live plot.
+
+    Sequence steps launch straight through the engine (not the single-run
+    Start path), so the plot must follow ``measurement_started`` or a mixed
+    CV->EIS->CA sequence would draw every step on the first step's axes
+    (e.g. CV data on an EIS Nyquist view).
+    """
+    window = MainWindow()
+    try:
+        # An EIS step makes the active tab EIS-mode (Nyquist/Bode selector).
+        window._on_measurement_started("eis")  # noqa: SLF001
+        container = window._plot_container  # noqa: SLF001
+        assert container._technique == "eis"  # noqa: SLF001
+        assert container._selector_row.isHidden() is False  # noqa: SLF001
+
+        # A following CV run retargets to the time/IV view (stack 0) and
+        # hides the EIS-only selector -- i.e. the CV plot is visible again.
+        window._on_measurement_started("cv")  # noqa: SLF001
+        container = window._plot_container  # noqa: SLF001
+        assert container._technique == "cv"  # noqa: SLF001
+        assert container._stack.currentIndex() == 0  # noqa: SLF001
+        assert container._selector_row.isHidden() is True  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_creates_one_plot_tab_per_step(qapp) -> None:
+    """A sequence accumulates a labelled live-plot tab for each step."""
+    window = MainWindow()
+    try:
+        window._on_sequence_started()  # noqa: SLF001
+        # Sequence start clears the tab strip; steps then add tabs.
+        assert window._plot_tabs.count() == 0  # noqa: SLF001
+
+        window._on_measurement_started("cv")  # noqa: SLF001
+        window._on_measurement_started("eis")  # noqa: SLF001
+        window._on_measurement_started("ca")  # noqa: SLF001
+
+        assert window._plot_tabs.count() == 3  # noqa: SLF001
+        labels = [
+            window._plot_tabs.tabText(i)  # noqa: SLF001
+            for i in range(3)
+        ]
+        assert labels == ["1·CV", "2·EIS", "3·CA"]
+        # The active container tracks the most recently started step.
+        assert window._plot_container._technique == "ca"  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_single_run_uses_one_replaced_tab(qapp) -> None:
+    """A single run keeps one tab, replaced (not accumulated) per run."""
+    window = MainWindow()
+    try:
+        window._on_measurement_started("cv")  # noqa: SLF001
+        assert window._plot_tabs.count() == 1  # noqa: SLF001
+        assert window._plot_tabs.tabText(0) == "CV"  # noqa: SLF001
+
+        window._on_measurement_started("eis")  # noqa: SLF001
+        assert window._plot_tabs.count() == 1  # noqa: SLF001 (replaced)
+        assert window._plot_tabs.tabText(0) == "EIS"  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_export_base_respects_auto_save_toggle(qapp) -> None:
+    """The sequencer auto-saves only when the GUI auto-save toggle is on.
+
+    Off by default -> no base dir (the sequence writes nothing). Enabling
+    the auto-save toggle opts the sequence in, sharing the single-run
+    policy rather than forcing saves on.
+    """
+    window = MainWindow()
+    try:
+        # Opt-in default: auto-save off -> no export base.
+        assert window._meas_panel.is_auto_save_enabled() is False  # noqa: SLF001
+        assert window._sequence_export_base() is None  # noqa: SLF001
+
+        # User enables auto-save -> the sequencer gets a real base dir.
+        window._meas_panel.set_auto_save(True, "")  # noqa: SLF001
+        base = window._sequence_export_base()  # noqa: SLF001
+        assert base
+    finally:
+        window.close()
+
+
+def test_preset_selection_does_not_enable_auto_save(
+    qapp, tmp_path
+) -> None:
+    """Selecting a preset never auto-enables auto-save (opt-in only).
+
+    Even a preset carrying ``auto_save=True`` must leave the toggle off;
+    the user activates auto-save explicitly in the GUI.
+    """
+    from src.data.presets import Preset, PresetManager
+
+    window = MainWindow()
+    try:
+        # Swap in a temp store so we never touch the real user store.
+        mgr = PresetManager(path=str(tmp_path / "store.mux16"))
+        mgr.add_preset(
+            "forces_save",
+            Preset(
+                name="forces_save",
+                technique="cv",
+                channels=[1],
+                auto_save=True,
+            ),
+        )
+        window._preset_mgr = mgr  # noqa: SLF001
+
+        assert window._meas_panel.is_auto_save_enabled() is False  # noqa: SLF001
+        window._on_preset_selected("forces_save")  # noqa: SLF001
+        assert window._meas_panel.is_auto_save_enabled() is False  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_completion_autosaved_does_not_prompt(
+    qapp, monkeypatch
+) -> None:
+    """When the run already auto-saved, completion reports without a prompt."""
+    from src.data.models import MeasurementResult
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_no_modal))
+    window = MainWindow()
+    try:
+        window._sequence_autosaved = True  # noqa: SLF001
+        window._sequence_results = [  # noqa: SLF001
+            MeasurementResult(technique="cv")
+        ]
+        # Must not raise via _no_modal (no prompt on the auto-saved path).
+        window._on_sequence_completed()  # noqa: SLF001
+        assert window._sequence_results == []  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_completion_saves_all_steps_when_accepted(
+    qapp, tmp_path, monkeypatch
+) -> None:
+    """Auto-save off + accept the prompt -> every step is written.
+
+    Lands one ``<stamp>_sequence`` parent with a ``stepNN_<technique>``
+    subfolder per step (each an ordinary per-step export).
+    """
+    from src.data.models import DataPoint, MeasurementResult
+
+    monkeypatch.setattr(
+        main_window_mod, "get_export_dir", lambda: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda *a, **k: None)
+    )
+    window = MainWindow()
+    try:
+
+        def _result(tech):
+            r = MeasurementResult(technique=tech)
+            r.add_point(
+                DataPoint(
+                    timestamp=0.1,
+                    channel=1,
+                    variables={"potential": 0.1, "current": 1e-5},
+                )
+            )
+            return r
+
+        window._sequence_autosaved = False  # noqa: SLF001
+        window._sequence_results = [  # noqa: SLF001
+            _result("cv"),
+            _result("eis"),
+        ]
+        window._on_sequence_completed()  # noqa: SLF001
+
+        seq_dirs = list(tmp_path.glob("*_sequence"))
+        assert len(seq_dirs) == 1
+        steps = sorted(p.name for p in seq_dirs[0].iterdir())
+        assert steps == ["step01_cv", "step02_eis"]
+        assert (seq_dirs[0] / "step01_cv" / "ch01.csv").exists()
+        assert window._sequence_results == []  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_sequence_completion_declined_saves_nothing(
+    qapp, tmp_path, monkeypatch
+) -> None:
+    """Declining the completion prompt writes no files."""
+    from src.data.models import MeasurementResult
+
+    monkeypatch.setattr(
+        main_window_mod, "get_export_dir", lambda: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: QMessageBox.StandardButton.No),
+    )
+    window = MainWindow()
+    try:
+        window._sequence_autosaved = False  # noqa: SLF001
+        window._sequence_results = [  # noqa: SLF001
+            MeasurementResult(technique="cv")
+        ]
+        window._on_sequence_completed()  # noqa: SLF001
+        assert list(tmp_path.glob("*_sequence")) == []
+        assert window._sequence_results == []  # noqa: SLF001
     finally:
         window.close()
 

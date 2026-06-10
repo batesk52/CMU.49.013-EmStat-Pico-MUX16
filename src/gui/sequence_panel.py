@@ -13,10 +13,11 @@ the current :class:`~src.data.sequence.Sequence` on Run, and wires the
 runner's progress / finished / error signals back to the progress label
 and the Run/Stop enabled-state.
 
-Reordering uses a ``QListWidget`` in ``InternalMove`` drag-drop mode; each
-row stores its :class:`~src.data.sequence.SequenceStep` as item data so
-the visual order IS the sequence order (read back via
-:meth:`build_sequence`).
+Each step is an expandable :class:`~src.gui.sequence_step_widget.
+SequenceStepWidget` stacked in a scroll area; the visual order IS the
+sequence order (reorder via each block's buttons, read back via
+:meth:`build_sequence`). Clicking a block expands it to a full editor for
+the step's embedded config, so the sequence carries the values.
 """
 
 from __future__ import annotations
@@ -24,19 +25,15 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
-    QAbstractItemView,
-    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QSpinBox,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -44,11 +41,9 @@ from PyQt6.QtWidgets import (
 from src.data.presets import PresetManager
 from src.data.sequence import Sequence, SequenceStep
 from src.engine.sequence_runner import SequenceRunner
+from src.gui.sequence_step_widget import SequenceStepWidget
 
 logger = logging.getLogger(__name__)
-
-# Item-data role storing the SequenceStep on each list row.
-_STEP_ROLE = Qt.ItemDataRole.UserRole
 
 # File dialog filter for sequence files (CMU.17.034).
 _SEQUENCE_FILE_FILTER = "MUX16 sequences (*.mux16seq)"
@@ -58,6 +53,12 @@ _SEQUENCE_FILE_SUFFIX = ".mux16seq"
 # None when disconnected).  Injected so the panel never owns the
 # connection lifecycle.
 ConnectionProvider = Callable[[], object]
+
+# Type alias: a zero-arg callable returning the base export directory for
+# per-step auto-save, or ``None`` when auto-save is disabled (so the
+# sequence runs without writing anything). Injected so the panel never
+# decides the auto-save policy itself.
+ExportBaseProvider = Callable[[], Optional[str]]
 
 
 class SequencePanel(QWidget):
@@ -88,18 +89,23 @@ class SequencePanel(QWidget):
 
     sequence_started = pyqtSignal()
     sequence_stopped = pyqtSignal()
+    # Emitted only on clean completion of the whole queue (not on stop or
+    # error), so the main window can offer to save the run's data.
+    sequence_completed = pyqtSignal()
 
     def __init__(
         self,
         preset_manager: Optional[PresetManager] = None,
         engine: Optional[object] = None,
         connection_provider: Optional[ConnectionProvider] = None,
+        export_base_provider: Optional[ExportBaseProvider] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._preset_mgr = preset_manager
         self._engine = engine
         self._connection_provider = connection_provider
+        self._export_base_provider = export_base_provider
         self._runner: Optional[SequenceRunner] = None
         self._setup_ui()
         self._update_buttons(running=False)
@@ -120,6 +126,16 @@ class SequencePanel(QWidget):
         """Inject (or replace) the connection-provider callable."""
         self._connection_provider = provider
 
+    def set_export_base_provider(
+        self, provider: ExportBaseProvider
+    ) -> None:
+        """Inject the callable that decides per-step auto-save.
+
+        Returns the base export directory when auto-save is enabled, or
+        ``None`` to run the sequence without writing anything.
+        """
+        self._export_base_provider = provider
+
     # -- UI construction ---------------------------------------------------
 
     def _setup_ui(self) -> None:
@@ -127,52 +143,29 @@ class SequencePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        layout.addWidget(QLabel("Sequence steps (drag to reorder):"))
-
-        # Reorderable step list.  InternalMove lets the user drag rows;
-        # the visual order IS the sequence order.
-        self._list = QListWidget()
-        self._list.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
-        )
-        self._list.setDragDropMode(
-            QAbstractItemView.DragDropMode.InternalMove
-        )
-        layout.addWidget(self._list, 1)
-
-        # Per-step option editors (apply to the selected row).
-        opt_row = QHBoxLayout()
-        opt_row.addWidget(QLabel("Repeat:"))
-        self._repeat_spin = QSpinBox()
-        self._repeat_spin.setRange(1, 9999)
-        self._repeat_spin.setValue(1)
-        self._repeat_spin.valueChanged.connect(self._on_option_changed)
-        opt_row.addWidget(self._repeat_spin)
-
-        opt_row.addWidget(QLabel("Delay (s):"))
-        self._delay_spin = QDoubleSpinBox()
-        self._delay_spin.setDecimals(2)
-        self._delay_spin.setRange(0.0, 86400.0)
-        self._delay_spin.setSingleStep(1.0)
-        self._delay_spin.valueChanged.connect(self._on_option_changed)
-        opt_row.addWidget(self._delay_spin)
-        opt_row.addStretch()
-        layout.addLayout(opt_row)
-
-        self._list.currentItemChanged.connect(
-            self._on_current_item_changed
+        layout.addWidget(
+            QLabel("Sequence steps (click a step to expand & edit):")
         )
 
-        # Add / remove row.
+        # Scrollable stack of expandable step blocks; the visual order IS
+        # the sequence order. Reorder/remove is via each block's buttons.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self._steps_container = QWidget()
+        self._steps_layout = QVBoxLayout(self._steps_container)
+        self._steps_layout.setContentsMargins(0, 0, 0, 0)
+        self._steps_layout.setSpacing(3)
+        self._steps_layout.addStretch(1)  # keep blocks top-aligned
+        scroll.setWidget(self._steps_container)
+        layout.addWidget(scroll, 1)
+
+        # Add row (removal is per-block).
         edit_row = QHBoxLayout()
         self._add_btn = QPushButton("Add step")
         self._add_btn.setToolTip("Add a step from the loaded presets")
         self._add_btn.clicked.connect(self._on_add_step)
         edit_row.addWidget(self._add_btn)
-
-        self._remove_btn = QPushButton("Remove step")
-        self._remove_btn.clicked.connect(self._on_remove_step)
-        edit_row.addWidget(self._remove_btn)
+        edit_row.addStretch()
         layout.addLayout(edit_row)
 
         # Save / Load row.
@@ -215,27 +208,38 @@ class SequencePanel(QWidget):
 
     # -- step model --------------------------------------------------------
 
-    def _step_label(self, step: SequenceStep) -> str:
-        """Return the row caption for a step."""
-        suffix = ""
-        if step.repeat and step.repeat != 1:
-            suffix += f"  x{step.repeat}"
-        if step.delay_s:
-            suffix += f"  +{step.delay_s:g}s"
-        return f"{step.preset_name}{suffix}"
+    def _step_widgets(self) -> list[SequenceStepWidget]:
+        """Return the step blocks in visual (sequence) order."""
+        widgets: list[SequenceStepWidget] = []
+        for i in range(self._steps_layout.count()):
+            w = self._steps_layout.itemAt(i).widget()
+            if isinstance(w, SequenceStepWidget):
+                widgets.append(w)
+        return widgets
+
+    def _renumber(self) -> None:
+        """Refresh each block's 1-based position label."""
+        for i, w in enumerate(self._step_widgets()):
+            w.set_index(i + 1)
 
     def add_step(self, step: SequenceStep) -> None:
-        """Append a step block to the list.
+        """Append a step block to the stack.
 
         Args:
             step: The :class:`SequenceStep` to add.
         """
-        item = QListWidgetItem(self._step_label(step))
-        item.setData(_STEP_ROLE, step)
-        self._list.addItem(item)
+        widget = SequenceStepWidget(step)
+        widget.move_up.connect(self._on_move_up)
+        widget.move_down.connect(self._on_move_down)
+        widget.remove.connect(self._on_remove)
+        # Insert before the trailing stretch so blocks stay top-aligned.
+        self._steps_layout.insertWidget(
+            self._steps_layout.count() - 1, widget
+        )
+        self._renumber()
 
     def build_sequence(self, name: str = "sequence") -> Sequence:
-        """Compose a :class:`Sequence` from the current row order.
+        """Compose a :class:`Sequence` from the current block order.
 
         Args:
             name: Display name for the sequence.
@@ -243,57 +247,86 @@ class SequencePanel(QWidget):
         Returns:
             A :class:`Sequence` whose ``steps`` match the visual order.
         """
-        steps: list[SequenceStep] = []
-        for i in range(self._list.count()):
-            step = self._list.item(i).data(_STEP_ROLE)
-            if isinstance(step, SequenceStep):
-                steps.append(step)
+        steps = [w.step() for w in self._step_widgets()]
         return Sequence(name=name, steps=steps)
 
     def load_sequence(self, sequence: Sequence) -> None:
-        """Replace the list contents with a sequence's steps.
+        """Replace the stack with a sequence's steps.
 
         Args:
-            sequence: The sequence whose steps populate the list.
+            sequence: The sequence whose steps populate the stack.
         """
-        self._list.clear()
+        for w in self._step_widgets():
+            self._steps_layout.removeWidget(w)
+            w.deleteLater()
         for step in sequence.steps:
-            self.add_step(step)
+            self.add_step(self._upgrade_legacy_step(step))
 
-    # -- option editing ----------------------------------------------------
+    def _upgrade_legacy_step(self, step: SequenceStep) -> SequenceStep:
+        """Embed a legacy reference step's config from the store, if possible.
 
-    @pyqtSlot()
-    def _on_current_item_changed(self, *args: object) -> None:
-        """Reflect the selected row's options in the option spin boxes."""
-        item = self._list.currentItem()
-        step = item.data(_STEP_ROLE) if item is not None else None
-        enabled = isinstance(step, SequenceStep)
-        self._repeat_spin.setEnabled(enabled)
-        self._delay_spin.setEnabled(enabled)
-        if not enabled:
+        Older ``*.mux16seq`` files stored only a preset-name reference;
+        embedding a full copy on load lets the step editor populate. Falls
+        back to the original step when there is no store or the named
+        preset is missing (it still runs by resolving against the store).
+
+        Args:
+            step: A loaded step (possibly legacy reference-only).
+
+        Returns:
+            An embedded copy, or the original step if it can't be upgraded.
+        """
+        if step.is_embedded or self._preset_mgr is None:
+            return step
+        preset = self._preset_mgr.get_preset(step.preset_name)
+        if preset is None:
+            return step
+        upgraded = SequenceStep.from_preset(
+            step.preset_name,
+            preset,
+            repeat=step.repeat,
+            delay_s=step.delay_s,
+        )
+        if step.channels_override is not None:
+            upgraded.channels = list(step.channels_override)
+        if step.mode_override is not None:
+            upgraded.electrode_config_mode = step.mode_override
+        return upgraded
+
+    # -- reorder / remove --------------------------------------------------
+
+    def _move_widget(self, widget: SequenceStepWidget, delta: int) -> None:
+        """Move a block by ``delta`` positions, clamped to the ends."""
+        widgets = self._step_widgets()
+        if widget not in widgets:
             return
-        self._repeat_spin.blockSignals(True)
-        self._delay_spin.blockSignals(True)
-        self._repeat_spin.setValue(max(1, int(step.repeat)))
-        self._delay_spin.setValue(float(step.delay_s))
-        self._repeat_spin.blockSignals(False)
-        self._delay_spin.blockSignals(False)
-
-    @pyqtSlot()
-    def _on_option_changed(self, *args: object) -> None:
-        """Write the option spin box values back onto the selected step."""
-        item = self._list.currentItem()
-        if item is None:
+        i = widgets.index(widget)
+        j = i + delta
+        if j < 0 or j >= len(widgets):
             return
-        step = item.data(_STEP_ROLE)
-        if not isinstance(step, SequenceStep):
-            return
-        step.repeat = self._repeat_spin.value()
-        step.delay_s = self._delay_spin.value()
-        item.setData(_STEP_ROLE, step)
-        item.setText(self._step_label(step))
+        self._steps_layout.removeWidget(widget)
+        # Account for the trailing stretch at the end of the layout.
+        self._steps_layout.insertWidget(j, widget)
+        self._renumber()
 
-    # -- add / remove ------------------------------------------------------
+    @pyqtSlot(object)
+    def _on_move_up(self, widget: SequenceStepWidget) -> None:
+        """Move a block one position earlier."""
+        self._move_widget(widget, -1)
+
+    @pyqtSlot(object)
+    def _on_move_down(self, widget: SequenceStepWidget) -> None:
+        """Move a block one position later."""
+        self._move_widget(widget, +1)
+
+    @pyqtSlot(object)
+    def _on_remove(self, widget: SequenceStepWidget) -> None:
+        """Remove a block from the stack."""
+        self._steps_layout.removeWidget(widget)
+        widget.deleteLater()
+        self._renumber()
+
+    # -- add ---------------------------------------------------------------
 
     @pyqtSlot()
     def _on_add_step(self) -> None:
@@ -323,16 +356,15 @@ class SequencePanel(QWidget):
         )
         if not ok or not key:
             return
-        self.add_step(SequenceStep(preset_name=key))
-
-    @pyqtSlot()
-    def _on_remove_step(self) -> None:
-        """Remove the currently-selected step."""
-        row = self._list.currentRow()
-        if row < 0:
+        preset = self._preset_mgr.get_preset(key)
+        if preset is None:
+            QMessageBox.warning(
+                self, "Unknown Preset", f"Preset {key!r} not found."
+            )
             return
-        item = self._list.takeItem(row)
-        del item
+        # Seed a self-contained step: it copies the preset's values and is
+        # independent from here on (the sequence carries the values).
+        self.add_step(SequenceStep.from_preset(key, preset))
 
     # -- persistence -------------------------------------------------------
 
@@ -407,6 +439,14 @@ class SequencePanel(QWidget):
             if self._connection_provider is not None
             else None
         )
+        # Auto-save policy lives outside the panel: the provider returns a
+        # base dir when the user enabled auto-save, else None (run without
+        # writing). None keeps every step config's auto_save unset.
+        base_export_dir = (
+            self._export_base_provider()
+            if self._export_base_provider is not None
+            else None
+        )
 
         try:
             runner = SequenceRunner.from_sequence(
@@ -414,6 +454,7 @@ class SequencePanel(QWidget):
                 connection,
                 sequence,
                 self._preset_mgr,
+                base_export_dir=base_export_dir,
                 parent=self,
             )
         except (KeyError, ValueError) as exc:
@@ -465,6 +506,9 @@ class SequencePanel(QWidget):
         """Restore controls when the sequence completes."""
         self._teardown_runner()
         self._progress_label.setText("Complete")
+        # Signal a CLEAN finish (teardown already emitted sequence_stopped
+        # to restore controls); the main window prompts to save here.
+        self.sequence_completed.emit()
 
     @pyqtSlot(str)
     def _on_error(self, message: str) -> None:
@@ -489,7 +533,8 @@ class SequencePanel(QWidget):
         self._run_btn.setEnabled(not running)
         self._stop_btn.setEnabled(running)
         self._add_btn.setEnabled(not running)
-        self._remove_btn.setEnabled(not running)
         self._save_btn.setEnabled(not running)
         self._load_btn.setEnabled(not running)
-        self._list.setEnabled(not running)
+        # Lock every step editor while the sequence runs.
+        for w in self._step_widgets():
+            w.set_controls_enabled(not running)

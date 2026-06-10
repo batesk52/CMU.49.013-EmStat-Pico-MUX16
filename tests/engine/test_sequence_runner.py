@@ -253,6 +253,59 @@ def test_late_finish_after_stop_adds_no_phantom_step(qapp) -> None:
     assert finished == []
 
 
+def test_base_export_dir_enables_shared_per_step_auto_save(qapp) -> None:
+    """A base export dir auto-saves every step into one sequence folder.
+
+    All queue entries (repeats included) point at the SAME
+    ``<base>/<stamp>_sequence`` parent with auto-save enabled, so the
+    engine's writer drops each step's ``<ts>_<technique>_autosave`` leaf
+    inside that one folder.
+    """
+    from src.data.presets import Preset, PresetManager
+    from src.data.sequence import Sequence, SequenceStep
+
+    mgr = PresetManager(path=str(_tmp_store()))
+    mgr.add_preset("cv1", Preset(name="cv1", technique="cv", channels=[1]))
+    mgr.add_preset("ca1", Preset(name="ca1", technique="ca", channels=[1]))
+    seq = Sequence(
+        name="s",
+        steps=[
+            SequenceStep(preset_name="cv1"),
+            SequenceStep(preset_name="ca1", repeat=2),
+        ],
+    )
+
+    base = os.path.join("some", "export", "root")
+    runner = SequenceRunner.from_sequence(
+        MockEngine(), None, seq, mgr, base_export_dir=base
+    )
+
+    # repeat=2 -> 3 queued runs, all auto-saving into one shared parent.
+    assert runner.total_steps == 3
+    parents = {e.config.auto_save.output_dir for e in runner._queue}
+    assert len(parents) == 1
+    parent = parents.pop()
+    assert parent.startswith(base)
+    assert os.path.basename(parent).endswith("_sequence")
+    assert all(e.config.auto_save.enabled for e in runner._queue)
+    assert runner.sequence_dir == parent
+
+
+def test_no_base_export_dir_leaves_auto_save_unset(qapp) -> None:
+    """Without a base dir, steps carry no auto-save (opt-in default off)."""
+    from src.data.presets import Preset, PresetManager
+    from src.data.sequence import Sequence, SequenceStep
+
+    mgr = PresetManager(path=str(_tmp_store()))
+    mgr.add_preset("cv1", Preset(name="cv1", technique="cv", channels=[1]))
+    seq = Sequence(name="s", steps=[SequenceStep(preset_name="cv1")])
+
+    runner = SequenceRunner.from_sequence(MockEngine(), None, seq, mgr)
+
+    assert all(e.config.auto_save is None for e in runner._queue)
+    assert runner.sequence_dir is None
+
+
 def _tmp_store():
     """Return a throwaway preset-store path in a temp dir."""
     import tempfile

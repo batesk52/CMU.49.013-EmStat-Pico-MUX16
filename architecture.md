@@ -236,7 +236,10 @@ blocks on a new sidebar tab and run them back-to-back on the MUX-16.
   chains `engine.start_measurement` calls, advancing on the existing
   `measurement_finished` signal and gating on `isRunning()` so the single-run
   guard is honoured. The interactive export prompt is suppressed in "sequence
-  mode" (per-step auto-save into a `*_sequence/stepNN_<technique>/` tree).
+  mode"; auto-save is opt-in (the same GUI toggle as single runs). When enabled,
+  all steps share one `<export_dir>/<stamp>_sequence/` parent and the engine's
+  writer adds a `<ts>_<technique>_autosave/` leaf per step, so the run looks like
+  a normal export folder whose subfolders are each an ordinary per-step export.
 
 **Why not a device-side multi-method script?** The Pico's MethodSCRIPT can loop a
 single technique but not chain heterogeneous techniques with per-step electrode

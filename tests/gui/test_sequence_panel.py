@@ -5,8 +5,8 @@ Exercises :class:`src.gui.sequence_panel.SequencePanel` headless
 order maps to ``Sequence.steps`` order, and a sequence round-trips
 through a temp ``*.mux16seq`` file.
 
-Reordering is driven via the list model API (``takeItem`` /
-``insertItem``) -- NOT a physical drag -- so the test is deterministic.
+Reordering is driven via the panel's reorder handlers (the per-block
+move buttons) -- NOT a physical drag -- so the test is deterministic.
 """
 
 from __future__ import annotations
@@ -49,15 +49,16 @@ def test_three_blocks_added_in_order(qapp) -> None:
     assert _step_names(panel) == ["cv1", "ca1", "dpv1"]
 
 
-def test_reorder_via_model_changes_sequence_order(qapp) -> None:
-    """Moving a row via the list model reorders Sequence.steps."""
+def test_reorder_via_buttons_changes_sequence_order(qapp) -> None:
+    """Moving a block down via its reorder control reorders Sequence.steps."""
     panel = SequencePanel()
     for name in ("cv1", "ca1", "dpv1"):
         panel.add_step(SequenceStep(preset_name=name))
 
-    # Move the first row (cv1) to the end via the model API.
-    item = panel._list.takeItem(0)  # noqa: SLF001 - test introspection
-    panel._list.insertItem(panel._list.count(), item)  # noqa: SLF001
+    # Move the first block (cv1) to the end via the reorder handler.
+    first = panel._step_widgets()[0]  # noqa: SLF001 - test introspection
+    panel._on_move_down(first)  # noqa: SLF001 -> [ca1, cv1, dpv1]
+    panel._on_move_down(first)  # noqa: SLF001 -> [ca1, dpv1, cv1]
 
     assert _step_names(panel) == ["ca1", "dpv1", "cv1"]
 
@@ -89,3 +90,30 @@ def test_save_reload_round_trips(qapp, tmp_path) -> None:
         "ca1",
         "dpv1",
     ]
+
+
+def test_legacy_step_upgraded_to_embedded_on_load(qapp, tmp_path) -> None:
+    """A legacy reference step embeds its config from the store on load."""
+    from src.data.presets import Preset, PresetManager
+
+    mgr = PresetManager(path=str(tmp_path / "store.mux16"))
+    mgr.add_preset(
+        "cv1",
+        Preset(
+            name="cv1",
+            technique="cv",
+            params={"scan_rate": 0.1},
+            channels=[1, 4],
+        ),
+    )
+    panel = SequencePanel(preset_manager=mgr)
+    # A legacy reference step (preset_name only, no embedded technique).
+    panel.load_sequence(
+        Sequence(name="s", steps=[SequenceStep(preset_name="cv1")])
+    )
+
+    step = panel.build_sequence().steps[0]
+    assert step.is_embedded
+    assert step.technique == "cv"
+    assert step.channels == [1, 4]
+    assert step.params["scan_rate"] == 0.1

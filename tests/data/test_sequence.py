@@ -107,3 +107,76 @@ def test_build_config_raises_on_mode_c_empty_re_ce() -> None:
 
     with pytest.raises(ValueError):
         build_config(step, preset)
+
+
+def test_from_preset_embeds_a_self_contained_copy() -> None:
+    """from_preset snapshots the preset into the step (a copy, not a ref)."""
+    preset = Preset(
+        name="CV Std",
+        technique="cv",
+        params={"scan_rate": 0.1, "e_step": 0.01},
+        channels=[1, 4],
+        electrode_config_mode="external",
+    )
+    step = SequenceStep.from_preset("cv_std", preset, repeat=2, delay_s=1.0)
+
+    assert step.is_embedded
+    assert step.preset_name == "cv_std"  # origin label retained
+    assert step.technique == "cv"
+    assert step.params == {"scan_rate": 0.1, "e_step": 0.01}
+    assert step.channels == [1, 4]
+    assert step.repeat == 2 and step.delay_s == 1.0
+
+    # Editing the step must not mutate the source preset.
+    step.params["scan_rate"] = 0.5
+    step.channels.append(7)
+    assert preset.params["scan_rate"] == 0.1
+    assert preset.channels == [1, 4]
+
+
+def test_build_config_embedded_uses_step_values_not_preset() -> None:
+    """An embedded step's edited values win; the preset is ignored."""
+    preset = Preset(
+        name="CV", technique="cv", params={"scan_rate": 0.1}, channels=[1, 4]
+    )
+    step = SequenceStep.from_preset("cv", preset)
+    step.params["scan_rate"] = 0.25  # edit the step
+    step.channels = [2, 3, 5]
+
+    # No preset passed -> embedded values still resolve the run.
+    cfg = build_config(step, preset=None)
+    assert cfg.technique == "cv"
+    assert cfg.params["scan_rate"] == 0.25
+    assert cfg.channels == [2, 3, 5]
+
+
+def test_build_config_legacy_without_preset_raises() -> None:
+    """A legacy reference step with no resolving preset raises KeyError."""
+    step = SequenceStep(preset_name="missing")  # no embedded technique
+    with pytest.raises(KeyError):
+        build_config(step, preset=None)
+
+
+def test_embedded_step_round_trips(tmp_path) -> None:
+    """An embedded step survives save -> load with its values intact."""
+    preset = Preset(
+        name="EIS",
+        technique="eis",
+        params={"freq_start": 50000.0, "freq_end": 5.0},
+        channels=[1, 2],
+        electrode_config_mode="external",
+    )
+    step = SequenceStep.from_preset("eis", preset)
+    step.params["freq_end"] = 1.0
+    seq = Sequence(name="s", steps=[step])
+
+    path = tmp_path / "s.mux16seq"
+    seq.save_to_path(str(path))
+    loaded = Sequence.load_from_path(str(path))
+
+    s0 = loaded.steps[0]
+    assert s0.is_embedded
+    assert s0.technique == "eis"
+    assert s0.params["freq_end"] == 1.0
+    assert s0.channels == [1, 2]
+    assert loaded == seq

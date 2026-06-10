@@ -34,29 +34,82 @@ SEQUENCE_FILE_VERSION = 1
 
 @dataclass
 class SequenceStep:
-    """One step in a preset sequence.
+    """One self-contained step in a preset sequence.
+
+    A step **carries its own resolved configuration** (technique, params,
+    channels, electrode mode). It is seeded from a preset when added, but
+    from then on it owns the values: editing a step changes only the step,
+    and the sequence trumps the preset store, so a ``*.mux16seq`` is
+    portable on its own. ``preset_name`` is retained only as an origin
+    label (which preset seeded it).
+
+    Older ``*.mux16seq`` files saved before embedding stored just a
+    preset-name reference plus optional overrides; such *legacy* steps
+    (no ``technique``) are still honoured by :func:`build_config`, which
+    resolves them against the preset store.
 
     Attributes:
-        preset_name: Key of the preset this step runs.  Resolved
-            against a :class:`~src.data.presets.PresetManager` at build
-            time.
+        preset_name: Origin label / legacy resolution key.
         repeat: Number of times the step is run back-to-back (>= 1).
-        delay_s: Idle delay in seconds inserted AFTER the step (and its
-            repeats) before the next step starts.
-        channels_override: Optional WE channel list that replaces the
-            preset's ``channels`` for this step.  ``None`` keeps the
-            preset's channels.
-        mode_override: Optional electrode-config mode
-            (``"external"`` / ``"on_board"`` / ``"manual"``) that
-            replaces the preset's mode for this step.  ``None`` keeps
-            the preset's mode.
+        delay_s: Idle delay (s) inserted AFTER the step (and its repeats).
+        technique: Embedded technique id; empty for a legacy reference
+            step.
+        params: Embedded technique parameters.
+        channels: Embedded 1-indexed WE channel list.
+        electrode_config_mode: Embedded wiring mode.
+        re_ce_channels: Embedded per-WE RE/CE pairing (Mode C).
+        channels_override: Legacy-only WE channel override (ignored once
+            ``technique`` is set).
+        mode_override: Legacy-only electrode-mode override (ignored once
+            ``technique`` is set).
     """
 
-    preset_name: str
+    preset_name: str = ""
     repeat: int = 1
     delay_s: float = 0.0
+    technique: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
+    channels: list[int] = field(default_factory=list)
+    electrode_config_mode: str = "external"
+    re_ce_channels: list[int] = field(default_factory=list)
     channels_override: Optional[list[int]] = None
     mode_override: Optional[str] = None
+
+    @property
+    def is_embedded(self) -> bool:
+        """True when the step carries its own config (not a legacy ref)."""
+        return bool(self.technique)
+
+    @classmethod
+    def from_preset(
+        cls,
+        key: str,
+        preset: Preset,
+        *,
+        repeat: int = 1,
+        delay_s: float = 0.0,
+    ) -> "SequenceStep":
+        """Seed a self-contained step by copying a preset's values.
+
+        Args:
+            key: Preset key (kept as the origin label).
+            preset: The preset to snapshot into the step.
+            repeat: Initial repeat count.
+            delay_s: Initial trailing delay.
+
+        Returns:
+            A new embedded :class:`SequenceStep`.
+        """
+        return cls(
+            preset_name=key,
+            repeat=repeat,
+            delay_s=delay_s,
+            technique=preset.technique,
+            params=dict(preset.params),
+            channels=list(preset.channels),
+            electrode_config_mode=preset.electrode_config_mode,
+            re_ce_channels=list(preset.re_ce_channels),
+        )
 
 
 @dataclass
@@ -137,29 +190,48 @@ class Sequence:
 
 
 def build_config(
-    step: SequenceStep, preset: Preset
+    step: SequenceStep, preset: Optional[Preset] = None
 ) -> TechniqueConfig:
-    """Resolve a step against its preset into a validated config.
+    """Resolve a step into a validated :class:`TechniqueConfig`.
 
-    The preset supplies the technique, params, channels, electrode
-    mode, and RE/CE pairing.  Step overrides (``channels_override``,
-    ``mode_override``) take precedence when present.  The resulting
-    :class:`TechniqueConfig` is validated by its ``__post_init__`` — a
-    Mode-C step with empty ``re_ce_channels`` therefore raises
-    ``ValueError``.
+    For an **embedded** step (the normal case) the step's own technique,
+    params, channels, mode and RE/CE pairing are used and ``preset`` is
+    ignored — the sequence carries the values. For a **legacy** reference
+    step (no embedded technique) the named ``preset`` supplies the config,
+    with the step's ``channels_override`` / ``mode_override`` applied.
+
+    Either way the result is validated by ``TechniqueConfig.__post_init__``
+    (Mode-C bounds, RE/CE length, channel ranges).
 
     Args:
         step: The sequence step to resolve.
-        preset: The preset referenced by ``step.preset_name``.
+        preset: The named preset — required only for a legacy step.
 
     Returns:
         A constructed, validated ``TechniqueConfig``.
 
     Raises:
-        ValueError: If the resolved configuration is invalid (e.g.
-            Mode-C with no ``re_ce_channels``, channel out of range,
-            or mismatched RE/CE length).
+        KeyError: If a legacy step is given no resolving ``preset``.
+        ValueError: If the resolved configuration is invalid.
     """
+    if step.is_embedded:
+        channels = list(step.channels)
+        re_ce_channels = list(step.re_ce_channels)
+        if len(re_ce_channels) != len(channels):
+            re_ce_channels = []
+        return TechniqueConfig(
+            technique=step.technique,
+            params=dict(step.params),
+            channels=channels,
+            re_ce_channels=re_ce_channels,
+            electrode_config_mode=step.electrode_config_mode,
+        )
+
+    if preset is None:
+        raise KeyError(
+            f"Sequence step references unknown preset: "
+            f"{step.preset_name!r}"
+        )
     channels = (
         list(step.channels_override)
         if step.channels_override is not None
@@ -170,12 +242,10 @@ def build_config(
         if step.mode_override is not None
         else preset.electrode_config_mode
     )
-    # Carry the preset's explicit RE/CE pairing only when it still
-    # matches the resolved channel count.  A channels override (or a
-    # length mismatch from a hand-edited preset) drops it so external /
-    # on_board steps repopulate from the mode default in
-    # ``__post_init__``; a manual step with no usable pairing then
-    # raises there, which is the intended safety behaviour.
+    # Carry the preset's explicit RE/CE pairing only when it still matches
+    # the resolved channel count; otherwise external/on_board repopulate
+    # from the mode default in ``__post_init__`` (and a manual step with no
+    # usable pairing raises there — the intended safety behaviour).
     re_ce_channels = list(preset.re_ce_channels)
     if len(re_ce_channels) != len(channels):
         re_ce_channels = []
