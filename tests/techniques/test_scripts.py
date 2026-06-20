@@ -100,6 +100,34 @@ def test_preamble_eis_uses_bounded_current_autoranging() -> None:
     assert "set_range ba 100u" in lines
 
 
+def test_preamble_eis_autorange_off_pins_range() -> None:
+    """eis_autorange=False must pin the range (min==max) for the A/B run.
+
+    The bench comparison needs to disable mid-sweep range switching to
+    test whether it is the low-frequency corruption source. Pinning is
+    expressed as ``set_autoranging ba {cr} {cr}`` (min==max disables
+    autoranging) and the bounded ``1n`` window must be absent.
+    """
+    lines = _preamble_eis({"cr": "100u", "eis_autorange": False})
+    assert "set_autoranging ba 100u 100u" in lines, (
+        f"autorange off must pin the range min==max; got: {lines}"
+    )
+    assert "set_autoranging ba 1n 100u" not in lines
+
+
+def test_preamble_eis_autorange_floor_override() -> None:
+    """eis_autorange_floor widens the autorange window without disabling it.
+
+    Used by the floor-sweep run (e.g. 1n -> 100n) to test whether raising
+    the floor alone removes the corruption while keeping autoranging on.
+    """
+    lines = _preamble_eis({"cr": "100u", "eis_autorange_floor": "100n"})
+    assert "set_autoranging ba 100n 100u" in lines, (
+        f"floor override must change the autorange floor; got: {lines}"
+    )
+    assert "set_autoranging ba 1n 100u" not in lines
+
+
 def test_gen_eis_passes_e_dc_as_dc_potential_argument() -> None:
     """The final meas_loop_eis argument must carry e_dc, not a hardcoded 0.
 

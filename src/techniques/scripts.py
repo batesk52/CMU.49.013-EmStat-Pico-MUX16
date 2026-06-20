@@ -213,6 +213,11 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "freq_end": 0.1,
         "n_freq": 50,
         "cr": "100u",
+        # Current-range strategy (see _preamble_eis). Defaults preserve
+        # production behaviour; exposed so the low-frequency autoranging
+        # corruption can be A/B-tested from the agent/GUI without code edits.
+        "eis_autorange": True,
+        "eis_autorange_floor": "1n",
     },
     "geis": {
         "t_eq": 0.0,
@@ -312,10 +317,27 @@ def _preamble(params: dict[str, Any]) -> list[str]:
 
 
 def _preamble_eis(params: dict[str, Any]) -> list[str]:
-    """Build preamble for EIS (high-speed mode required)."""
+    """Build preamble for EIS (high-speed mode required).
+
+    The current-range strategy is selectable so the low-frequency
+    autoranging corruption can be A/B-tested on the bench (TSC.17.xxx):
+
+    * ``eis_autorange=True`` (default): bounded autoranging
+      ``set_autoranging ba {floor} {cr}`` across the sweep, with the
+      floor taken from ``eis_autorange_floor`` (default ``"1n"``). This
+      is the current production behaviour and is unchanged by default.
+    * ``eis_autorange=False``: pinned range
+      ``set_autoranging ba {cr} {cr}`` (min==max disables autoranging),
+      reproducing the pre-``e352d93`` behaviour for the comparison run.
+
+    ``eis_autorange_floor`` lets the floor be widened (e.g. ``"100n"``)
+    without disabling autoranging entirely, for the floor-sweep run.
+    """
     lines: list[str] = []
     lines.append("e")
     cr = params.get("cr", "100u")
+    autorange = params.get("eis_autorange", True)
+    floor = params.get("eis_autorange_floor", "1n")
     lines.append("var p")
     lines.append("var c")
     lines.append("set_pgstat_chan 1")
@@ -340,7 +362,14 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     # own EmStat Pico EIS examples; {cr} stays the user-selected ceiling so
     # the high-frequency current can't overload. HARDWARE-VALIDATE on
     # FW 1.6 (confirm no <80 Hz corruption returns).
-    lines.append(f"set_autoranging ba 1n {cr}")
+    if autorange:
+        lines.append(f"set_autoranging ba {floor} {cr}")
+    else:
+        # Pinned range: min==max disables autoranging entirely, so the
+        # current range cannot switch mid-sweep. This reproduces the
+        # pre-e352d93 behaviour for the bench A/B that isolates whether
+        # mid-sweep range switching is the low-frequency corruption.
+        lines.append(f"set_autoranging ba {cr} {cr}")
     lines.append("cell_on")
     return lines
 

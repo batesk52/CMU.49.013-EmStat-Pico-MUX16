@@ -288,6 +288,26 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "Equilibration time in seconds (default 0)."
                 ),
                 "cr": _cr_prop(),
+                "eis_autorange": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether to autorange the current range across "
+                        "the sweep (default true). Set false to PIN the "
+                        "range to cr for the whole sweep (disables "
+                        "mid-sweep range switching) — used to diagnose "
+                        "low-frequency Z' corruption."
+                    ),
+                },
+                "eis_autorange_floor": {
+                    "type": "string",
+                    "description": (
+                        "Lowest current range autoranging may select, as "
+                        "an SI string, e.g. '1n' (default), '100n'. Only "
+                        "applies when eis_autorange is true; raise it to "
+                        "test whether an over-sensitive low-frequency "
+                        "range causes corruption."
+                    ),
+                },
             }),
         },
         {

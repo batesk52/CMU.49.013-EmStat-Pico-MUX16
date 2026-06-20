@@ -528,6 +528,18 @@ class MeasurementEngine(QThread):
                             line,
                             dict(result.values),
                         )
+                    # Diagnostic for the EIS low-frequency autoranging
+                    # investigation (TSC.17.xxx): log every raw EIS/GEIS
+                    # packet so the per-variable device status/metadata
+                    # flags (overload / out-of-range) and exact device-
+                    # reported Z' can be correlated with the low-frequency
+                    # Z' sign-flip. DEBUG-gated, so zero cost unless the
+                    # root logger is at DEBUG; attach a FileHandler writing
+                    # DEBUG to capture raw_packets.log on the bench.
+                    if technique in ("eis", "geis"):
+                        logger.debug(
+                            "EIS raw CH%02d %r", current_channel, line
+                        )
                     values = dict(result.values)
                     # ca_alt_mux with samples_per_visit > 1: buffer the
                     # N packets per visit and emit a single averaged
