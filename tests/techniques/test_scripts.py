@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from src.techniques.scripts import (
+    _format_si,
     _gen_eis,
     _preamble,
     _preamble_eis,
@@ -79,25 +80,52 @@ def test_preamble_eis_ignores_bw_hz_and_stays_200k() -> None:
     )
 
 
-def test_preamble_eis_uses_bounded_current_autoranging() -> None:
-    """EIS must autorange current within a bounded window, not pin to one.
+def test_preamble_eis_pins_current_range() -> None:
+    """EIS must PIN the current range, not autorange within a window.
 
-    A pinned range (``set_autoranging ba {cr} {cr}``, min==max) disables
-    autoranging and mis-ranges the multi-decade |Z| span of a real sweep,
-    crushing low-frequency SNR. The preamble must emit a real window
-    ``set_autoranging ba 1n {cr}`` (floor below the highest-impedance
-    point's current, ceiling at the user range) and must NOT pin min==max.
+    In-loop current-range switching corrupts EIS on FW 1.6.01 (the low-
+    frequency Nyquist arc reverses/breaks, Z' goes negative -- bench-validated
+    2026-06-20). So the preamble pins ``set_autoranging ba {cr} {cr}`` (min==max
+    disables autoranging) and must NOT emit a window like ``ba 1n {cr}``.
     """
     lines = _preamble_eis({"cr": "100u"})
-    assert "set_autoranging ba 1n 100u" in lines, (
-        f"EIS must autorange current within [1n, cr]; got: {lines}"
+    assert "set_autoranging ba 100u 100u" in lines, (
+        f"EIS must pin the current range (min==max); got: {lines}"
     )
-    assert "set_autoranging ba 100u 100u" not in lines, (
-        "EIS must not pin current autoranging to a single range (min==max "
-        "disables autoranging)"
+    assert "set_autoranging ba 1n 100u" not in lines, (
+        "EIS must not autorange (in-loop range switching corrupts EIS)"
     )
     # The nominal/start range is still set from cr.
     assert "set_range ba 100u" in lines
+
+
+@pytest.mark.parametrize("value, expected", [
+    (0.5, "500m"),
+    (0.001, "1m"),
+    (-0.0002, "-200u"),
+    (0.0, "0m"),
+    (1.0, "1"),
+    (2565.0, "2565"),       # was '2.565k' -> device e!4004
+    (100000.0, "100k"),
+    (10.0, "10"),
+    (50000.0, "50k"),
+])
+def test_format_si_never_emits_decimal_mantissa(value, expected) -> None:
+    """MethodSCRIPT needs an integer mantissa; a decimal point (e.g. '2.565k')
+    is a device syntax error (e!4004). Regression for the EIS format bug."""
+    out = _format_si(value)
+    assert out == expected
+    assert "." not in out
+
+
+def test_gen_eis_non_round_frequencies_have_no_decimal() -> None:
+    """A non-round freq must not serialise as a decimal-mantissa value."""
+    body = _gen_eis({
+        "e_dc": 0.0, "e_ac": 0.01,
+        "freq_start": 2565.0, "freq_end": 1.0, "n_freq": 6,
+    })
+    eis_line = next(li for li in body if li.startswith("meas_loop_eis"))
+    assert "." not in eis_line, f"decimal mantissa in {eis_line!r}"
 
 
 def test_gen_eis_passes_e_dc_as_dc_potential_argument() -> None:

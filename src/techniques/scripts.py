@@ -52,15 +52,17 @@ _SI_TABLE: list[tuple[str, int]] = [
 def _format_si(value: float) -> str:
     """Format a float using MethodSCRIPT SI prefix notation.
 
-    Selects the SI prefix that keeps the mantissa in the range
-    [1, 1000) when possible, falling back to unity for zero.
+    MethodSCRIPT values are an INTEGER mantissa followed by an SI prefix
+    (``'2565'``, ``'100k'``, ``'500m'``); a decimal point in the mantissa is a
+    device syntax error (``'2.565k'`` is rejected with ``e!4004``). This selects
+    the most compact prefix that yields a whole-number mantissa, rounding to
+    integer units when the value cannot be represented exactly.
 
     Args:
         value: The numeric value to format.
 
     Returns:
-        String such as ``'500m'``, ``'1 '``, or ``'-200u'``.
-        The space character represents the unity prefix.
+        String such as ``'500m'``, ``'1'``, ``'2565'``, or ``'-200u'``.
 
     Examples:
         >>> _format_si(0.5)
@@ -71,24 +73,45 @@ def _format_si(value: float) -> str:
         '-200u'
         >>> _format_si(0.0)
         '0m'
+        >>> _format_si(2565.0)
+        '2565'
+        >>> _format_si(100000.0)
+        '100k'
+
+    A non-round value keeps full precision via a smaller prefix rather than a
+    rejected decimal (``2565.02`` -> ``'2565020m'``).
     """
     if value == 0.0:
         return "0m"
 
     abs_val = abs(value)
 
+    # Walk prefixes largest -> smallest. Prefer the most compact prefix whose
+    # mantissa is a whole number: '2565' (unity) not '2.565k', because the
+    # device rejects a decimal point in the mantissa.
+    natural_mantissa = None
+    natural_pfx = None
     for prefix, exp in _SI_TABLE:
         scaled = abs_val / (10**exp)
-        if scaled >= 1.0 or exp == -18:
-            mantissa = value / (10**exp)
-            # Unity prefix: use bare number (no trailing space)
-            pfx = "" if prefix == " " else prefix
-            if abs(mantissa - round(mantissa)) < 1e-9:
-                return f"{int(round(mantissa))}{pfx}"
-            return f"{mantissa:g}{pfx}"
+        if scaled < 1.0 and exp != -18:
+            continue  # prefix too large; mantissa would be < 1
+        mantissa = value / (10**exp)
+        # Unity prefix: use bare number (no trailing space)
+        pfx = "" if prefix == " " else prefix
+        if natural_mantissa is None:
+            natural_mantissa, natural_pfx = mantissa, pfx
+        if abs(mantissa - round(mantissa)) < 1e-9:
+            return f"{int(round(mantissa))}{pfx}"
 
-    # Fallback (should not be reached)
-    return f"{value:g}"  # pragma: no cover
+    # No prefix yields an exact integer mantissa. Round rather than emit a
+    # device-rejected decimal: for |value| >= 1 round to whole units and
+    # re-format (2565.02 -> 2565 -> '2565'); for sub-unit values round the
+    # natural 1..1000 mantissa (0.523 -> '523m').
+    if abs_val >= 1.0:
+        rounded = float(round(value))
+        if rounded != value:
+            return _format_si(rounded)
+    return f"{int(round(natural_mantissa))}{natural_pfx}"
 
 
 def _indent(lines: list[str]) -> list[str]:
@@ -325,22 +348,14 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     lines.append("set_max_bandwidth 200k")
     lines.append("set_range_minmax da 0 0")
     lines.append(f"set_range ba {cr}")
-    # Bounded current autoranging across the sweep. A single fixed range
-    # (the old `set_autoranging ba {cr} {cr}`, where min==max DISABLES
-    # autoranging per MethodSCRIPT v1.6 sec 14.50) is badly mismatched to
-    # the multi-decade |Z| span of a real EIS sweep: e.g. a high-impedance
-    # IDE runs 73 uA at 100 kHz down to ~68 nA at 5 Hz, so a pinned 100u
-    # range reads the low-frequency points at <0.1% of full scale, burying
-    # them in quantization/clamping noise. Letting the firmware pick the
-    # best range per frequency within [1n, {cr}] restores low-frequency
-    # SNR. Autoranging was previously locked because mid-sweep range
-    # switching corrupted <80 Hz data, but EmStat Pico FW 1.6 ("Fixed
-    # meas_loop_eis resetting auto-ranging") addresses that; the galvano
-    # preamble below already uses a real window. Floor 1n matches PalmSens'
-    # own EmStat Pico EIS examples; {cr} stays the user-selected ceiling so
-    # the high-frequency current can't overload. HARDWARE-VALIDATE on
-    # FW 1.6 (confirm no <80 Hz corruption returns).
-    lines.append(f"set_autoranging ba 1n {cr}")
+    # Pin the current range for the whole sweep: min==max DISABLES autoranging
+    # per MethodSCRIPT v1.6 sec 14.50. In-loop current-range switching corrupts
+    # EIS on FW 1.6.01 -- the low-frequency Nyquist arc reverses/breaks and Z'
+    # goes negative (bench-validated 2026-06-20, gold IDE and gold/PBS). So the
+    # user picks one range from the dropdown (the high-speed mode-3 ladder) and
+    # it is held for the entire sweep. {cr} must be chosen so the highest-
+    # frequency current does not overload.
+    lines.append(f"set_autoranging ba {cr} {cr}")
     lines.append("cell_on")
     return lines
 
