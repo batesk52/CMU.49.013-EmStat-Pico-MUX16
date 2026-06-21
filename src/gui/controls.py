@@ -96,7 +96,6 @@ from src.gui.parameter_form import (  # noqa: E402
     CURRENT_RANGES as _CURRENT_RANGES,
     PARAM_LABELS as _PARAM_LABELS,
     create_param_widget,
-    guess_step as _guess_step,
     read_param_widget,
 )
 
@@ -648,6 +647,9 @@ class TechniquePanel(QGroupBox):
         """
         # Clear existing parameter widgets
         self._param_widgets.clear()
+        # Remember the technique so the cr dropdown can offer the right
+        # current-range ladder (EIS/GEIS run mode 3, a different ladder).
+        self._param_technique = technique
         while self._param_layout.count():
             item = self._param_layout.takeAt(0)
             widget = item.widget()
@@ -701,19 +703,9 @@ class TechniquePanel(QGroupBox):
             A QDoubleSpinBox, QSpinBox, or QComboBox.
         """
         return create_param_widget(
-            name, default, self.params_changed.emit
+            name, default, self.params_changed.emit,
+            getattr(self, "_param_technique", None),
         )
-
-        # Float parameter
-        spin = QDoubleSpinBox()
-        spin.setDecimals(6)
-        spin.setRange(-10.0, 1e8)
-        spin.setSingleStep(_guess_step(default))
-        spin.setValue(float(default))
-        spin.valueChanged.connect(
-            lambda: self.params_changed.emit()
-        )
-        return spin
 
 
 # =======================================================================

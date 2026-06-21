@@ -281,6 +281,23 @@ class EngineAdapter:
 
         try:
             result = await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+            # The agent turn was cancelled mid-measurement (user pressed
+            # Stop). CancelledError is a BaseException, so it is NOT caught
+            # by the `except Exception` below -- without this the LLM turn
+            # unwinds but the engine keeps sweeping the remaining channels
+            # (and, for banded EIS, the remaining bands). Abort the in-flight
+            # run so the device actually stops, then re-raise so the turn
+            # unwinds normally. engine.abort() is thread-safe (same call the
+            # abort_measurement tool uses).
+            try:
+                self._engine.abort()
+                logger.info(
+                    "Measurement aborted: agent turn cancelled (Stop)."
+                )
+            except Exception as abort_exc:  # noqa: BLE001 - best-effort stop
+                logger.warning("Abort on turn-cancel failed: %s", abort_exc)
+            raise
         except Exception as exc:
             # measurement_error payload, or SignalTimeoutError.
             if isinstance(exc, SignalTimeoutError):

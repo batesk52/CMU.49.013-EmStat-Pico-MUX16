@@ -101,13 +101,29 @@ def _int(description: str) -> dict[str, Any]:
     return {"type": "integer", "description": description}
 
 
-def _cr_prop() -> dict[str, Any]:
-    """Schema for the current-range SI string."""
+def _cr_prop(technique: str | None = None) -> dict[str, Any]:
+    """Schema for the current-range SI string.
+
+    EIS/GEIS run high-speed pgstat mode 3, whose current-range ladder differs
+    from the low-speed (mode-2) one: mode-2 values like 2u/10u/63u are invalid
+    in mode 3 and the device returns NO data. So EIS/GEIS advertise only the
+    mode-3 ranges.
+    """
+    if (technique or "").lower() in ("eis", "geis"):
+        return {
+            "type": "string",
+            "description": (
+                "Maximum current range (SI-prefixed). EIS/GEIS run mode 3 -- "
+                "use ONLY: '100n', '1u', '6u', '13u', '25u', '50u', '100u', "
+                "'200u', '1m', '5m' (default '100u'). Mode-2 values such as "
+                "'2u'/'10u'/'63u' return no data."
+            ),
+        }
     return {
         "type": "string",
         "description": (
             "Maximum current range as an SI-prefixed string, e.g. "
-            "'100n', '1u', '10u', '100u', '1m' (default '100u')."
+            "'100n', '2u', '8u', '100u', '1m' (default '100u')."
         ),
     }
 
@@ -287,7 +303,7 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "t_eq": _num(
                     "Equilibration time in seconds (default 0)."
                 ),
-                "cr": _cr_prop(),
+                "cr": _cr_prop("eis"),
             }),
         },
         {
@@ -322,7 +338,7 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "t_eq": _num(
                     "Equilibration time in seconds (default 0)."
                 ),
-                "cr": _cr_prop(),
+                "cr": _cr_prop("geis"),
             }),
         },
         {
