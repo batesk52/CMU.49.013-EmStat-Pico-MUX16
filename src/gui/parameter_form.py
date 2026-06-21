@@ -64,11 +64,30 @@ PARAM_LABELS: dict[str, tuple[str, str]] = {
     "bw_hz": ("Max Bandwidth", "Hz"),
 }
 
-# Current range options for combo box.
+# Current range options for combo box (low-speed pgstat mode 2).
 CURRENT_RANGES = [
     "100n", "2u", "4u", "8u", "16u",
     "32u", "63u", "100u", "1m", "10m", "100m",
 ]
+
+# EIS/GEIS run the potentiostat in HIGH-SPEED mode 3, which exposes a DIFFERENT
+# current-range ladder. Offering the mode-2 list for EIS is a footgun: ranges
+# like 2u/63u are invalid in mode 3 and the device returns no data, while valid
+# ranges (50u/200u) are absent. These are the mode-3 ranges.
+EIS_CURRENT_RANGES = [
+    "100n", "1u", "6u", "13u", "25u", "50u", "100u", "200u", "1m", "5m",
+]
+
+
+def current_ranges_for(technique: str | None) -> list[str]:
+    """Current-range options valid for ``technique``'s pgstat mode.
+
+    EIS/GEIS use the high-speed (mode-3) ladder; everything else uses the
+    low-speed (mode-2) ladder.
+    """
+    if (technique or "").lower() in ("eis", "geis"):
+        return EIS_CURRENT_RANGES
+    return CURRENT_RANGES
 
 # Max bandwidth options for combo box (Hz).
 # Mode-2 sweep range; default 400 preserves legacy behavior.
@@ -98,7 +117,9 @@ def guess_step(value: float) -> float:
     return abs_val / 10.0
 
 
-def create_param_widget(name: str, default: Any, on_change) -> QWidget:
+def create_param_widget(
+    name: str, default: Any, on_change, technique: str | None = None
+) -> QWidget:
     """Create the appropriate input widget for a single parameter.
 
     Mirrors ``TechniquePanel._create_param_widget`` but takes an explicit
@@ -108,6 +129,8 @@ def create_param_widget(name: str, default: Any, on_change) -> QWidget:
         name: Parameter name (drives special-cased widgets like ``cr``).
         default: Seed value.
         on_change: Zero-arg callable fired whenever the value changes.
+        technique: Technique key, used to pick the valid current-range
+            ladder for the ``cr`` combo (EIS/GEIS use mode-3 ranges).
 
     Returns:
         A ``QComboBox`` (``cr`` / ``bw_hz``), ``QSpinBox`` (int) or
@@ -115,7 +138,7 @@ def create_param_widget(name: str, default: Any, on_change) -> QWidget:
     """
     if name == "cr":
         combo = QComboBox()
-        for cr in CURRENT_RANGES:
+        for cr in current_ranges_for(technique):
             combo.addItem(cr)
         idx = combo.findText(str(default))
         if idx >= 0:
@@ -227,7 +250,7 @@ class ParameterForm(QWidget):
             display = f"{label_text} ({unit})" if unit else label_text
             self._grid.addWidget(QLabel(display), row, 0)
             widget = create_param_widget(
-                name, value, self.params_changed.emit
+                name, value, self.params_changed.emit, self._technique
             )
             self._grid.addWidget(widget, row, 1)
             self._widgets[name] = widget
