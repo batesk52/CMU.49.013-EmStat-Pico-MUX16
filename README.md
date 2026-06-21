@@ -39,34 +39,42 @@ CMU.49.013-EmStat-Pico-MUX16/
 ├── src/
 │   ├── comms/              # Serial + MethodSCRIPT protocol + MUX addressing
 │   ├── techniques/         # MethodSCRIPT generation per technique
-│   ├── data/               # Data models + CSV/.pssession export
-│   ├── engine/             # Background measurement thread
-│   └── gui/                # PyQt6 main window, live plot, control panels
-├── presets/                # Measurement preset configurations (JSON)
-├── tests/                  # Test suite
-├── exports/                # Measurement output files
-└── docs/                   # Protocol references
+│   ├── data/               # Models, CSV/.pssession export, presets, sequences, app settings
+│   ├── engine/             # Background measurement thread + sequence runner
+│   ├── gui/                # PyQt6 main window, live plots, control panels, agent dock
+│   ├── agent/              # Embedded Claude agent (Qt<->asyncio bridge, tools, worker)
+│   ├── vendor/             # Read-only vendored CMU.49.011 analysis code
+│   └── mcp_server/         # Headless MCP stdio server (same tool defs for Claude Code)
+├── tests/                  # pytest suite mirroring src/ (202 tests, headless via QT_QPA_PLATFORM=offscreen)
+├── docs/                   # Protocol references, enclosure design, lessons
+└── claude_test_files/      # Agent validation / smoke scripts (NOT the project test suite)
 ```
+Presets/sequences live OUTSIDE the repo under `~/.emstat_pico_mux16/` (`*.mux16` / `*.mux16seq`); run exports go to a user-configurable folder (default per-run timestamped dirs), agent run exports default to a gitignored `./agent_exports/`.
 
 ### Key Components
 - `src/comms/serial_connection.py` - Serial I/O to EmStat Pico (230400 baud, XON/XOFF)
-- `src/comms/protocol.py` - MethodSCRIPT data packet decoder (hex → float)
-- `src/comms/mux.py` - MUX16 GPIO channel addressing (channels 1-16)
-- `src/techniques/scripts.py` - MethodSCRIPT generator for all techniques
-- `src/engine/measurement_engine.py` - QThread-based measurement orchestrator
-- `src/gui/main_window.py` - Application window assembling all panels
-- `src/gui/plot_widget.py` - pyqtgraph live plot with per-channel curves
-- `src/gui/controls.py` - Connection, technique, channel, and measurement panels
-- `src/data/models.py` - Dataclasses for results, configs, channels
-- `src/data/exporters.py` - CSV + .pssession export
-- `src/data/incremental_writer.py` - Auto-save CSV writer (per MUX loop)
-- `src/data/presets.py` - Measurement preset manager with built-in NO Sensing
+- `src/comms/protocol.py` - MethodSCRIPT data packet decoder (hex → float; current range parsed as metadata, never multiplied into Z)
+- `src/comms/mux.py` - MUX16 GPIO channel addressing (WE + shared RE/CE, channels 1-16)
+- `src/techniques/scripts.py` - MethodSCRIPT generator for all techniques (EIS/GEIS run mode 3 with the current range PINNED; `_format_si` emits integer mantissa only)
+- `src/engine/measurement_engine.py` - QThread-based measurement orchestrator (per-read EIS timeout scales to lowest swept frequency)
+- `src/engine/sequence_runner.py` - Chains presets back-to-back via the existing engine (CMU.17.034)
+- `src/data/models.py` - Dataclasses for results/configs/channels incl. `electrode_config_mode` + `re_ce_channels`
+- `src/data/exporters.py` + `pssession_exporter.py` - CSV + .pssession export (PSTrace method-string fidelity)
+- `src/data/presets.py` + `sequence.py` + `app_settings.py` - Externalized presets/sequences + last-used path pointers
+- `src/gui/main_window.py` - Application window: docked Settings/Log/Sequence tabs, tabbed live-plot center, right-side agent dock
+- `src/gui/plot_widget.py` / `eis_plot_container.py` / `bode_widget.py` - pyqtgraph live plots (per-channel curves, Nyquist + Bode)
+- `src/gui/controls.py` + `parameter_form.py` - Control panels + widget factory (technique-aware current-range ladder)
+- `src/gui/agent_dock.py` - In-app Claude chat: streaming text, inline tool chips, in-chat figure attachments
+- `src/agent/` - Embedded agent stack: `bridge.py` (Qt<->asyncio), `engine_adapter.py`, `tools.py`, `agent_worker.py`, `vendor_analysis.py`
+- `src/mcp_server/stdio_server.py` - Headless MCP server exposing the same run/analyze tools for Claude Code (mock engine when no hardware)
 
 ### Use Cases
 1. Run cyclic voltammetry across 16 electrode channels with live overlay plots
 2. Perform EIS on selected channels and export Nyquist data for analysis in CMU.49.011
 3. Multi-channel chronoamperometry for biosensor calibration with real-time current monitoring
 4. Run NO sensing preset with auto-save for crash-safe in-vivo experiments (DARPA IV&V)
+5. Chain heterogeneous presets (CV → EIS → CA, per-step electrode mode) back-to-back via the Sequencer tab (CMU.17.034)
+6. Drive runs and analysis conversationally through the embedded Claude agent dock, or headlessly via the MCP server (CMU.17.042)
 
 ## Implementation Blueprint
 

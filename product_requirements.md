@@ -143,6 +143,45 @@ The lab relies on individual PalmSens potentiostats for electrochemical measurem
 - Must load presets on startup from a JSON file
 - Built-in presets cannot be deleted
 
+### Req 10: Electrode Configuration Modes
+**Description:** High-level selector for how WE and RE/CE are wired across the MUX (PR #6)
+**Acceptance Criteria:**
+- Mode A (Separate external): RE/CE fixed at CH15; full 16-WE workflow
+- Mode B (On-board combined): RE/CE fixed at CH16; full 16-WE workflow
+- Mode C (Manual per-WE pairing): WE and RE/CE restricted to CH1-CH14 with per-WE RE/CE pairing; CH15/CH16 reserved as enclosure infrastructure
+- `electrode_config_mode` + `re_ce_channels` carried on `TechniqueConfig`/`MeasurementResult`, persisted in presets, and emitted in CSV + .pssession metadata
+- Per-mode validation in `TechniqueConfig.__post_init__` (Mode-C bounds, pairing length)
+
+### Req 11: Configurable Measurement Bandwidth
+**Description:** User-controllable mode-2 measurement bandwidth (PR #5, CMU.17.022)
+**Acceptance Criteria:**
+- `bw_hz` selectable per run for mode-2 techniques via a GUI dropdown
+- Ladder: 0.4 / 4 / 40 / 400 / 4000 / 40000 / 200000 Hz; default 400 Hz preserves legacy behavior
+- EIS/GEIS remain locked to high-speed mode 3 (200 kHz); they expose no `bw_hz`
+
+### Req 12: Preset Sequencer
+**Description:** PSTrace-"Scripts" equivalent — chain saved presets back-to-back on the MUX-16 (PR #13, CMU.17.034)
+**Acceptance Criteria:**
+- Reorderable steps run sequentially; each step is self-contained (technique, params, channels, electrode mode, repeat, delay)
+- Sequences persist to a separate `*.mux16seq` file (presets in `*.mux16`), both outside the repo under `~/.emstat_pico_mux16/`
+- Runner reuses the existing engine (one validated `TechniqueConfig` per step), gates on the single-run guard, and validates the whole queue before step 0
+- Interactive export prompt suppressed in sequence mode; per-step auto-save (opt-in) into one `<stamp>_sequence/stepNN_<technique>/` parent, EIS/GEIS provenance-forced
+
+### Req 13: Embedded Claude Agent
+**Description:** In-app Claude agent dock that drives measurements and analysis (PR #14/#15, CMU.17.042)
+**Acceptance Criteria:**
+- Chat dock drives the SAME live plots by calling the existing `MeasurementEngine` via an `EngineAdapter`; no separate render path
+- Tools: `run_cv/run_ca/run_eis/run_cp/run_geis`, `list_ports/connect/disconnect/device_status`, `export_session`, and vendored CMU.49.011 analysis (`analyze_cv/ecsa/ca/eis/cic/cp`)
+- Qt<->asyncio bridge (`AgentWorker` QThread runs its own asyncio loop); engine completion awaited via a thread-safe future resolved by one-shot GUI-thread slots
+- Mock engine provides a no-hardware path; agent module imports with no API key; API key + model set in File > Agent Settings
+- No emojis; native deps (numpy/scipy/matplotlib Agg/pandas) eager-imported at module top; vendored 49.011 code is read-only
+
+### Req 14: Headless MCP Server
+**Description:** Expose the same run/analyze tools to Claude Code over MCP stdio (CMU.17.042 Batch 4)
+**Acceptance Criteria:**
+- MCP stdio server reuses the `tools.py` definitions; headless (mock engine when no GUI, `EMSTAT_MCP_PORT` for hardware)
+- Eager native imports; no emojis; importable and listable with no hardware and no API key
+
 ## Risks
 
 | Risk | Impact | Likelihood | Mitigation |

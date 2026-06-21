@@ -36,6 +36,9 @@ Template: codebase
 - `store_var` integer values MUST have `i` suffix: `store_var i 0i aa` (not `0 aa`)
 - `add_var i 0b01` — use binary format for GPIO address increment
 - `meas_loop_ca` argument order: `p c <e_dc> <t_interval> <t_run>` (interval before run)
+- `meas_loop_eis` final argument is the **DC potential** (manual §14.46), not a flag — pass `e_dc`/`i_dc`, not `0`
+- SI values are an **integer mantissa + prefix** (`2565`, `100k`, `500m`); a decimal mantissa (`2.565k`) is rejected with `e!4004`. `_format_si` enforces this — do not hand-build values with decimals
+- **EIS/GEIS run high-speed mode 3, where the current range MUST be pinned** (`set_autoranging ba {cr} {cr}`, min==max). In-loop range switching corrupts the spectrum on FW 1.6.01 (low-freq Nyquist arc reverses / Z' goes negative). Mode-2 techniques (CV/CA/...) keep real autoranging. Mode-3 has a different valid current-range ladder (`100n,1u,6u,13u,25u,50u,100u,200u,1m,5m`); the mode-2 values `2u`/`63u` return no data in mode 3 (see `parameter_form.current_ranges_for`)
 
 ### MUX16 Addressing
 - Hardware labels are 1-indexed (CH1-CH16), GPIO addresses are 0-indexed
