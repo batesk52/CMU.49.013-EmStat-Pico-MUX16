@@ -360,10 +360,15 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _preamble_galvano(params: dict[str, Any]) -> list[str]:
+def _preamble_galvano(
+    params: dict[str, Any], pin: bool = False
+) -> list[str]:
     """Build preamble for galvanostatic techniques (CP, GEIS).
 
-    Configures chan 1 off, chan 0 in galvanostatic mode.
+    Configures chan 1 off, chan 0 in galvanostatic mode. ``pin=True`` (GEIS)
+    disables current autoranging (``set_autoranging ba {cr} {cr}``, min==max)
+    like EIS -- GEIS runs high-speed mode 3, where in-loop range switching
+    corrupts the spectrum on FW 1.6.01; CP keeps bounded autoranging.
     """
     lines: list[str] = []
     lines.append("e")
@@ -377,9 +382,22 @@ def _preamble_galvano(params: dict[str, Any]) -> list[str]:
     lines.append("set_max_bandwidth 200k")
     lines.append("set_range_minmax da 0 0")
     lines.append(f"set_range ba {cr}")
-    lines.append(f"set_autoranging ba 100n {cr}")
+    if pin:
+        lines.append(f"set_autoranging ba {cr} {cr}")
+    else:
+        lines.append(f"set_autoranging ba 100n {cr}")
     lines.append("cell_on")
     return lines
+
+
+def _preamble_geis(params: dict[str, Any]) -> list[str]:
+    """GEIS preamble: galvanostatic mode with the current range PINNED.
+
+    GEIS runs mode 3 like EIS and inherits the same in-loop autoranging
+    corruption, so the range is pinned. NOT yet hardware-validated (see
+    :func:`_gen_geis`); pinning is strictly safer than autoranging.
+    """
+    return _preamble_galvano(params, pin=True)
 
 
 def _preamble_ocp() -> list[str]:
@@ -850,7 +868,7 @@ _TECHNIQUE_REGISTRY: dict[str, tuple] = {
     "cp": (_gen_cp, _preamble_galvano),
     "ocp": (_gen_ocp, _preamble_ocp),
     "eis": (_gen_eis, _preamble_eis),
-    "geis": (_gen_geis, _preamble_galvano),
+    "geis": (_gen_geis, _preamble_geis),
     "pad": (_gen_pad, _preamble),
     "lsp": (_gen_lsp, _preamble),
     "fcv": (_gen_fcv, _preamble),

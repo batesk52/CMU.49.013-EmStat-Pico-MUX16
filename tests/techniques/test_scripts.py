@@ -24,6 +24,7 @@ from src.techniques.scripts import (
     _preamble,
     _preamble_eis,
     _preamble_galvano,
+    _preamble_geis,
     generate,
 )
 
@@ -171,6 +172,23 @@ def test_preamble_galvano_ignores_bw_hz_and_stays_200k() -> None:
     )
     assert "set_max_bandwidth 4" not in lines_with_bw, (
         "Galvanostatic preamble must not switch to bw_hz value"
+    )
+
+
+def test_preamble_geis_pins_current_range_cp_does_not() -> None:
+    """GEIS pins the current range (mode-3, same in-loop autoranging corruption
+    as EIS); CP keeps bounded autoranging from the shared galvano preamble."""
+    geis = _preamble_geis({"cr": "100u"})
+    assert "set_autoranging ba 100u 100u" in geis, (
+        f"GEIS must pin the current range; got: {geis}"
+    )
+    assert "set_autoranging ba 100n 100u" not in geis, (
+        "GEIS must not autorange (in-loop range switching corrupts mode-3)"
+    )
+
+    cp = _preamble_galvano({"cr": "100u"})
+    assert "set_autoranging ba 100n 100u" in cp, (
+        f"CP must keep bounded autoranging; got: {cp}"
     )
 
 
