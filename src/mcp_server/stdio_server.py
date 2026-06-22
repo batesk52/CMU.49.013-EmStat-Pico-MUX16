@@ -87,6 +87,7 @@ from mcp.server.stdio import stdio_server
 from src.agent import bridge
 from src.agent.engine_adapter import EngineAdapter
 from src.agent.mock_engine import MockConnection, MockMeasurementEngine
+from src.agent.preset_tools import build_preset_tools
 from src.agent.tools import ToolRegistry, build_registry, dispatch_tool
 from src.agent.vendor_analysis import build_analysis_tools
 from src.comms.serial_connection import PicoConnection
@@ -146,8 +147,9 @@ def build_tool_registry(adapter: EngineAdapter) -> ToolRegistry:
     """Build the full agent tool registry bound to *adapter*.
 
     Identical surface to the GUI app: the built-in measurement/device
-    tools plus the vendored-analysis tools.  ``figure_sink=None`` --
-    summaries only, no figures (see module docstring).
+    tools, the vendored-analysis tools, and the preset/sequence tools.
+    ``figure_sink=None`` -- summaries only, no figures (see module
+    docstring).
 
     Args:
         adapter: The :class:`EngineAdapter` (real or mock behind it).
@@ -155,9 +157,11 @@ def build_tool_registry(adapter: EngineAdapter) -> ToolRegistry:
     Returns:
         The populated :class:`ToolRegistry`.
     """
-    return build_registry(
-        adapter, extra_tools=build_analysis_tools(figure_sink=None)
-    )
+    extra = [
+        *build_analysis_tools(figure_sink=None),
+        *build_preset_tools(),
+    ]
+    return build_registry(adapter, extra_tools=extra)
 
 
 # ---------------------------------------------------------------------------

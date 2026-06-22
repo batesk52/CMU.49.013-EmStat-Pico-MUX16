@@ -152,6 +152,23 @@ class ParsedPacket:
         """Return a dict of variable name → decoded value."""
         return {v.name: v.value for v in self.variables}
 
+    @property
+    def has_overload(self) -> bool:
+        """Return True if any variable reported a hard current overload.
+
+        The device sets :data:`STATUS_OVERLOAD` (0x0002) in a variable's
+        status metadata when its reading railed the (pinned) current range.
+        This is the device's authoritative "the range is too small" signal;
+        the engine carries it onto the ``DataPoint`` so the agent layer can
+        flag an under-ranged run and re-range. The softer overload-*warning*
+        bit (0x0008, "approaching range") is deliberately excluded so the
+        flag means an actually-clipped reading, not a near-miss.
+        """
+        return any(
+            v.status is not None and bool(v.status & STATUS_OVERLOAD)
+            for v in self.variables
+        )
+
 
 # ---------------------------------------------------------------------------
 # PacketParser

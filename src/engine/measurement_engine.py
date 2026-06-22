@@ -437,7 +437,7 @@ class MeasurementEngine(QThread):
             samples_per_visit = max(
                 1, int(params.get("samples_per_visit", 1))
             )
-            avg_buffer: list[tuple[float, dict[str, float]]] = []
+            avg_buffer: list[tuple[float, dict[str, float], bool]] = []
             consecutive_empty = 0
             # Per-read timeout while expecting data. For EIS/GEIS this is
             # scaled to the lowest swept frequency, because the device stays
@@ -529,6 +529,12 @@ class MeasurementEngine(QThread):
                             dict(result.values),
                         )
                     values = dict(result.values)
+                    # Carry the device's hard-overload flag (current railed
+                    # the pinned range) onto the point so the agent summary
+                    # can detect an under-ranged run. EIS more often signals
+                    # under-ranging via NaN/negative-Z values than this bit,
+                    # but when the bit is set it is authoritative.
+                    overload = result.has_overload
                     # ca_alt_mux with samples_per_visit > 1: buffer the
                     # N packets per visit and emit a single averaged
                     # DataPoint on END_LOOP. Otherwise emit immediately.
@@ -536,12 +542,13 @@ class MeasurementEngine(QThread):
                         technique == "ca_alt_mux"
                         and samples_per_visit > 1
                     ):
-                        avg_buffer.append((elapsed, values))
+                        avg_buffer.append((elapsed, values, overload))
                     else:
                         data_point = DataPoint(
                             timestamp=elapsed,
                             channel=current_channel,
                             variables=values,
+                            overload=overload,
                         )
                         self.result.add_point(data_point)
                         self.data_point_ready.emit(data_point)
@@ -570,19 +577,26 @@ class MeasurementEngine(QThread):
                         # with samples_per_visit > 1). One averaged
                         # DataPoint per channel visit.
                         if avg_buffer:
-                            ts_mean = sum(t for t, _ in avg_buffer) / len(
-                                avg_buffer
-                            )
+                            ts_mean = sum(
+                                t for t, _, _ in avg_buffer
+                            ) / len(avg_buffer)
                             keys = avg_buffer[0][1].keys()
                             vmean = {
-                                k: sum(v[k] for _, v in avg_buffer)
+                                k: sum(v[k] for _, v, _ in avg_buffer)
                                 / len(avg_buffer)
                                 for k in keys
                             }
+                            # Any railed sample in the visit marks the averaged
+                            # point overloaded (conservative; the average itself
+                            # may sit inside range).
+                            any_overload = any(
+                                o for _, _, o in avg_buffer
+                            )
                             data_point = DataPoint(
                                 timestamp=ts_mean,
                                 channel=current_channel,
                                 variables=vmean,
+                                overload=any_overload,
                             )
                             self.result.add_point(data_point)
                             self.data_point_ready.emit(data_point)

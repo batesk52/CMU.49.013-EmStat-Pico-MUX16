@@ -28,6 +28,7 @@ import logging
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
 from src.agent.engine_adapter import EngineAdapter
+from src.techniques.scripts import EIS_CURRENT_RANGES
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +111,18 @@ def _cr_prop(technique: str | None = None) -> dict[str, Any]:
     mode-3 ranges.
     """
     if (technique or "").lower() in ("eis", "geis"):
+        ladder = ", ".join(f"'{r}'" for r in EIS_CURRENT_RANGES)
         return {
             "type": "string",
             "description": (
-                "Maximum current range (SI-prefixed). EIS/GEIS run mode 3 -- "
-                "use ONLY: '100n', '1u', '6u', '13u', '25u', '50u', '100u', "
-                "'200u', '1m', '5m' (default '100u'). Mode-2 values such as "
-                "'2u'/'10u'/'63u' return no data."
+                "Current range (SI-prefixed), held fixed for the whole sweep "
+                f"(EIS pins the range). EIS/GEIS run mode 3 -- use ONLY: "
+                f"{ladder} (default '100u'). Mode-2 values such as "
+                "'2u'/'10u'/'63u' return no data. The range must exceed the "
+                "highest-frequency current or the sweep under-ranges; the run "
+                "result reports per-channel quality and a 'suggested_cr' so "
+                "you can re-range. If unsure of the cell's impedance, start "
+                "low (e.g. '1u') and step up using 'suggested_cr'."
             ),
         }
     return {
@@ -184,7 +190,15 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "times. IMPORTANT: the device requires a closed "
                 "cycle, so e_vertex2 must equal e_begin; an open "
                 "cycle is rejected at script generation on real "
-                "hardware." + _RUN_RULES
+                "hardware. NOISE SCOPE: the result carries a per-channel "
+                "'noise' block with a 'ripple_ratio' and 'noise_ok'. To find "
+                "clean acquisition settings before the full scan, run a quick "
+                "CV over a SMALL potential window (e.g. e_begin=-0.1, "
+                "e_vertex1=0.1, e_vertex2=-0.1) and read ripple_ratio; if "
+                "noise_ok is false (elevated ripple -- usually 50/60 Hz mains "
+                "pickup), lower bw_hz (e.g. 400 -> 40) and re-run, driving "
+                "ripple_ratio down, then use that bandwidth for the full CV."
+                + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "e_begin": _num(
@@ -282,7 +296,19 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "freq_end (hertz) over n_freq points. Call this "
                 "whenever the user asks for EIS, impedance, a "
                 "Nyquist or Bode plot, or a frequency sweep on "
-                "channels 1-16." + _RUN_RULES
+                "channels 1-16. AUTO-RANGE: the result carries a "
+                "per-channel 'quality' block plus 'quality_ok' and, when a "
+                "channel under-ranges (current railed the range -> overload "
+                "or NaN), a 'suggested_cr'. If quality_ok is false, re-run the "
+                "affected channel(s) at 'suggested_cr' (jump several rungs up "
+                "the ladder if most points are bad) and repeat until "
+                "quality_ok. STOP re-ranging when 'rerange_exhausted' is true "
+                "(still bad at the largest range -> the fault is the "
+                "cell/wiring, not the range). If a run instead returns "
+                "ok=false with a device error and you used a small range, the "
+                "range was likely far too small: re-run at the 'suggested_cr' "
+                "on the error before giving up. Report only the good sweep."
+                + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "e_dc": _num(
@@ -316,8 +342,10 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "n_freq points. Call this when the user explicitly "
                 "asks for galvanostatic impedance / GEIS / "
                 "current-controlled EIS on channels 1-16; for normal "
-                "(potentiostatic) EIS use run_eis instead."
-                + _RUN_RULES
+                "(potentiostatic) EIS use run_eis instead. Like run_eis, the "
+                "result carries a per-channel 'quality' block, 'quality_ok', "
+                "and a 'suggested_cr' for re-ranging when a channel "
+                "under-ranges." + _RUN_RULES
             ),
             "input_schema": _measurement_schema({
                 "i_dc": _num(

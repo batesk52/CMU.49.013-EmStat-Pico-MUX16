@@ -132,6 +132,49 @@ def _format_int(value: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# EIS/GEIS current-range ladder (high-speed pgstat mode 3)
+# ---------------------------------------------------------------------------
+
+# EIS and GEIS run the potentiostat in HIGH-SPEED mode 3, which exposes a
+# DIFFERENT current-range ladder from the low-speed (mode-2) techniques.
+# Mode-2 values such as 2u/63u are INVALID in mode 3 and the device returns
+# no data, while valid mode-3 ranges (1u/6u/13u/50u/200u/5m) are absent from
+# the mode-2 ladder. This is the single source of truth for the mode-3 ranges:
+# the GUI dropdown (parameter_form), the agent tool schema (tools), and the
+# agent's quality/auto-range summary (engine_adapter) all import it from here
+# so they cannot drift. Ordered smallest -> largest (ascending full-scale).
+EIS_CURRENT_RANGES: list[str] = [
+    "100n", "1u", "6u", "13u", "25u", "50u", "100u", "200u", "1m", "5m",
+]
+
+
+def next_larger_eis_range(cr: str) -> str | None:
+    """Return the next-larger EIS current range above ``cr``, or None.
+
+    Used by the agent layer to suggest a re-range after an under-ranged
+    EIS sweep (current railed the pinned range). Steps one rung up the
+    mode-3 ladder (:data:`EIS_CURRENT_RANGES`).
+
+    Args:
+        cr: The current range that was used (an SI string like ``'1u'``).
+            Matching is exact against the mode-3 ladder.
+
+    Returns:
+        The next range string up the ladder (e.g. ``'1u'`` -> ``'6u'``),
+        or ``None`` when ``cr`` is already the largest range (``'5m'``)
+        or is not a recognised mode-3 range (caller should fall back to a
+        sensible mid-ladder default such as ``'100u'``).
+    """
+    try:
+        idx = EIS_CURRENT_RANGES.index(str(cr))
+    except ValueError:
+        return None
+    if idx + 1 < len(EIS_CURRENT_RANGES):
+        return EIS_CURRENT_RANGES[idx + 1]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Default parameters per technique
 # ---------------------------------------------------------------------------
 

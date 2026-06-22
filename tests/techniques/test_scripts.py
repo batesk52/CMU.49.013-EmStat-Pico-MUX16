@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from src.techniques.scripts import (
+    EIS_CURRENT_RANGES,
     _format_si,
     _gen_eis,
     _preamble,
@@ -26,6 +27,7 @@ from src.techniques.scripts import (
     _preamble_galvano,
     _preamble_geis,
     generate,
+    next_larger_eis_range,
 )
 
 
@@ -356,3 +358,34 @@ def test_fca_unsupported_on_pico_raises() -> None:
         ValueError, match="not supported on the EmStat Pico"
     ):
         generate("fca", {"e_dc": 0.2, "t_run": 10.0}, channels=[1])
+
+
+# ---------------------------------------------------------------------------
+# EIS/GEIS mode-3 current-range ladder + agent auto-range helper.
+# ---------------------------------------------------------------------------
+
+
+def test_eis_current_ranges_are_the_mode3_ladder() -> None:
+    """The shared ladder is ascending and excludes mode-2-only values."""
+    assert EIS_CURRENT_RANGES[0] == "100n"
+    assert EIS_CURRENT_RANGES[-1] == "5m"
+    # Mode-2 values must never appear (they return no data in mode 3).
+    for mode2_only in ("2u", "4u", "8u", "16u", "32u", "63u", "10m", "100m"):
+        assert mode2_only not in EIS_CURRENT_RANGES
+
+
+def test_next_larger_eis_range_steps_one_rung_up() -> None:
+    assert next_larger_eis_range("100n") == "1u"
+    assert next_larger_eis_range("1u") == "6u"
+    assert next_larger_eis_range("100u") == "200u"
+    assert next_larger_eis_range("1m") == "5m"
+
+
+def test_next_larger_eis_range_at_top_returns_none() -> None:
+    assert next_larger_eis_range("5m") is None
+
+
+def test_next_larger_eis_range_unknown_returns_none() -> None:
+    # Mode-2 values and garbage are not on the ladder.
+    assert next_larger_eis_range("2u") is None
+    assert next_larger_eis_range("garbage") is None

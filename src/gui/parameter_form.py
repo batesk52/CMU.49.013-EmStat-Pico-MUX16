@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.techniques.scripts import technique_params
+from src.techniques.scripts import EIS_CURRENT_RANGES, technique_params
 
 # Parameter display names and units for field labels.
 PARAM_LABELS: dict[str, tuple[str, str]] = {
@@ -73,10 +73,9 @@ CURRENT_RANGES = [
 # EIS/GEIS run the potentiostat in HIGH-SPEED mode 3, which exposes a DIFFERENT
 # current-range ladder. Offering the mode-2 list for EIS is a footgun: ranges
 # like 2u/63u are invalid in mode 3 and the device returns no data, while valid
-# ranges (50u/200u) are absent. These are the mode-3 ranges.
-EIS_CURRENT_RANGES = [
-    "100n", "1u", "6u", "13u", "25u", "50u", "100u", "200u", "1m", "5m",
-]
+# ranges (50u/200u) are absent. The mode-3 ladder lives in src.techniques.scripts
+# (the owner of mode/range knowledge) and is imported here so the GUI dropdown,
+# the agent tool schema, and the agent auto-range summary share one definition.
 
 
 def current_ranges_for(technique: str | None) -> list[str]:
