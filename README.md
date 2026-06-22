@@ -45,7 +45,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 │   ├── agent/              # Embedded Claude agent (Qt<->asyncio bridge, tools, worker)
 │   ├── vendor/             # Read-only vendored CMU.49.011 analysis code
 │   └── mcp_server/         # Headless MCP stdio server (same tool defs for Claude Code)
-├── tests/                  # pytest suite mirroring src/ (202 tests, headless via QT_QPA_PLATFORM=offscreen)
+├── tests/                  # pytest suite mirroring src/ (259 tests, headless via QT_QPA_PLATFORM=offscreen)
 ├── docs/                   # Protocol references, enclosure design, lessons
 └── claude_test_files/      # Agent validation / smoke scripts (NOT the project test suite)
 ```
@@ -65,7 +65,7 @@ Presets/sequences live OUTSIDE the repo under `~/.emstat_pico_mux16/` (`*.mux16`
 - `src/gui/plot_widget.py` / `eis_plot_container.py` / `bode_widget.py` - pyqtgraph live plots (per-channel curves, Nyquist + Bode)
 - `src/gui/controls.py` + `parameter_form.py` - Control panels + widget factory (technique-aware current-range ladder)
 - `src/gui/agent_dock.py` - In-app Claude chat: streaming text, inline tool chips, in-chat figure attachments
-- `src/agent/` - Embedded agent stack: `bridge.py` (Qt<->asyncio), `engine_adapter.py`, `tools.py`, `agent_worker.py`, `vendor_analysis.py`
+- `src/agent/` - Embedded agent stack: `bridge.py` (Qt<->asyncio), `engine_adapter.py`, `tools.py`, `agent_worker.py`, `vendor_analysis.py`, `preset_tools.py` (agent save/load of presets + sequences). The agent self-tunes acquisition: EIS auto-ranges up the mode-3 ladder on overload, CV/CA carry a noise-scope block, and `analyze_eis` flags Rct as unreliable / a lower bound when the -Z'' semicircle apex was not captured (PR #19). 22 tools total across the dock + MCP surfaces
 - `src/mcp_server/stdio_server.py` - Headless MCP server exposing the same run/analyze tools for Claude Code (mock engine when no hardware)
 
 ### Use Cases

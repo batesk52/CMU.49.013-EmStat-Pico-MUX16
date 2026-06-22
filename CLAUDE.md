@@ -39,6 +39,7 @@ Template: codebase
 - `meas_loop_eis` final argument is the **DC potential** (manual §14.46), not a flag — pass `e_dc`/`i_dc`, not `0`
 - SI values are an **integer mantissa + prefix** (`2565`, `100k`, `500m`); a decimal mantissa (`2.565k`) is rejected with `e!4004`. `_format_si` enforces this — do not hand-build values with decimals
 - **EIS/GEIS run high-speed mode 3, where the current range MUST be pinned** (`set_autoranging ba {cr} {cr}`, min==max). In-loop range switching corrupts the spectrum on FW 1.6.01 (low-freq Nyquist arc reverses / Z' goes negative). Mode-2 techniques (CV/CA/...) keep real autoranging. Mode-3 has a different valid current-range ladder (`100n,1u,6u,13u,25u,50u,100u,200u,1m,5m`); the mode-2 values `2u`/`63u` return no data in mode 3 (see `parameter_form.current_ranges_for`)
+- **EIS Rct is only meaningful if the -Z'' semicircle apex is captured.** The vendored EISAnalyzer derives Rct from the max of |Z''|; if that max lands on the lowest swept frequency (the arc is still rising at `freq_end`), the reported "Rct" is a meaningless extrapolation. `vendor_analysis._eis_apex_assessment` detects this, NULLs `rct_ohm`/`peak_frequency_hz`/`time_constant_s`, and reports `rct_lower_bound_ohm` instead — lower `freq_end` and re-run rather than quoting it. Rs and |Z|@1kHz stay valid. The vendored math is untouched/read-only (PR #19)
 
 ### MUX16 Addressing
 - Hardware labels are 1-indexed (CH1-CH16), GPIO addresses are 0-indexed

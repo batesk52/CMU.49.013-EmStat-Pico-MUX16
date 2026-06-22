@@ -171,7 +171,8 @@ The lab relies on individual PalmSens potentiostats for electrochemical measurem
 **Description:** In-app Claude agent dock that drives measurements and analysis (PR #14/#15, CMU.17.042)
 **Acceptance Criteria:**
 - Chat dock drives the SAME live plots by calling the existing `MeasurementEngine` via an `EngineAdapter`; no separate render path
-- Tools: `run_cv/run_ca/run_eis/run_cp/run_geis`, `list_ports/connect/disconnect/device_status`, `export_session`, and vendored CMU.49.011 analysis (`analyze_cv/ecsa/ca/eis/cic/cp`)
+- Tools: `run_cv/run_ca/run_eis/run_cp/run_geis`, `list_ports/connect/disconnect/device_status/abort_measurement`, `export_session`, vendored CMU.49.011 analysis (`load_session`, `analyze_cv/ecsa/ca/eis/cic/cp`), and preset/sequence persistence `save_preset/save_sequence/load_preset/load_sequence` — 22 tools total
+- Self-tuning (PR #19, CMU.17.047): EIS/GEIS results carry a per-channel quality block (overload/NaN → "underranged" + `suggested_cr`; agent re-ranges up the mode-3 ladder until clean, stops at the top); CV/CA carry a noise-scope block (robust residual sigma after a centered median detrend); `analyze_eis` flags Rct as unreliable / a lower bound when the -Z'' semicircle apex was not captured. Preset/sequence tools open the native file dialog in-app (GUI thread) with an explicit-path fallback headless; writes are atomic and refuse to clobber a foreign file
 - Qt<->asyncio bridge (`AgentWorker` QThread runs its own asyncio loop); engine completion awaited via a thread-safe future resolved by one-shot GUI-thread slots
 - Mock engine provides a no-hardware path; agent module imports with no API key; API key + model set in File > Agent Settings
 - No emojis; native deps (numpy/scipy/matplotlib Agg/pandas) eager-imported at module top; vendored 49.011 code is read-only
