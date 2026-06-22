@@ -131,6 +131,40 @@ range restores headroom.
 
 ---
 
+## EIS Rct honesty — "we didn't hit the semicircle peak" (a demo beat)
+
+A great on-camera moment: the agent looks at the EIS data and *refuses* to quote
+Rct when the data doesn't support it. `analyze_eis` now checks whether the −Z″
+**semicircle apex was actually captured**. The vendored analyzer derives Rct from
+the maximum of |Z″|; if that maximum lands on the **lowest measured frequency**
+(−Z″ still rising at `freq_end`), the arc never turned over and the "Rct" is just
+Z′ at the sweep floor minus Rs — a meaningless number. The guard catches that:
+
+```jsonc
+{ "metrics": {
+    "rs_ohm": 350,            // still valid (HF intercept)
+    "impedance_1khz_ohm": 620, // still valid (a measured point)
+    "apex_reached": false,
+    "rct_reliable": false,
+    "rct_ohm": null,           // suppressed — not quoted
+    "rct_lower_bound_ohm": 35260,
+    "rct_note": "-Z'' is still rising at the lowest measured frequency (10 Hz)
+                 -- the semicircle apex was NOT reached, so Rct cannot be
+                 reliably determined ... Lower freq_end (e.g. to 0.1 Hz) ..." } }
+```
+
+The agent then says, on camera: *"On these channels the −Z″ is still climbing at
+10 Hz — we never hit the semicircle peak, so I can't give you a reliable Rct;
+it's at least ~35 kΩ. Rs (~350 Ω) and |Z| at 1 kHz are solid. To actually
+measure Rct we'd extend the sweep down to ~0.1 Hz."* That's the honest-instrument
+beat: it knows the difference between a measurement and an extrapolation. (Run to
+10 Hz for the quick alive/dead pass; only drop `freq_end` when you actually want
+Rct — low-frequency EIS is the slow part.)
+
+Verified on the real `testdata.csv`: all four CeOx-on-Au channels flag
+`apex_reached: false` with lower bounds 21–36 kΩ — 2–4× the "5–10 kΩ" a naive
+read-off reported.
+
 ## CV noise scope (bandwidth tuning) — the sibling beat
 
 Same idea as EIS auto-range, for CV ripple. The agent can't *see* the plot (it

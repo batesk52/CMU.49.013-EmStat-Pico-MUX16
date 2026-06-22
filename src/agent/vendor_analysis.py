@@ -289,6 +289,71 @@ def _safe(tool_name: str, fn: Callable[[dict[str, Any]], dict[str, Any]]):
     return handler
 
 
+def _eis_apex_assessment(df: pd.DataFrame) -> dict[str, Any]:
+    """Decide whether the EIS semicircle apex was actually captured.
+
+    The vendored ``EISAnalyzer`` derives Rct from the maximum of ``|Z''|`` (the
+    semicircle top). If that maximum lands on the LOWEST measured frequency —
+    i.e. ``-Z''`` is still rising at ``freq_end`` — the arc never turned over,
+    so the reported Rct is not a measurement at all (just ``Z'`` at the sweep
+    floor minus Rs) and ``peak_frequency`` is just ``freq_end``. This flags that
+    case so the agent reports Rct as unreliable / a lower bound instead of
+    quoting a confident value.
+
+    Returns a dict of fields to MERGE into the metrics (overriding ``rct_ohm`` /
+    ``peak_frequency_hz`` / ``time_constant_s`` with None when the apex was not
+    reached), or ``{}`` when it cannot assess. Best-effort: never raises.
+    """
+    try:
+        if not {"Frequency_Hz", "Z_imag_Ohm"}.issubset(df.columns):
+            return {}
+        d = df.sort_values("Frequency_Hz", ascending=False).reset_index(drop=True)
+        neg = -d["Z_imag_Ohm"].to_numpy(dtype=float)  # +ve up the capacitive arc
+        freqs = d["Frequency_Hz"].to_numpy(dtype=float)
+        n = len(neg)
+        if n < 4 or not np.isfinite(neg).any():
+            return {}
+        imax = int(np.nanargmax(neg))
+        peak = float(neg[imax])
+        end = float(neg[-1])  # lowest-frequency point
+        freq_min = float(freqs[-1])
+        # Apex captured only if the -Z'' maximum is INTERIOR (not the lowest
+        # frequency) AND the low-frequency tail has come back down from it. If
+        # the max is the last point, the arc is still climbing -> not reached.
+        apex_reached = bool(imax < n - 1 and peak > 0 and end < 0.9 * peak)
+        out: dict[str, Any] = {
+            "apex_reached": apex_reached,
+            "lowest_frequency_hz": freq_min,
+        }
+        if apex_reached:
+            out["rct_reliable"] = True
+            out["rct_note"] = (
+                "Semicircle apex captured within the swept range, so Rct is a "
+                "supported estimate."
+            )
+            return out
+        lb = 2.0 * peak if peak > 0 else None
+        out["rct_reliable"] = False
+        # Suppress the unreliable extractions rather than quote them.
+        out["rct_ohm"] = None
+        out["peak_frequency_hz"] = None
+        out["time_constant_s"] = None
+        if lb is not None:
+            out["rct_lower_bound_ohm"] = lb
+        out["rct_note"] = (
+            f"-Z'' is still rising at the lowest measured frequency "
+            f"({freq_min:.3g} Hz) -- the semicircle apex was NOT reached, so "
+            "Rct cannot be reliably determined from this sweep"
+            + (f" (it is at least ~{lb:.3g} ohm, a lower bound)" if lb else "")
+            + ". Lower freq_end (e.g. to 0.1 Hz) to capture the apex before "
+            "quoting Rct."
+        )
+        return out
+    except Exception:  # noqa: BLE001 - assessment is best-effort, never fatal
+        logger.exception("EIS apex assessment failed")
+        return {}
+
+
 def _path_prop() -> dict[str, Any]:
     """Schema for the session-file path argument."""
     return {
@@ -418,6 +483,10 @@ def build_analysis_tools(
         # get_summary() runs the vendored Rs/Rct extraction (the cheap
         # built-in fit info: high-frequency intercept + semicircle).
         metrics = analyzer.get_summary()
+        # Guard against quoting an Rct when the semicircle apex was never
+        # captured (-Z'' still rising at freq_end): merge apex_reached /
+        # rct_reliable / rct_note and null out the unreliable extractions.
+        metrics.update(_eis_apex_assessment(df))
         n_figs = _emit_figures(
             figure_sink,
             "analyze_eis",
@@ -708,7 +777,14 @@ def build_analysis_tools(
                     "at 1 kHz, peak frequency and time constant. Emits "
                     "Nyquist and Bode figures into the app. Call this "
                     "when the user asks to analyze or plot saved EIS / "
-                    "impedance data."
+                    "impedance data. IMPORTANT: check metrics.apex_reached "
+                    "and metrics.rct_reliable. When apex_reached is false the "
+                    "-Z'' semicircle never turned over (still rising at the "
+                    "lowest frequency), so rct_ohm is null and "
+                    "rct_lower_bound_ohm / rct_note are given instead -- report "
+                    "that Rct is NOT reliable (only a lower bound) and suggest a "
+                    "lower freq_end; do NOT quote a semicircle Rct. Rs and |Z| "
+                    "at 1 kHz stay valid either way."
                 ),
                 "input_schema": _schema(
                     {
