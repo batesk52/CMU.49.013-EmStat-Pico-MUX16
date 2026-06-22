@@ -6,7 +6,13 @@ Project-specific task tracking and history.
 
 ## In Progress
 
-[Empty - no tasks currently in progress]
+### 2026-06-22: analyze_cv MCP tool surfaces redox-peak reversibility + Randles-Sevcik area
+- [x | Session | 2026-06-22] Wired the new CMU.49.011 `CVAnalyzer` capabilities into the agent's `analyze_cv` tool (branch `feature/cv-randles-sevcik-tool`). Motivated by TSC.45.001 bare Au-IDE diagnostics: the autonomous IDE-cleaning protocol needs the area-independent CV reversibility gate (delta_ep) AND the electroactive area (to area-normalize a high Rct into clean-vs-fouled).
+  - **Vendored sync** — `src/vendor/electrochem_analysis/analysis/cv.py` re-synced from the updated 49.011 `cv.py` (CMU.49.011 PR `feature/randles-sevcik-area`). +287 lines, 0 deletions; only delta vs upstream is the vendored import path (`src.vendor.electrochem_analysis.utils.grouping`) and CRLF line endings, both preserved. Adds `extract_peaks()`, `calculate_electroactive_area()`, `calculate_area_from_scan_rates()`, `plot_randles_sevcik()`, peak metrics in `get_summary()`, and constants `RANDLES_SEVCIK_CONSTANT` / `DEFAULT_DIFFUSION_COEFF_CM2_S` / `REVERSIBLE_DELTA_EP_MV`.
+  - **`analyze_cv` tool** (`src/agent/vendor_analysis.py`) — now calls `extract_peaks()` before `get_summary()` so `epa_v/epc_v/delta_ep_mv/ipa_ipc_ratio/e_half_v/peaks_well_defined/reversible` are folded into `metrics` (skips gracefully with a note when the scan has no resolvable peaks). New optional inputs `concentration_mM` (+ `n_electrons`, `diffusion_coeff_cm2_s`, `peak`): when given with `scan_rate`, returns `electroactive_area_cm2`/`_mm2` via single-rate Randles-Sevcik. Tool description + input_schema updated so the agent knows to pass `concentration_mM` (e.g. 5 for 5 mM ferri/ferro) and how to read the cleanliness gate. Import extended to pull `DEFAULT_DIFFUSION_COEFF_CM2_S`.
+  - **Validation** — `py_compile` clean; vendored `CVAnalyzer` recovers a synthetic known area to 0.00500 cm^2 (PASS) with delta_ep 58.1 mV / reversible=True and `get_summary()` carrying the peak keys; `tests/agent/test_eis_apex.py` 4/4 pass (confirms `vendor_analysis` imports + analysis-tool layer intact). Other agent/GUI tests un-runnable in this env (no `serial`/PyQt6) — pre-existing, unrelated.
+- **Left off:** Implemented + validated on `feature/cv-randles-sevcik-tool` (commit pending). Upstream 49.011 branch pushed; PR open at github.com/batesk52/CMU.49.011-Electrochemistry (gh auth was down this session — PR may need manual open).
+- **Next:** push + PR. The autonomous IDE-diagnostic protocol can now call `analyze_cv` with `concentration_mM` for area + read `reversible`/`delta_ep_mv` as the clean/fouled gate. EIS Rct still flows through `analyze_eis` (apex guard applies); area-normalized Rct = `rct_ohm * electroactive_area_cm2`.
 
 ---
 
