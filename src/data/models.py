@@ -232,11 +232,17 @@ class DataPoint:
         channel: 1-indexed MUX channel that produced this sample.
         variables: Mapping of variable names to float values
             (e.g., ``{'set_potential': 0.5, 'current': 1.2e-6}``).
+        overload: True when the device flagged a hard current overload
+            for this sample (the reading railed the pinned current
+            range). Carried from the packet's status metadata so the
+            agent layer can detect an under-ranged run and re-range.
+            Defaults to False (no overload / status not reported).
     """
 
     timestamp: Optional[float]
     channel: int
     variables: dict[str, float] = field(default_factory=dict)
+    overload: bool = False
 
     def get(self, name: str, default: float = 0.0) -> float:
         """Return the value of a named variable.

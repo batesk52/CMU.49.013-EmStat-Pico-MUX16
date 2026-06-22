@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import statistics
 from datetime import datetime
 from typing import Any, Optional
 
@@ -39,7 +41,12 @@ from serial.tools import list_ports as _serial_list_ports
 from src.agent.bridge import SignalTimeoutError, await_signal, run_on_gui
 from src.data.exporters import PsSessionExporter
 from src.data.models import TechniqueConfig
-from src.techniques.scripts import supported_techniques, technique_params
+from src.techniques.scripts import (
+    EIS_CURRENT_RANGES,
+    next_larger_eis_range,
+    supported_techniques,
+    technique_params,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +55,288 @@ logger = logging.getLogger(__name__)
 # documented way).
 _DEFAULT_EXPORT_DIR = "agent_exports"
 
-__all__ = ["EngineAdapter", "build_technique_config"]
+__all__ = [
+    "EngineAdapter",
+    "build_technique_config",
+    "cv_noise",
+    "eis_quality",
+]
+
+# Techniques whose run summary carries an EIS data-quality assessment.
+_EIS_TECHNIQUES = ("eis", "geis")
+
+# A current-vs-time trace (CV/CA/…) is flagged noisy when its high-frequency
+# ripple — a robust estimate of point-to-point oscillation, divided by the
+# current span — exceeds this fraction. The dominant real-world cause is 50/60
+# Hz mains pickup, fixable by lowering the measurement bandwidth (bw_hz). The
+# default is a conservative starting point; calibrate it against a clean-vs-noisy
+# pair from the actual rig (the auto-range/noise rehearsal).
+_NOISE_RIPPLE_FLAG = 0.02
+
+# Minimum current points needed for a meaningful ripple estimate.
+_NOISE_MIN_POINTS = 8
+
+# A channel is flagged under-ranged when at least this fraction of its
+# impedance points carry a DEVICE-AUTHORITATIVE under-range signal (the
+# overload status bit or a NaN reading). On a 50-point sweep this is ≥5
+# points; combined with the absolute floor below, a single stray bad point
+# never trips the flag.
+_EIS_BAD_FRACTION_FLAG = 0.10
+
+# Absolute floor (points), independent of sweep length: never flag a channel
+# under-ranged on a single bad point. This also fixes the small-sweep edge
+# (without it, 1 bad point on a ≤10-point sweep would reach the 10% fraction).
+_EIS_MIN_BAD_POINTS = 2
+
+# Negative real-Z is NOT treated as a primary under-range signal: the project's
+# own EIS noise investigation attributes scattered negative-Z' points to mains
+# (50/60 Hz) pickup on CORRECTLY-ranged sweeps, and stepping the range up cannot
+# remove them — so flagging on them would chase a non-existent range fault. It
+# only contributes when a LARGE fraction of the sweep is negative (an inverted
+# Nyquist arc that mains cannot explain); the authoritative overload/NaN signals
+# drive the normal case.
+_EIS_NEG_ZREAL_FRACTION_FLAG = 0.5
+
+# Fallback range when the used range is not on the mode-3 ladder (the agent
+# passed an out-of-ladder value): re-range to a safe mid-ladder default.
+_EIS_FALLBACK_CR = "100u"
+
+
+def eis_quality(
+    result: Any,
+    channels_requested: list[int],
+    used_cr: str,
+) -> dict[str, Any]:
+    """Assess EIS/GEIS data quality per channel for agent auto-ranging.
+
+    A too-small (under-ranged) current range makes the EIS current rail the
+    pinned range; the device then reports an overload status bit or emits NaN
+    readings on the clipped points. Those two signals are device-authoritative
+    and drive the verdict. Negative real-Z is a NOISY proxy — the project's own
+    bench data attributes scattered negative-Z' to mains pickup on correctly-
+    ranged sweeps — so it only contributes when a large fraction of the sweep is
+    negative (an inverted arc). When a channel is flagged, the function suggests
+    stepping one rung UP the mode-3 ladder. (Over-ranging is the opposite, softer
+    problem — small-but-valid Z with poor resolution — and is left to the agent's
+    judgement; only under-range signatures are auto-flagged here.)
+
+    Args:
+        result: The finished ``MeasurementResult``.
+        channels_requested: Channels the run asked for (so a requested
+            channel that returned no impedance points is reported as
+            ``no_data`` rather than silently omitted).
+        used_cr: The current range the sweep ran at (SI string, e.g.
+            ``'1u'``), used to compute the suggested next range.
+
+    Returns:
+        A compact dict: ``quality_ok`` (bool), ``per_channel`` (dict keyed
+        by channel string with point/overload/NaN/negative-Z counts, the
+        bad fraction, and a per-channel verdict), ``suggested_cr`` (the
+        recommended larger range, or None), ``rerange_exhausted`` (True when
+        the channel is still bad at the largest range — stop re-ranging), and
+        ``note`` (a one-line human summary for the model).
+    """
+    # Bucket impedance-bearing points by channel in a single pass (avoids an
+    # O(channels × points) re-scan of the full point list per channel).
+    by_channel: dict[int, list[Any]] = {}
+    for dp in result.data_points:
+        if "zreal" in dp.variables or "impedance" in dp.variables:
+            by_channel.setdefault(dp.channel, []).append(dp)
+
+    per_channel: dict[str, dict[str, Any]] = {}
+    channels = sorted(
+        set(int(c) for c in channels_requested) | set(by_channel)
+    )
+    for ch in channels:
+        imp_pts = by_channel.get(ch, [])
+        n = len(imp_pts)
+        overload_n = nan_n = neg_n = auth_bad_n = 0
+        for dp in imp_pts:
+            zr = dp.variables.get("zreal")
+            zi = dp.variables.get("zimag")
+            zmag = dp.variables.get("impedance")
+            is_nan = any(
+                v is not None and math.isnan(v) for v in (zr, zi, zmag)
+            )
+            is_neg = (
+                zr is not None and not math.isnan(zr) and zr < 0.0
+            )
+            is_overload = bool(getattr(dp, "overload", False))
+            if is_overload:
+                overload_n += 1
+            if is_nan:
+                nan_n += 1
+            if is_neg:
+                neg_n += 1
+            # Authoritative under-range signals only (overload bit / NaN).
+            if is_overload or is_nan:
+                auth_bad_n += 1
+        if n == 0:
+            verdict = "no_data"
+            bad_fraction = 1.0
+        else:
+            bad_fraction = auth_bad_n / n
+            authoritative = (
+                auth_bad_n >= _EIS_MIN_BAD_POINTS
+                and bad_fraction >= _EIS_BAD_FRACTION_FLAG
+            )
+            # Inverted-arc backstop: a large negative-Z' fraction is a genuine
+            # corruption signature that mains pickup (a few scattered points)
+            # cannot produce.
+            inverted_arc = (
+                neg_n >= _EIS_MIN_BAD_POINTS
+                and (neg_n / n) >= _EIS_NEG_ZREAL_FRACTION_FLAG
+            )
+            verdict = (
+                "underranged" if (authoritative or inverted_arc) else "ok"
+            )
+        per_channel[str(ch)] = {
+            "points": n,
+            "overload_points": overload_n,
+            "nan_points": nan_n,
+            "neg_zreal_points": neg_n,
+            "bad_fraction": round(bad_fraction, 3),
+            "verdict": verdict,
+        }
+
+    flagged = [c for c, q in per_channel.items() if q["verdict"] != "ok"]
+    quality_ok = not flagged
+    suggested_cr: Optional[str] = None
+    rerange_exhausted = False
+    if quality_ok:
+        note = "EIS data quality looks good on all measured channels."
+    else:
+        suggested_cr = next_larger_eis_range(used_cr)
+        if suggested_cr is None:
+            if str(used_cr) == EIS_CURRENT_RANGES[-1]:
+                # Already at the top of the ladder and still bad: this is no
+                # longer a range problem. Signal a hard stop so the agent does
+                # not loop re-running the largest range.
+                rerange_exhausted = True
+                note = (
+                    f"Channel(s) {flagged} still show overload / NaN at the "
+                    f"largest current range ({used_cr}). This is no longer a "
+                    "current-range problem — STOP re-ranging and check the "
+                    "electrode contact, wiring, and cell, or whether the "
+                    "channel is open/dead."
+                )
+            else:
+                # Used range not on the mode-3 ladder: re-range to a safe
+                # mid-ladder default rather than guessing a neighbour.
+                suggested_cr = _EIS_FALLBACK_CR
+                note = (
+                    f"Channel(s) {flagged} returned overload / NaN or no data "
+                    f"at current range {used_cr!r}, which is not a valid "
+                    f"mode-3 EIS range. Re-run at a valid range such as "
+                    f"{suggested_cr}."
+                )
+        else:
+            note = (
+                f"Channel(s) {flagged} look under-ranged at {used_cr} "
+                "(the current railed the range → overload / NaN). Re-run "
+                f"those channel(s) at a LARGER current range, e.g. "
+                f"{suggested_cr} (jump several rungs if most points are bad), "
+                "then continue."
+            )
+
+    return {
+        "quality_ok": quality_ok,
+        "per_channel": per_channel,
+        "suggested_cr": suggested_cr,
+        "rerange_exhausted": rerange_exhausted,
+        "note": note,
+    }
+
+
+def cv_noise(
+    result: Any,
+    channels_requested: list[int],
+) -> dict[str, Any]:
+    """Assess per-channel high-frequency ripple on a current trace.
+
+    Gives the agent a NUMBER for trace "noise" it cannot otherwise see (it only
+    receives metrics, never the plot pixels), so it can scope settings the same
+    way it auto-ranges EIS: run a quick (small-window) CV, read the ripple, lower
+    the measurement bandwidth (``bw_hz``), and re-run until the ripple drops.
+
+    The ripple estimate is the robust standard deviation of the current's
+    discrete second difference, divided by the current span. The second
+    difference cancels the smooth CV/CA trend so only point-to-point oscillation
+    remains; the median-absolute-deviation makes it insensitive to the few sharp
+    points at scan vertices / faradaic onsets. A smooth trace gives ≈0; 50/60 Hz
+    mains pickup gives a clearly elevated value. It is a comparable indicator
+    (drive it down across re-runs), not a calibrated noise amplitude.
+
+    Args:
+        result: The finished ``MeasurementResult``.
+        channels_requested: Channels the run asked for (so a requested channel
+            with too few current points is reported as ``insufficient_data``).
+
+    Returns:
+        ``{"noise_ok": bool, "per_channel": {ch: {points, ripple_ratio,
+        verdict}}, "note": str}``. ``ripple_ratio`` is None when there are too
+        few points; ``verdict`` is ``"clean"`` / ``"elevated"`` /
+        ``"insufficient_data"``.
+    """
+    by_channel: dict[int, list[float]] = {}
+    for dp in result.data_points:
+        c = dp.variables.get("current")
+        if c is None:
+            continue
+        c = float(c)
+        if not math.isnan(c):
+            by_channel.setdefault(dp.channel, []).append(c)
+
+    per_channel: dict[str, dict[str, Any]] = {}
+    channels = sorted(
+        set(int(c) for c in channels_requested) | set(by_channel)
+    )
+    for ch in channels:
+        cur = by_channel.get(ch, [])
+        n = len(cur)
+        if n < _NOISE_MIN_POINTS:
+            per_channel[str(ch)] = {
+                "points": n,
+                "ripple_ratio": None,
+                "verdict": "insufficient_data",
+            }
+            continue
+        span = max(cur) - min(cur)
+        # Robust high-frequency noise estimate from the second difference.
+        # var(2nd diff) = 6·σ² for i.i.d. noise, so divide the robust σ of the
+        # second difference by √6 to recover the per-point noise scale.
+        d2 = [
+            cur[i - 1] - 2.0 * cur[i] + cur[i + 1]
+            for i in range(1, n - 1)
+        ]
+        med = statistics.median(d2)
+        mad = statistics.median([abs(x - med) for x in d2])
+        sigma_hf = 1.4826 * mad / math.sqrt(6.0)
+        ripple_ratio = (sigma_hf / span) if span > 0 else 0.0
+        verdict = (
+            "elevated" if ripple_ratio >= _NOISE_RIPPLE_FLAG else "clean"
+        )
+        per_channel[str(ch)] = {
+            "points": n,
+            "ripple_ratio": round(ripple_ratio, 4),
+            "verdict": verdict,
+        }
+
+    flagged = [c for c, q in per_channel.items() if q["verdict"] == "elevated"]
+    noise_ok = not flagged
+    if noise_ok:
+        note = (
+            "Traces look clean (low high-frequency ripple) on all measured "
+            "channels."
+        )
+    else:
+        note = (
+            f"Channel(s) {flagged} show elevated high-frequency ripple — "
+            "usually 50/60 Hz mains pickup. Lower the max bandwidth (bw_hz, "
+            "e.g. 400 -> 40) and re-run; compare ripple_ratio to confirm it "
+            "dropped."
+        )
+    return {"noise_ok": noise_ok, "per_channel": per_channel, "note": note}
 
 
 def build_technique_config(
@@ -300,7 +588,8 @@ class EngineAdapter:
             raise
         except Exception as exc:
             # measurement_error payload, or SignalTimeoutError.
-            if isinstance(exc, SignalTimeoutError):
+            is_timeout = isinstance(exc, SignalTimeoutError)
+            if is_timeout:
                 # A timed-out await must not leave the cell energized
                 # and the engine busy: best-effort abort, mirroring the
                 # engine's own error-path cell-off policy.
@@ -311,7 +600,26 @@ class EngineAdapter:
                         "Abort after await timeout failed: %s", abort_exc
                     )
             logger.error("Measurement failed: %s", exc)
-            return self._error(technique, str(exc))
+            err = self._error(technique, str(exc))
+            # A too-small pinned EIS range can make the device REJECT the sweep
+            # (e!xxxx) rather than complete with railed data, so the success-
+            # path quality block never runs. Carry a re-range hint on the error
+            # so the agent can still step the range up. Skipped for timeouts
+            # (a slow low-frequency point, not a range fault).
+            if technique.lower() in _EIS_TECHNIQUES and not is_timeout:
+                used_cr = str(config.params.get("cr", _EIS_FALLBACK_CR))
+                suggested = next_larger_eis_range(used_cr)
+                if suggested is None and used_cr != EIS_CURRENT_RANGES[-1]:
+                    suggested = _EIS_FALLBACK_CR
+                if suggested is not None:
+                    err["suggested_cr"] = suggested
+                    err["hint"] = (
+                        f"The device errored during EIS at current range "
+                        f"{used_cr}. If you chose a small range it may be far "
+                        f"too small — re-run at a larger range (e.g. "
+                        f"{suggested}) before giving up."
+                    )
+            return err
 
         summary = self._summarize(result, config)
         logger.info(
@@ -561,16 +869,20 @@ class EngineAdapter:
         """
         points_per_channel: dict[str, int] = {}
         variables: set[str] = set()
+        overload_points = 0
         for dp in result.data_points:
             key = str(dp.channel)
             points_per_channel[key] = points_per_channel.get(key, 0) + 1
             variables.update(dp.variables)
-        return {
+            if getattr(dp, "overload", False):
+                overload_points += 1
+        summary: dict[str, Any] = {
             "ok": True,
             "technique": result.technique,
             "num_points": result.num_points,
             "measured_channels": result.measured_channels,
             "points_per_channel": points_per_channel,
+            "overload_points": overload_points,
             "variables": sorted(variables),
             "channels_requested": list(config.channels),
             "re_ce_channels": list(config.re_ce_channels),
@@ -582,3 +894,28 @@ class EngineAdapter:
                 else None
             ),
         }
+        # EIS/GEIS: attach a per-channel data-quality block so the agent can
+        # detect an under-ranged sweep (current railed the range → overload /
+        # NaN / negative-Z') and re-range up the mode-3 ladder before moving
+        # on. Other techniques carry only the generic ``overload_points``.
+        if result.technique in _EIS_TECHNIQUES:
+            used_cr = str(result.params.get("cr", _EIS_FALLBACK_CR))
+            q = eis_quality(result, list(config.channels), used_cr)
+            summary["quality_ok"] = q["quality_ok"]
+            summary["quality"] = q["per_channel"]
+            summary["quality_note"] = q["note"]
+            # Always present so the model has an unambiguous stop signal: True
+            # means the largest range is still bad (fault is the cell/wiring,
+            # not the range) — do not re-range further.
+            summary["rerange_exhausted"] = q["rerange_exhausted"]
+            if q["suggested_cr"] is not None:
+                summary["suggested_cr"] = q["suggested_cr"]
+        # Current-vs-time techniques (CV, CA, …): attach a per-channel ripple
+        # block so the agent can scope settings against mains/bandwidth noise
+        # (run a quick windowed CV, read ripple_ratio, lower bw_hz, re-run).
+        elif any("current" in dp.variables for dp in result.data_points):
+            nz = cv_noise(result, list(config.channels))
+            summary["noise_ok"] = nz["noise_ok"]
+            summary["noise"] = nz["per_channel"]
+            summary["noise_note"] = nz["note"]
+        return summary

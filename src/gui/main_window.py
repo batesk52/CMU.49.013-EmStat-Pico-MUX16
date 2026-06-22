@@ -57,6 +57,7 @@ from PyQt6.QtWidgets import (
 from src.agent import bridge as agent_bridge
 from src.agent.engine_adapter import EngineAdapter
 from src.agent.mock_engine import MockConnection, MockMeasurementEngine
+from src.agent.preset_tools import build_preset_tools
 from src.agent.tools import build_registry
 from src.agent.vendor_analysis import build_analysis_tools
 from src.comms.serial_connection import PicoConnection
@@ -111,6 +112,44 @@ from src.data.models import (  # noqa: E402
     ALWAYS_AUTOSAVE_TECHNIQUES as _ALWAYS_AUTOSAVE_TECHNIQUES,
     forces_auto_save as _forces_auto_save,
 )
+
+
+class _AgentFileDialogs:
+    """Native save/open dialogs for the agent's preset/sequence tools.
+
+    Implements the :class:`src.agent.preset_tools.FileDialogProvider`
+    protocol. The methods are invoked ON THE GUI THREAD (the tool handlers
+    marshal them via ``run_on_gui``), so ``QFileDialog`` is safe to call
+    here. The last-used directory is remembered between calls so the
+    operator does not re-navigate every time.
+    """
+
+    def __init__(self, parent, start_dir: str) -> None:
+        self._parent = parent
+        self._dir = start_dir or ""
+
+    def request_save_path(self, suggested_name: str, file_filter: str):
+        """Open a native Save dialog; return the chosen path or None."""
+        start = (
+            os.path.join(self._dir, suggested_name)
+            if self._dir
+            else suggested_name
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self._parent, "Save", start, file_filter
+        )
+        if path:
+            self._dir = os.path.dirname(path)
+        return path or None
+
+    def request_open_path(self, file_filter: str):
+        """Open a native Open dialog; return the chosen path or None."""
+        path, _ = QFileDialog.getOpenFileName(
+            self._parent, "Open", self._dir, file_filter
+        )
+        if path:
+            self._dir = os.path.dirname(path)
+        return path or None
 
 
 class _NoWheelScrollFilter(QObject):
@@ -493,6 +532,16 @@ class MainWindow(QMainWindow):
         )
         for tool_def, handler in build_analysis_tools(
             figure_sink=self._agent_panel.figure_sink
+        ):
+            self._agent_registry.register(tool_def, handler)
+        # Preset/sequence tools (save_preset/save_sequence/load_preset/
+        # load_sequence). They open native file dialogs so the operator
+        # chooses the location, exactly like the sequencer's Save/Load.
+        self._agent_file_dialogs = _AgentFileDialogs(
+            self, self._default_export_dir()
+        )
+        for tool_def, handler in build_preset_tools(
+            file_dialog=self._agent_file_dialogs
         ):
             self._agent_registry.register(tool_def, handler)
 

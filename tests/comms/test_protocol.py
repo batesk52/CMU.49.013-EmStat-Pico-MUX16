@@ -79,3 +79,35 @@ def test_mixed_packet_one_nan_one_valid(parser: PacketParser) -> None:
     assert values["set_frequency"] == pytest.approx(50000.0)
     assert math.isnan(values["zreal"])
     assert values["zimag"] == pytest.approx(-51.32114, rel=1e-4)
+
+
+def test_has_overload_true_when_status_bit_set(parser: PacketParser) -> None:
+    """Status field ',12' decodes to 0x2 (STATUS_OVERLOAD) -> has_overload."""
+    line = "Pcc80509BEm,12,288"
+
+    result = parser.parse_line(line)
+
+    assert isinstance(result, ParsedPacket)
+    assert result.variables[0].status == 0x2
+    assert result.has_overload is True
+
+
+def test_has_overload_false_for_ok_status(parser: PacketParser) -> None:
+    """A normal field (',10' -> status 0x0) is not an overload."""
+    line = "Pcc80509BEm,10,288"
+
+    result = parser.parse_line(line)
+
+    assert isinstance(result, ParsedPacket)
+    assert result.has_overload is False
+
+
+def test_has_overload_excludes_overload_warning(parser: PacketParser) -> None:
+    """The soft overload-WARNING bit (0x8) is not a hard overload."""
+    line = "Pcc80509BEm,18,288"
+
+    result = parser.parse_line(line)
+
+    assert isinstance(result, ParsedPacket)
+    assert result.variables[0].status == 0x8
+    assert result.has_overload is False

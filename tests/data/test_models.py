@@ -22,6 +22,7 @@ from src.data.models import (
     EXTERNAL_RE_CE_CHANNEL,
     MODE_C_MAX_CHANNEL,
     ON_BOARD_RE_CE_CHANNEL,
+    DataPoint,
     TechniqueConfig,
 )
 
@@ -159,3 +160,17 @@ def test_manual_re_ce_15_or_16_rejected() -> None:
     assert "16" in msg_16, (
         f"Error must name offending RE/CE 16: {msg_16!r}"
     )
+
+
+def test_datapoint_overload_defaults_false() -> None:
+    """A DataPoint built the legacy way (no overload kwarg) is not overloaded."""
+    dp = DataPoint(timestamp=0.0, channel=1, variables={"zreal": 1.0})
+    assert dp.overload is False
+
+
+def test_datapoint_overload_settable() -> None:
+    """The engine can mark a point overloaded via the new field."""
+    dp = DataPoint(
+        timestamp=0.0, channel=1, variables={"zreal": 1.0}, overload=True
+    )
+    assert dp.overload is True

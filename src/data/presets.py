@@ -207,6 +207,48 @@ def _wrap_presets(
     }
 
 
+def write_preset_file(path: str, presets: dict[str, Preset]) -> None:
+    """Write a standalone preset file in the versioned wrapper format.
+
+    Unlike :meth:`PresetManager.save_to_path` (which writes the whole live
+    store, built-ins included), this writes exactly the given presets — used
+    by the agent's "save this preset to a file" flow.
+
+    Args:
+        path: Destination ``*.mux16`` file path.
+        presets: ``{key: Preset}`` map to write.
+    """
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_wrap_presets(presets), f, indent=2)
+
+
+def read_preset_file(path: str) -> dict[str, Preset]:
+    """Read a standalone preset file into a ``{key: Preset}`` map.
+
+    No built-in seeding and no store side effects — returns only the presets
+    actually in the file (wrapper or legacy bare-map format).
+
+    Args:
+        path: Source ``*.mux16`` (or legacy ``*.json``) preset file.
+
+    Returns:
+        Mapping of preset key to ``Preset``.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ValueError: If it is not valid JSON / not a preset store.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    try:
+        return _presets_from_payload(data)
+    except (TypeError, KeyError, AttributeError) as exc:
+        raise ValueError(f"Not a valid preset file: {exc}") from exc
+
+
 # ---------------------------------------------------------------------------
 # PresetManager
 # ---------------------------------------------------------------------------
