@@ -105,6 +105,9 @@ logger = logging.getLogger(__name__)
 APP_NAME = "EmStat Pico MUX16 Controller"
 APP_VERSION = "0.1.0"
 
+# Hover text for the pristine "Live" scratch tab (consumed by the next run).
+_SCRATCH_TOOLTIP = "New plot — choose a technique and run"
+
 # Provenance auto-save policy lives in the data layer (shared with the
 # sequence runner, which applies the same forcing per step); aliases kept
 # so existing callers/tests keep working.
@@ -329,31 +332,51 @@ class MainWindow(QMainWindow):
     def _build_central_widget(self) -> None:
         """Create the tabbed live-plot area as the central widget.
 
-        Each measurement run gets its own plot tab, so a multi-step
-        sequence leaves one reviewable live plot per step while a single
-        run uses a single tab. ``_plot_container`` always points at the
-        tab that data currently routes to (or ``None`` between runs).
+        Every measurement run gets its own browser-style plot tab and
+        nothing already plotted is ever overwritten: starting a new run
+        opens a fresh tab to the right (a multi-step sequence leaves one
+        reviewable plot per step). Tabs carry a close button and a hover
+        tooltip, exactly like browser tabs.
+
+        Two pointers track the strip:
+
+        * ``_plot_container`` — the tab that incoming data currently
+          routes to (the run target).
+        * ``_scratch_container`` — the lone pristine "Live" tab, used to
+          preview the selected technique and consumed by the next run so
+          a fresh app (or a technique change) never leaves an empty tab
+          stranded to the left of real results. ``None`` once consumed.
         """
         self._plot_tabs = QTabWidget()
-        self._plot_tabs.setMovable(False)
+        self._plot_tabs.setMovable(True)
         self._plot_tabs.setDocumentMode(True)
         self._plot_tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        self._plot_tabs.setUsesScrollButtons(True)
+        self._plot_tabs.setTabsClosable(True)
+        self._plot_tabs.tabCloseRequested.connect(self._on_plot_tab_close)
         # Step counter for sequence tab labels; reset per sequence run.
         self._seq_plot_n = 0
+        # True only while a run is actively writing to _plot_container;
+        # gates closing/repreviewing the recording tab out from under it.
+        self._run_in_progress = False
         self._plot_container: Optional[EISPlotContainer] = None
-        # Seed one tab so the app opens with a plot and the technique
-        # dropdown can preview before the first run.
-        self._add_plot_tab("", "Live")
+        self._scratch_container: Optional[EISPlotContainer] = None
+        # Seed one scratch tab so the app opens with a plot and the
+        # technique dropdown can preview before the first run.
+        self._scratch_container = self._add_plot_tab(
+            "", "Live", tooltip=_SCRATCH_TOOLTIP
+        )
         self.setCentralWidget(self._plot_tabs)
 
     def _add_plot_tab(
-        self, technique: str, label: str
+        self, technique: str, label: str, tooltip: str = ""
     ) -> EISPlotContainer:
         """Create a new live-plot tab and make it the active target.
 
         Args:
             technique: Technique to configure the tab's plot for.
             label: Tab caption (e.g. ``"CV"`` or ``"2·EIS"``).
+            tooltip: Optional hover text for the tab.
 
         Returns:
             The newly created (and now current) plot container.
@@ -361,17 +384,110 @@ class MainWindow(QMainWindow):
         container = EISPlotContainer(parent=self)
         container.set_technique(technique)
         index = self._plot_tabs.addTab(container, label)
+        if tooltip:
+            self._plot_tabs.setTabToolTip(index, tooltip)
         self._plot_tabs.setCurrentIndex(index)
         self._plot_container = container
         return container
 
+    def _begin_run_tab(
+        self, technique: str, label: str
+    ) -> EISPlotContainer:
+        """Target a tab for a starting run without overwriting results.
+
+        Consumes the pristine scratch tab if one is available; otherwise
+        opens a fresh tab to the right so a completed run's plot is left
+        intact and reviewable.
+
+        Args:
+            technique: Technique to configure the tab's plot for.
+            label: Tab caption for the run.
+
+        Returns:
+            The plot container the run will write to.
+        """
+        recording_tip = f"{technique.upper() or 'Run'} — recording…"
+        scratch = self._scratch_container
+        if scratch is not None and self._plot_tabs.indexOf(scratch) != -1:
+            idx = self._plot_tabs.indexOf(scratch)
+            scratch.clear_plot()
+            scratch.set_technique(technique)
+            self._plot_tabs.setTabText(idx, label)
+            self._plot_tabs.setTabToolTip(idx, recording_tip)
+            self._plot_tabs.setCurrentIndex(idx)
+            self._plot_container = scratch
+            self._scratch_container = None
+            return scratch
+        # No scratch tab (the previous run filled it): open a new one so
+        # the prior plot survives.
+        self._scratch_container = None
+        return self._add_plot_tab(technique, label, tooltip=recording_tip)
+
+    def _finalize_run_tooltip(self, result: MeasurementResult) -> None:
+        """Enrich the recording tab's hover tooltip once a run completes.
+
+        Cosmetic only: a tooltip is read off the result with defensive
+        defaults so it can never disturb the critical finished-handler
+        path (export / auto-save) on a partial result.
+        """
+        container = self._plot_container
+        if container is None:
+            return
+        idx = self._plot_tabs.indexOf(container)
+        if idx < 0:
+            return
+        tech = (getattr(result, "technique", "") or "").upper() or "Run"
+        channels = getattr(result, "measured_channels", None) or []
+        chans = ", ".join(str(c) for c in channels) if channels else "—"
+        n_points = getattr(result, "num_points", 0)
+        tip = f"{tech} · {n_points} pts · ch {chans}"
+        start = getattr(result, "start_time", None)
+        if start is not None:
+            tip += f" · {start.strftime('%H:%M:%S')}"
+        self._plot_tabs.setTabToolTip(idx, tip)
+
+    @pyqtSlot(int)
+    def _on_plot_tab_close(self, index: int) -> None:
+        """Close a plot tab (browser-style X), keeping the strip valid.
+
+        The tab a run is actively recording into can't be closed mid-run
+        — that would dangle the data-routing target — so it is refused
+        with a status hint. Closing the last tab reseeds a scratch tab so
+        the central area is never left empty.
+        """
+        widget = self._plot_tabs.widget(index)
+        if widget is None:
+            return
+        if self._run_in_progress and widget is self._plot_container:
+            self.statusBar().showMessage(
+                "Can't close the plot that's recording — stop the run first."
+            )
+            return
+        closing_active = widget is self._plot_container
+        self._plot_tabs.removeTab(index)
+        if widget is self._scratch_container:
+            self._scratch_container = None
+        widget.deleteLater()
+        if self._plot_tabs.count() == 0:
+            # Never leave the central area tab-less.
+            self._scratch_container = self._add_plot_tab(
+                self._tech_panel.selected_technique() or "",
+                "Live",
+                tooltip=_SCRATCH_TOOLTIP,
+            )
+        elif closing_active:
+            # The routing target was closed (not mid-run): fall back to
+            # whatever tab is now visible.
+            self._plot_container = self._plot_tabs.currentWidget()
+
     def _reset_plot_tabs(self) -> None:
-        """Remove every plot tab (between independent runs)."""
+        """Remove every plot tab (used by the terminal-hook safety net)."""
         while self._plot_tabs.count():
             widget = self._plot_tabs.widget(0)
             self._plot_tabs.removeTab(0)
             widget.deleteLater()
         self._plot_container = None
+        self._scratch_container = None
 
     @pyqtSlot(object)
     def _route_data_point(self, data_point: object) -> None:
@@ -381,9 +497,23 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_technique_preview(self, technique: str) -> None:
-        """Preview a technique on the current tab when the dropdown changes."""
-        if self._plot_container is not None:
-            self._plot_container.set_technique(technique)
+        """Preview the selected technique on a pristine scratch tab.
+
+        Previewing must never reconfigure a completed run's axes, so the
+        preview always lands on the lone scratch tab — reusing it if one
+        exists, else spawning a fresh one to the right. No-op while a run
+        is recording (the dropdown change can't disturb live data).
+        """
+        if self._run_in_progress:
+            return
+        scratch = self._scratch_container
+        if scratch is not None and self._plot_tabs.indexOf(scratch) != -1:
+            scratch.set_technique(technique)
+            self._plot_tabs.setCurrentIndex(self._plot_tabs.indexOf(scratch))
+        else:
+            self._scratch_container = self._add_plot_tab(
+                technique, "Live", tooltip=_SCRATCH_TOOLTIP
+            )
 
     def _build_control_dock(self) -> None:
         """Build left dock with stacked control panels."""
@@ -596,12 +726,14 @@ class MainWindow(QMainWindow):
         Args:
             result: The finished run's MeasurementResult.
         """
+        self._run_in_progress = False
         self._last_result = result
         self._meas_panel.set_idle()
         self._export_action.setEnabled(True)
         self._status_progress.setText("Idle")
         if self._plot_container is not None:
             self._plot_container.on_measurement_finished()
+            self._finalize_run_tooltip(result)
         n_points = result.num_points
         n_channels = len(result.measured_channels)
         self.statusBar().showMessage(
@@ -1058,9 +1190,10 @@ class MainWindow(QMainWindow):
         stays disabled so the user can't launch a competing measurement.
         """
         self._sequence_active = True
-        # Fresh tab strip: one live-plot tab is added per step as it starts.
+        # Per-step tabs accumulate to the right of any existing plots
+        # (nothing already plotted is overwritten); the first step
+        # consumes the scratch tab, later steps each open a new one.
         self._seq_plot_n = 0
-        self._reset_plot_tabs()
         # Start collecting the results of steps that don't auto-save, for
         # the end-of-run save prompt.
         self._sequence_results = []
@@ -1088,8 +1221,10 @@ class MainWindow(QMainWindow):
         # before measurement_started would otherwise leave zero tabs and
         # a dead technique preview until the next run).
         if self._plot_tabs.count() == 0:
-            self._add_plot_tab(
-                self._tech_panel.selected_technique() or "", "Live"
+            self._scratch_container = self._add_plot_tab(
+                self._tech_panel.selected_technique() or "",
+                "Live",
+                tooltip=_SCRATCH_TOOLTIP,
             )
         self._offer_sequence_save()
 
@@ -1188,19 +1323,20 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_measurement_started(self, technique: str) -> None:
         """Handle measurement_started signal from engine."""
-        # Give the run its own live-plot tab. A sequence accumulates one
-        # tab per step so the user can tab between every step's plot; a
-        # single run replaces the tabs with one. Each tab is configured for
-        # the technique actually starting, so a mixed CV/EIS/CA sequence
-        # never plots one step on another's axes.
+        # Give the run its own live-plot tab to the right and never
+        # overwrite an existing plot: a single run opens a fresh tab (or
+        # consumes the pristine scratch tab), and a sequence accumulates
+        # one tab per step. Each tab is configured for the technique
+        # actually starting, so a mixed CV/EIS/CA sequence never plots one
+        # step on another's axes.
         if self._sequence_active:
             self._seq_plot_n += 1
-            self._add_plot_tab(
+            self._begin_run_tab(
                 technique, f"{self._seq_plot_n}·{technique.upper()}"
             )
         else:
-            self._reset_plot_tabs()
-            self._add_plot_tab(technique, technique.upper() or "Run")
+            self._begin_run_tab(technique, technique.upper() or "Run")
+        self._run_in_progress = True
         # Prevent Export from silently writing the prior run's data
         # if the user invokes it before this run completes.
         self._last_result = None
@@ -1226,6 +1362,8 @@ class MainWindow(QMainWindow):
         Stores the result, updates UI to idle, and prompts for export.
         Agent-driven runs are delegated to the modal-free handler.
         """
+        # The run is no longer writing to its tab: it can now be closed.
+        self._run_in_progress = False
         # A run the agent started on the REAL engine must never pop a
         # modal mid-conversation: delegate to the modal-free handler.
         # (Mock-mode agent runs connect to it directly and never reach
@@ -1243,6 +1381,7 @@ class MainWindow(QMainWindow):
         self._export_action.setEnabled(True)
         if self._plot_container is not None:
             self._plot_container.on_measurement_finished()
+            self._finalize_run_tooltip(result)
 
         n_points = result.num_points
         n_channels = len(result.measured_channels)
@@ -1305,6 +1444,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_measurement_error(self, message: str) -> None:
         """Handle measurement_error signal from engine."""
+        # The run has terminated: release the recording tab for closing.
+        self._run_in_progress = False
         # Consume agent attribution FIRST (every termination emits
         # exactly one of finished/error, so the flag must be taken on
         # both paths). An agent-driven run's error is already returned

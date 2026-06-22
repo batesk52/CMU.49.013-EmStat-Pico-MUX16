@@ -211,8 +211,9 @@ def test_sequence_creates_one_plot_tab_per_step(qapp) -> None:
     window = MainWindow()
     try:
         window._on_sequence_started()  # noqa: SLF001
-        # Sequence start clears the tab strip; steps then add tabs.
-        assert window._plot_tabs.count() == 0  # noqa: SLF001
+        # Sequence start no longer wipes the strip; the lone scratch tab
+        # remains and the first step consumes it.
+        assert window._plot_tabs.count() == 1  # noqa: SLF001
 
         window._on_measurement_started("cv")  # noqa: SLF001
         window._on_measurement_started("eis")  # noqa: SLF001
@@ -230,17 +231,46 @@ def test_sequence_creates_one_plot_tab_per_step(qapp) -> None:
         window.close()
 
 
-def test_single_run_uses_one_replaced_tab(qapp) -> None:
-    """A single run keeps one tab, replaced (not accumulated) per run."""
+def test_single_runs_accumulate_into_new_tabs(qapp) -> None:
+    """Each single run opens its own tab; a prior plot is never overwritten."""
     window = MainWindow()
     try:
+        # First run consumes the pristine scratch tab.
         window._on_measurement_started("cv")  # noqa: SLF001
         assert window._plot_tabs.count() == 1  # noqa: SLF001
         assert window._plot_tabs.tabText(0) == "CV"  # noqa: SLF001
+        cv_tab = window._plot_container  # noqa: SLF001
+        window._run_in_progress = False  # noqa: SLF001 (run ended)
 
+        # Second run opens a NEW tab to the right; the CV plot survives.
         window._on_measurement_started("eis")  # noqa: SLF001
-        assert window._plot_tabs.count() == 1  # noqa: SLF001 (replaced)
-        assert window._plot_tabs.tabText(0) == "EIS"  # noqa: SLF001
+        assert window._plot_tabs.count() == 2  # noqa: SLF001
+        assert window._plot_tabs.tabText(0) == "CV"  # noqa: SLF001
+        assert window._plot_tabs.tabText(1) == "EIS"  # noqa: SLF001
+        assert window._plot_container._technique == "eis"  # noqa: SLF001
+        # The first run's container is a different, untouched tab.
+        assert window._plot_container is not cv_tab  # noqa: SLF001
+        assert cv_tab._technique == "cv"  # noqa: SLF001
+    finally:
+        window.close()
+
+
+def test_recording_tab_cannot_be_closed_midrun(qapp) -> None:
+    """The tab a run is writing to is protected until the run ends."""
+    window = MainWindow()
+    try:
+        window._on_measurement_started("cv")  # noqa: SLF001
+        recording = window._plot_container  # noqa: SLF001
+        idx = window._plot_tabs.indexOf(recording)  # noqa: SLF001
+        # Close request mid-run is refused: the tab stays.
+        window._on_plot_tab_close(idx)  # noqa: SLF001
+        assert window._plot_tabs.indexOf(recording) != -1  # noqa: SLF001
+
+        # Once the run ends it can be closed; closing the last tab reseeds.
+        window._run_in_progress = False  # noqa: SLF001
+        window._on_plot_tab_close(window._plot_tabs.indexOf(recording))  # noqa: SLF001
+        assert window._plot_tabs.count() == 1  # noqa: SLF001 (reseeded scratch)
+        assert window._plot_container is not None  # noqa: SLF001
     finally:
         window.close()
 
@@ -336,9 +366,11 @@ def test_sequence_stop_never_leaves_zero_plot_tabs(qapp) -> None:
     """
     window = MainWindow()
     try:
-        window._on_sequence_started()  # noqa: SLF001 (resets tabs to 0)
+        window._on_sequence_started()  # noqa: SLF001
+        # Force the zero-tab condition the hook must recover from (a first
+        # step failing before measurement_started would empty the strip).
+        window._reset_plot_tabs()  # noqa: SLF001
         assert window._plot_tabs.count() == 0  # noqa: SLF001
-        # Sequence errors out before any measurement_started fires.
         window._on_sequence_stopped()  # noqa: SLF001
         assert window._plot_tabs.count() == 1  # noqa: SLF001
         assert window._plot_container is not None  # noqa: SLF001
