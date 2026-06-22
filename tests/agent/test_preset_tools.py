@@ -26,6 +26,22 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+class _FakeDialog:
+    """Records whether a dialog was opened (for the busy-guard tests)."""
+
+    def __init__(self) -> None:
+        self.save_calls = 0
+        self.open_calls = 0
+
+    def request_save_path(self, suggested_name, file_filter):
+        self.save_calls += 1
+        return "/tmp/should_not_be_used.mux16"
+
+    def request_open_path(self, file_filter):
+        self.open_calls += 1
+        return "/tmp/should_not_be_used.mux16"
+
+
 # ---- save_preset ----------------------------------------------------------
 
 
@@ -249,3 +265,97 @@ def test_load_preset_missing_file_errors(tmp_path) -> None:
     tools = _tools()
     res = _run(tools["load_preset"]({"path": str(tmp_path / "nope.mux16")}))
     assert res["ok"] is False
+
+
+# ---- review fixes ---------------------------------------------------------
+
+
+def test_save_preset_refuses_to_overwrite_foreign_file(tmp_path) -> None:
+    """A .mux16-named file that is actually a sequence (or corrupt) must NOT be
+    silently truncated to the new preset — refuse instead."""
+    tools = _tools()
+    p = tmp_path / "store.mux16"
+    p.write_text('{"format":"mux16-sequence","name":"x","steps":[]}', encoding="utf-8")
+    res = _run(
+        tools["save_preset"](
+            {"name": "A", "technique": "cv", "params": {}, "channels": [1], "path": str(p)}
+        )
+    )
+    assert res["ok"] is False
+    assert "overwrite" in res["error"].lower()
+    # Original content untouched.
+    assert "mux16-sequence" in p.read_text(encoding="utf-8")
+
+
+def test_save_preset_replaces_sibling_extension(tmp_path) -> None:
+    res = _run(
+        _tools()["save_preset"](
+            {
+                "name": "x",
+                "technique": "cv",
+                "params": {},
+                "channels": [1],
+                "path": str(tmp_path / "thing.mux16seq"),
+            }
+        )
+    )
+    assert res["ok"] is True
+    assert res["path"].endswith(".mux16")
+    assert not res["path"].endswith(".mux16seq.mux16")
+
+
+def test_save_sequence_non_numeric_repeat_returns_step_error(tmp_path) -> None:
+    res = _run(
+        _tools()["save_sequence"](
+            {
+                "name": "x",
+                "steps": [
+                    {"technique": "cv", "params": {}, "channels": [1], "repeat": "abc"}
+                ],
+                "path": str(tmp_path / "s.mux16seq"),
+            }
+        )
+    )
+    assert res["ok"] is False
+    assert "step 1" in res["error"]
+
+
+def test_busy_guard_refuses_to_open_dialog_during_measurement() -> None:
+    fake = _FakeDialog()
+    tools = {
+        d["name"]: h
+        for (d, h) in build_preset_tools(file_dialog=fake, is_busy=lambda: True)
+    }
+    res = _run(
+        tools["save_preset"](
+            {"name": "A", "technique": "cv", "params": {}, "channels": [1]}
+        )
+    )
+    assert res["ok"] is False
+    assert "measurement is running" in res["error"].lower()
+    assert fake.save_calls == 0  # dialog was never opened
+    res2 = _run(tools["load_sequence"]({}))
+    assert res2["ok"] is False
+    assert fake.open_calls == 0
+
+
+def test_busy_guard_allows_explicit_path(tmp_path) -> None:
+    """An explicit path (no dialog) is pure data and stays allowed mid-run."""
+    fake = _FakeDialog()
+    tools = {
+        d["name"]: h
+        for (d, h) in build_preset_tools(file_dialog=fake, is_busy=lambda: True)
+    }
+    res = _run(
+        tools["save_preset"](
+            {
+                "name": "A",
+                "technique": "cv",
+                "params": {},
+                "channels": [1],
+                "path": str(tmp_path / "a.mux16"),
+            }
+        )
+    )
+    assert res["ok"] is True
+    assert fake.save_calls == 0

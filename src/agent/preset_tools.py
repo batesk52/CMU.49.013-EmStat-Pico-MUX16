@@ -64,7 +64,16 @@ def _slug(name: str) -> str:
 
 
 def _ensure_suffix(path: str, suffix: str) -> str:
-    return path if path.lower().endswith(suffix) else path + suffix
+    """Ensure ``path`` ends in ``suffix``, replacing a sibling preset/sequence
+    extension rather than double-appending (``x.mux16seq`` + ``.mux16`` ->
+    ``x.mux16``, not ``x.mux16seq.mux16``)."""
+    low = path.lower()
+    if low.endswith(suffix):
+        return path
+    for sibling in (_SEQUENCE_SUFFIX, _PRESET_SUFFIX):
+        if sibling != suffix and low.endswith(sibling):
+            return path[: -len(sibling)] + suffix
+    return path + suffix
 
 
 def _config_from_step(step: dict[str, Any]):
@@ -92,6 +101,7 @@ def _store_re_ce(config: Any) -> list[int]:
 
 def build_preset_tools(
     file_dialog: Optional[FileDialogProvider] = None,
+    is_busy: Optional[Callable[[], bool]] = None,
 ) -> list[tuple[dict[str, Any], Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]]]:
     """Build the preset/sequence save & load ``(tool_def, handler)`` pairs.
 
@@ -99,11 +109,27 @@ def build_preset_tools(
         file_dialog: GUI provider that opens native save/open dialogs on the
             GUI thread. ``None`` (headless / MCP stdio server) makes the
             tools require an explicit ``path`` argument instead.
+        is_busy: Optional zero-arg predicate (e.g. ``engine.isRunning``).
+            When it returns True the tools refuse to OPEN a file dialog, so a
+            modal dialog cannot freeze the live view and lock out Abort during
+            a measurement. An explicit ``path`` (no dialog) is unaffected.
 
     Returns:
         List of pairs ready for ``ToolRegistry.register``. Handlers are
         async coroutines and never raise.
     """
+
+    def _busy_block() -> Optional[dict[str, Any]]:
+        if is_busy is not None and is_busy():
+            return {
+                "ok": False,
+                "error": (
+                    "A measurement is running — finish or abort it before "
+                    "saving/loading (the file dialog would freeze the live "
+                    "view and block Abort)."
+                ),
+            }
+        return None
 
     async def _resolve_save_path(
         args: dict[str, Any], suggested_name: str, file_filter: str, suffix: str
@@ -120,6 +146,9 @@ def build_preset_tools(
                     "available here; pass an explicit 'path'."
                 ),
             }
+        busy = _busy_block()
+        if busy is not None:
+            return None, busy
         chosen = await run_on_gui(
             file_dialog.request_save_path, suggested_name, file_filter
         )
@@ -145,6 +174,9 @@ def build_preset_tools(
                     "available here; pass an explicit 'path'."
                 ),
             }
+        busy = _busy_block()
+        if busy is not None:
+            return None, busy
         chosen = await run_on_gui(file_dialog.request_open_path, file_filter)
         if not chosen:
             return None, {
@@ -182,17 +214,33 @@ def build_preset_tools(
             electrode_config_mode=config.electrode_config_mode,
             re_ce_channels=_store_re_ce(config),
         )
+        # Merge into an existing file rather than clobbering other presets the
+        # user keeps alongside it -- but REFUSE if the target exists and is not a
+        # readable preset store, instead of silently truncating it to just this
+        # preset (a foreign/corrupt file would otherwise be destroyed).
+        existing: dict[str, Preset] = {}
+        if os.path.isfile(path):
+            try:
+                existing = read_preset_file(path)
+            except (OSError, ValueError) as exc:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Refusing to overwrite {os.path.abspath(path)!r}: it "
+                        f"exists but is not a readable preset file ({exc}). "
+                        "Choose a different name or location."
+                    ),
+                }
+        replaced = key in existing
+        # A different display name slugging to the same key would silently
+        # clobber the prior entry; surface that so it isn't a silent loss.
+        clobbered = (
+            existing[key].name
+            if replaced and existing[key].name != name
+            else None
+        )
+        existing[key] = preset
         try:
-            # Merge into an existing file rather than clobbering other presets
-            # the user may keep alongside it.
-            existing: dict[str, Preset] = {}
-            if os.path.isfile(path):
-                try:
-                    existing = read_preset_file(path)
-                except (OSError, ValueError):
-                    existing = {}
-            replaced = key in existing
-            existing[key] = preset
             write_preset_file(path, existing)
         except Exception as exc:  # noqa: BLE001 - surfaced to the model
             logger.exception("save_preset failed")
@@ -201,7 +249,7 @@ def build_preset_tools(
                 "error": f"Failed to save preset: {type(exc).__name__}: {exc}",
             }
         logger.info("Agent saved preset %r to %s.", name, path)
-        return {
+        result = {
             "ok": True,
             "name": name,
             "technique": config.technique,
@@ -209,6 +257,12 @@ def build_preset_tools(
             "replaced": replaced,
             "path": os.path.abspath(path),
         }
+        if clobbered is not None:
+            result["warning"] = (
+                f"Replaced a differently-named preset {clobbered!r} that maps "
+                f"to the same key {key!r} in this file."
+            )
+        return result
 
     # ---- save_sequence ----------------------------------------------------
 
@@ -231,11 +285,25 @@ def build_preset_tools(
                 config = _config_from_step(raw)
             except ValueError as exc:
                 return {"ok": False, "error": f"step {idx + 1}: {exc}"}
+            # Coerce inside the loop's error handling so a non-numeric
+            # repeat/delay_s yields a clean step-indexed error, not a raw
+            # exception (the module's never-raise contract).
+            try:
+                repeat = max(1, int(raw.get("repeat", 1)))
+                delay_s = float(raw.get("delay_s", 0.0))
+            except (TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"step {idx + 1}: repeat must be an integer and "
+                        "delay_s a number."
+                    ),
+                }
             steps.append(
                 SequenceStep(
                     preset_name=str(raw.get("preset_name") or f"{key}_{idx + 1}"),
-                    repeat=max(1, int(raw.get("repeat", 1))),
-                    delay_s=float(raw.get("delay_s", 0.0)),
+                    repeat=repeat,
+                    delay_s=delay_s,
                     technique=config.technique,
                     params=dict(config.params),
                     channels=list(config.channels),

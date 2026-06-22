@@ -119,6 +119,10 @@ def test_requested_channel_with_no_data_is_no_data() -> None:
     assert q["quality_ok"] is False
     assert q["per_channel"]["2"]["verdict"] == "no_data"
     assert q["per_channel"]["1"]["verdict"] == "ok"
+    # Re-ranging cannot conjure data for an open/dead channel: no suggestion,
+    # and the note points at wiring/contact rather than the current range.
+    assert q["suggested_cr"] is None
+    assert "open" in q["note"].lower() or "wiring" in q["note"].lower()
 
 
 def test_largest_range_still_bad_points_to_cell_not_range() -> None:

@@ -65,16 +65,26 @@ __all__ = [
 # Techniques whose run summary carries an EIS data-quality assessment.
 _EIS_TECHNIQUES = ("eis", "geis")
 
-# A current-vs-time trace (CV/CA/…) is flagged noisy when its high-frequency
-# ripple — a robust estimate of point-to-point oscillation, divided by the
-# current span — exceeds this fraction. The dominant real-world cause is 50/60
-# Hz mains pickup, fixable by lowering the measurement bandwidth (bw_hz). The
-# default is a conservative starting point; calibrate it against a clean-vs-noisy
-# pair from the actual rig (the auto-range/noise rehearsal).
+# A current-vs-time trace (CV/CA/…) is flagged noisy when its ripple index — a
+# robust estimate of point-to-point oscillation about the local trend, divided
+# by the current span — exceeds this fraction. The dominant real-world cause is
+# 50/60 Hz mains pickup, fixable by lowering the measurement bandwidth (bw_hz).
+# It is an UNCALIBRATED comparative index, not a noise amplitude: drive it down
+# across re-runs. Calibrate the flag against a clean-vs-noisy pair from the
+# actual rig (the auto-range/noise rehearsal).
 _NOISE_RIPPLE_FLAG = 0.02
 
-# Minimum current points needed for a meaningful ripple estimate.
-_NOISE_MIN_POINTS = 8
+# Window (points, odd) of the centered median detrend used to separate ripple
+# from the smooth CV/CA trend. It passes ripple with apparent period up to
+# ~2× the window; slower variation is treated as trend (see cv_noise).
+_NOISE_MEDIAN_WINDOW = 7
+
+# Minimum current points for a meaningful ripple estimate. Set well above the
+# median window: below this a sharp faradaic peak spans only a few points and is
+# genuinely indistinguishable from ripple (an empirically-confirmed false
+# positive on coarse scans), so under-sampled scans report insufficient_data
+# rather than phantom noise.
+_NOISE_MIN_POINTS = 24
 
 # A channel is flagged under-ranged when at least this fraction of its
 # impedance points carry a DEVICE-AUTHORITATIVE under-range signal (the
@@ -200,11 +210,22 @@ def eis_quality(
         }
 
     flagged = [c for c, q in per_channel.items() if q["verdict"] != "ok"]
+    underranged = [
+        c for c in flagged if per_channel[c]["verdict"] == "underranged"
+    ]
     quality_ok = not flagged
     suggested_cr: Optional[str] = None
     rerange_exhausted = False
     if quality_ok:
         note = "EIS data quality looks good on all measured channels."
+    elif not underranged:
+        # The only flagged channels returned NO data (open/dead/disconnected).
+        # Re-ranging cannot conjure data, so do not suggest a larger range.
+        note = (
+            f"Channel(s) {flagged} returned no impedance data. Re-ranging "
+            "will not help — check the electrode contact / wiring, or whether "
+            "the channel is open or dead."
+        )
     else:
         suggested_cr = next_larger_eis_range(used_cr)
         if suggested_cr is None:
@@ -248,44 +269,73 @@ def eis_quality(
     }
 
 
+def _median_detrend(values: list[float], window: int) -> list[float]:
+    """Return ``values`` minus a centered rolling median (high-pass residual).
+
+    The rolling median tracks the smooth CV/CA trend — including the sharp
+    faradaic rises, which a mean would smear — so the residual is the
+    point-to-point ripple about that trend. The window shrinks at the ends
+    (uses the available neighbours) so every point gets a residual.
+    """
+    n = len(values)
+    half = max(1, window // 2)
+    out: list[float] = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        out.append(values[i] - statistics.median(values[lo:hi]))
+    return out
+
+
 def cv_noise(
     result: Any,
     channels_requested: list[int],
 ) -> dict[str, Any]:
-    """Assess per-channel high-frequency ripple on a current trace.
+    """Assess per-channel ripple on a current trace, for bandwidth scoping.
 
     Gives the agent a NUMBER for trace "noise" it cannot otherwise see (it only
     receives metrics, never the plot pixels), so it can scope settings the same
-    way it auto-ranges EIS: run a quick (small-window) CV, read the ripple, lower
-    the measurement bandwidth (``bw_hz``), and re-run until the ripple drops.
+    way it auto-ranges EIS: run a quick CV, read the ripple, lower the
+    measurement bandwidth (``bw_hz``), and re-run until the ripple drops.
 
-    The ripple estimate is the robust standard deviation of the current's
-    discrete second difference, divided by the current span. The second
-    difference cancels the smooth CV/CA trend so only point-to-point oscillation
-    remains; the median-absolute-deviation makes it insensitive to the few sharp
-    points at scan vertices / faradaic onsets. A smooth trace gives ≈0; 50/60 Hz
-    mains pickup gives a clearly elevated value. It is a comparable indicator
-    (drive it down across re-runs), not a calibrated noise amplitude.
+    ``ripple_ratio`` is the robust standard deviation of the current's residual
+    after a short centered median detrend, divided by the current span. The
+    median detrend removes the smooth CV/CA trend (and its curvature) so only
+    point-to-point ripple remains — so, unlike a raw second difference, a clean
+    but coarsely-sampled / small-window scan does NOT read as noisy, and ripple
+    over a broad band (not just the alternating/Nyquist component) is detected.
+
+    Caveats the agent should respect: it is an UNCALIBRATED, comparative index
+    (drive it down across re-runs at fixed scan_rate/e_step), not a noise
+    amplitude. Mains pickup whose apparent period (set by scan_rate/e_step) is
+    longer than ~2× the detrend window is treated as trend and will not register,
+    so a "clean" verdict is necessary, not sufficient.
 
     Args:
         result: The finished ``MeasurementResult``.
         channels_requested: Channels the run asked for (so a requested channel
-            with too few current points is reported as ``insufficient_data``).
+            with too few usable current points is reported ``insufficient_data``).
 
     Returns:
-        ``{"noise_ok": bool, "per_channel": {ch: {points, ripple_ratio,
-        verdict}}, "note": str}``. ``ripple_ratio`` is None when there are too
-        few points; ``verdict`` is ``"clean"`` / ``"elevated"`` /
+        ``{"noise_ok": bool, "per_channel": {ch: {points, dropped_points,
+        ripple_ratio, verdict}}, "note": str}``. ``ripple_ratio`` is None when
+        there are too few points; ``verdict`` is ``"clean"`` / ``"elevated"`` /
         ``"insufficient_data"``.
     """
     by_channel: dict[int, list[float]] = {}
+    dropped: dict[int, int] = {}
     for dp in result.data_points:
         c = dp.variables.get("current")
         if c is None:
             continue
         c = float(c)
-        if not math.isnan(c):
-            by_channel.setdefault(dp.channel, []).append(c)
+        if math.isnan(c):
+            # Railed/overload sample: count it so a heavily-clipped trace is
+            # reported unreliable rather than silently decimated (the residual
+            # would otherwise treat non-adjacent survivors as consecutive).
+            dropped[dp.channel] = dropped.get(dp.channel, 0) + 1
+            continue
+        by_channel.setdefault(dp.channel, []).append(c)
 
     per_channel: dict[str, dict[str, Any]] = {}
     channels = sorted(
@@ -294,30 +344,29 @@ def cv_noise(
     for ch in channels:
         cur = by_channel.get(ch, [])
         n = len(cur)
-        if n < _NOISE_MIN_POINTS:
+        n_dropped = dropped.get(ch, 0)
+        # Too few usable points, or as many railed as survived, to trust a
+        # ripple estimate.
+        if n < _NOISE_MIN_POINTS or n_dropped >= n:
             per_channel[str(ch)] = {
                 "points": n,
+                "dropped_points": n_dropped,
                 "ripple_ratio": None,
                 "verdict": "insufficient_data",
             }
             continue
         span = max(cur) - min(cur)
-        # Robust high-frequency noise estimate from the second difference.
-        # var(2nd diff) = 6·σ² for i.i.d. noise, so divide the robust σ of the
-        # second difference by √6 to recover the per-point noise scale.
-        d2 = [
-            cur[i - 1] - 2.0 * cur[i] + cur[i + 1]
-            for i in range(1, n - 1)
-        ]
-        med = statistics.median(d2)
-        mad = statistics.median([abs(x - med) for x in d2])
-        sigma_hf = 1.4826 * mad / math.sqrt(6.0)
-        ripple_ratio = (sigma_hf / span) if span > 0 else 0.0
+        resid = _median_detrend(cur, _NOISE_MEDIAN_WINDOW)
+        med = statistics.median(resid)
+        mad = statistics.median([abs(r - med) for r in resid])
+        sigma = 1.4826 * mad  # robust residual standard deviation
+        ripple_ratio = (sigma / span) if span > 0 else 0.0
         verdict = (
             "elevated" if ripple_ratio >= _NOISE_RIPPLE_FLAG else "clean"
         )
         per_channel[str(ch)] = {
             "points": n,
+            "dropped_points": n_dropped,
             "ripple_ratio": round(ripple_ratio, 4),
             "verdict": verdict,
         }
@@ -326,15 +375,16 @@ def cv_noise(
     noise_ok = not flagged
     if noise_ok:
         note = (
-            "Traces look clean (low high-frequency ripple) on all measured "
-            "channels."
+            "Traces look clean (low ripple index) on all measured channels. "
+            "Note this only catches ripple faster than ~the detrend window; a "
+            "clean reading is not a guarantee of no pickup."
         )
     else:
         note = (
-            f"Channel(s) {flagged} show elevated high-frequency ripple — "
-            "usually 50/60 Hz mains pickup. Lower the max bandwidth (bw_hz, "
-            "e.g. 400 -> 40) and re-run; compare ripple_ratio to confirm it "
-            "dropped."
+            f"Channel(s) {flagged} show an elevated ripple index — usually "
+            "50/60 Hz mains pickup. Lower the max bandwidth (bw_hz, e.g. "
+            "400 -> 40) and re-run at the SAME scan_rate/e_step; compare "
+            "ripple_ratio to confirm it dropped."
         )
     return {"noise_ok": noise_ok, "per_channel": per_channel, "note": note}
 

@@ -34,6 +34,23 @@ def _noisy(n: int = 60, amp: float = 0.1) -> list[float]:
     return [math.sin(i / 10.0) + amp * (-1) ** i for i in range(n)]
 
 
+def _duck(n: int) -> list[float]:
+    """A clean (zero-ripple) CV with sharp faradaic peaks — worst case for a
+    curvature-contaminated metric."""
+    out = []
+    for i in range(n):
+        x = -1.0 + 2.0 * i / (n - 1)
+        cap = 0.3 * x
+        ox = math.exp(-((x - 0.3) / 0.12) ** 2) if i < n // 2 else 0.0
+        red = -math.exp(-((x + 0.1) / 0.12) ** 2) if i >= n // 2 else 0.0
+        out.append(cap + ox + red)
+    return out
+
+
+def _ripple(curr: list[float], amp: float, period: float) -> list[float]:
+    return [c + amp * math.cos(2 * math.pi * i / period) for i, c in enumerate(curr)]
+
+
 def _result(points: list[DataPoint], technique: str = "cv") -> MeasurementResult:
     return MeasurementResult(
         data_points=points,
@@ -122,3 +139,47 @@ def test_summarize_eis_gets_quality_not_noise() -> None:
     summary = EngineAdapter._summarize(result, config)
     assert "quality" in summary
     assert "noise" not in summary
+
+
+def test_clean_trace_with_faradaic_peaks_not_flagged() -> None:
+    """Regression: a clean zero-ripple CV with sharp peaks must NOT read noisy —
+    the old raw-2nd-difference metric false-positived on curvature."""
+    assert (
+        cv_noise(_result(_cv_points(1, _duck(60))), [1])["per_channel"]["1"][
+            "verdict"
+        ]
+        == "clean"
+    )
+    assert (
+        cv_noise(_result(_cv_points(1, _duck(40))), [1])["per_channel"]["1"][
+            "verdict"
+        ]
+        == "clean"
+    )
+
+
+def test_off_nyquist_ripple_is_flagged() -> None:
+    """Regression: ripple at a non-alternating apparent period (6 samples) must
+    flag — the old 2nd-difference metric was frequency-blind and read it clean."""
+    noisy = _ripple(_duck(60), 0.1, 6)
+    q = cv_noise(_result(_cv_points(1, noisy)), [1])
+    assert q["per_channel"]["1"]["verdict"] == "elevated"
+
+
+def test_undersampled_scan_is_insufficient_not_noisy() -> None:
+    """Below the point floor a sharp peak is indistinguishable from ripple, so
+    report insufficient_data rather than phantom 'elevated'."""
+    q = cv_noise(_result(_cv_points(1, _duck(18))), [1])
+    assert q["per_channel"]["1"]["verdict"] == "insufficient_data"
+    assert q["per_channel"]["1"]["ripple_ratio"] is None
+
+
+def test_heavily_overloaded_trace_is_insufficient() -> None:
+    """Half the points railed (NaN) → too decimated to trust; report it with the
+    drop count rather than estimating ripple across the gaps."""
+    curr = [
+        float("nan") if i % 2 else 0.3 * math.sin(i / 10.0) for i in range(60)
+    ]
+    pc = cv_noise(_result(_cv_points(1, curr)), [1])["per_channel"]["1"]
+    assert pc["verdict"] == "insufficient_data"
+    assert pc["dropped_points"] == 30

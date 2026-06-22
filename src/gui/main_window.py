@@ -127,6 +127,30 @@ class _AgentFileDialogs:
     def __init__(self, parent, start_dir: str) -> None:
         self._parent = parent
         self._dir = start_dir or ""
+        # The in-flight dialog (instance, not the static helper) so it can be
+        # force-closed on app shutdown — otherwise closing the window while the
+        # agent's dialog is up leaves an orphaned modal floating over a dead
+        # window, and the GUI thread blocks in the worker shutdown wait.
+        self._active: Optional[QFileDialog] = None
+
+    def _run(self, accept_mode, caption: str, start: str, file_filter: str):
+        dlg = QFileDialog(self._parent, caption, start, file_filter)
+        dlg.setAcceptMode(accept_mode)
+        if accept_mode == QFileDialog.AcceptMode.AcceptSave:
+            dlg.setFileMode(QFileDialog.FileMode.AnyFile)
+        else:
+            dlg.setFileMode(QFileDialog.FileMode.ExistingFile)
+        self._active = dlg
+        try:
+            accepted = dlg.exec()
+            files = dlg.selectedFiles() if accepted else []
+            path = files[0] if files else ""
+        finally:
+            self._active = None
+            dlg.deleteLater()
+        if path:
+            self._dir = os.path.dirname(path)
+        return path or None
 
     def request_save_path(self, suggested_name: str, file_filter: str):
         """Open a native Save dialog; return the chosen path or None."""
@@ -135,21 +159,21 @@ class _AgentFileDialogs:
             if self._dir
             else suggested_name
         )
-        path, _ = QFileDialog.getSaveFileName(
-            self._parent, "Save", start, file_filter
+        return self._run(
+            QFileDialog.AcceptMode.AcceptSave, "Save", start, file_filter
         )
-        if path:
-            self._dir = os.path.dirname(path)
-        return path or None
 
     def request_open_path(self, file_filter: str):
         """Open a native Open dialog; return the chosen path or None."""
-        path, _ = QFileDialog.getOpenFileName(
-            self._parent, "Open", self._dir, file_filter
+        return self._run(
+            QFileDialog.AcceptMode.AcceptOpen, "Open", self._dir, file_filter
         )
-        if path:
-            self._dir = os.path.dirname(path)
-        return path or None
+
+    def close_active(self) -> None:
+        """Reject any in-flight dialog (call on the GUI thread before shutdown)."""
+        dlg = self._active
+        if dlg is not None:
+            dlg.reject()
 
 
 class _NoWheelScrollFilter(QObject):
@@ -541,7 +565,8 @@ class MainWindow(QMainWindow):
             self, self._default_export_dir()
         )
         for tool_def, handler in build_preset_tools(
-            file_dialog=self._agent_file_dialogs
+            file_dialog=self._agent_file_dialogs,
+            is_busy=self._agent_engine.isRunning,
         ):
             self._agent_registry.register(tool_def, handler)
 
@@ -1751,6 +1776,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Ensure clean shutdown on window close."""
+        # Reject any in-flight agent file dialog BEFORE the blocking worker
+        # shutdown below: closing the window while the agent's modal dialog is
+        # open otherwise leaves it orphaned over a dead window and freezes the
+        # GUI thread in worker.wait(). Rejecting it lets the marshaled call
+        # return (None = cancelled) so the worker can stop promptly.
+        if getattr(self, "_agent_file_dialogs", None) is not None:
+            self._agent_file_dialogs.close_active()
         # Stop the agent worker thread first so no tool can marshal
         # work onto the GUI/engine while the window tears down.
         if getattr(self, "_agent_panel", None) is not None:

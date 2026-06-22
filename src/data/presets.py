@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
@@ -217,12 +218,25 @@ def write_preset_file(path: str, presets: dict[str, Preset]) -> None:
     Args:
         path: Destination ``*.mux16`` file path.
         presets: ``{key: Preset}`` map to write.
+
+    The write is atomic: content goes to a temp file in the same directory and
+    is ``os.replace``'d onto the destination, so a crash mid-write cannot leave
+    a truncated/corrupt preset file (the merge in the agent's save_preset reads
+    this file back, so a torn write would be self-inflicted data loss).
     """
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(_wrap_presets(presets), f, indent=2)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(_wrap_presets(presets), f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def read_preset_file(path: str) -> dict[str, Preset]:
@@ -239,10 +253,19 @@ def read_preset_file(path: str) -> dict[str, Preset]:
 
     Raises:
         OSError: If the file cannot be read.
-        ValueError: If it is not valid JSON / not a preset store.
+        ValueError: If it is not valid JSON, or carries a wrapper ``format``
+            that is not a preset store (e.g. a ``*.mux16seq`` sequence file) —
+            so a foreign file cannot masquerade as an empty preset store.
     """
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    if isinstance(data, dict):
+        fmt = data.get("format")
+        if fmt not in (None, PRESET_FILE_FORMAT):
+            raise ValueError(
+                f"Not a preset file: format={fmt!r}, expected "
+                f"{PRESET_FILE_FORMAT!r}."
+            )
     try:
         return _presets_from_payload(data)
     except (TypeError, KeyError, AttributeError) as exc:
