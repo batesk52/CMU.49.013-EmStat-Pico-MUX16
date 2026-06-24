@@ -27,7 +27,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.techniques.scripts import EIS_CURRENT_RANGES, technique_params
+from src.techniques.scripts import (
+    EIS_CURRENT_RANGES,
+    EIS_RANGE_MODES,
+    technique_params,
+)
 
 # Parameter display names and units for field labels.
 PARAM_LABELS: dict[str, tuple[str, str]] = {
@@ -62,6 +66,7 @@ PARAM_LABELS: dict[str, tuple[str, str]] = {
     "samples_per_visit": ("Samples per channel visit", ""),
     "cr": ("Current range", ""),
     "bw_hz": ("Max Bandwidth", "Hz"),
+    "eis_range_mode": ("Range selection", ""),
 }
 
 # Current range options for combo box (low-speed pgstat mode 2).
@@ -139,6 +144,16 @@ def create_param_widget(
         combo = QComboBox()
         for cr in current_ranges_for(technique):
             combo.addItem(cr)
+        idx = combo.findText(str(default))
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        combo.currentIndexChanged.connect(lambda: on_change())
+        return combo
+
+    if name == "eis_range_mode":
+        combo = QComboBox()
+        for mode in EIS_RANGE_MODES:
+            combo.addItem(mode)
         idx = combo.findText(str(default))
         if idx >= 0:
             combo.setCurrentIndex(idx)
