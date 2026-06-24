@@ -69,6 +69,9 @@ _TECHNIQUES = ("CV", "EIS", "CA", "CP")
 #: Cap on per-tool table rows (e.g. CP plateaus) kept in the result.
 _MAX_ROWS = 25
 
+#: cm^2 -> mm^2 area conversion (1 cm^2 = 100 mm^2).
+CM2_TO_MM2 = 100.0
+
 
 class _AnalysisError(Exception):
     """Structured tool failure; ``extra`` merges into the error dict."""
@@ -484,22 +487,35 @@ def build_analysis_tools(
                     "Randles-Sevcik area needs resolvable CV peaks; "
                     "peak extraction did not succeed."
                 )
+            elif not analyzer.peaks.get("peaks_well_defined", True):
+                notes.append(
+                    "Randles-Sevcik area skipped: the CV peaks are not "
+                    "well-defined (they sit at a sweep endpoint -- a rising "
+                    "background, not a true faradaic peak), so an "
+                    "electroactive-area estimate would be meaningless."
+                )
             else:
+                # Optional numerics default when ABSENT; tolerate an
+                # explicit JSON null (a common model habit for optional
+                # fields) instead of letting int(None)/float(None) raise a
+                # TypeError that fails the whole tool and discards the
+                # peak/reversibility metrics already computed above.
+                n_raw = args.get("n_electrons")
+                d_raw = args.get("diffusion_coeff_cm2_s")
                 try:
                     a_cm2 = analyzer.calculate_electroactive_area(
                         scan_rate=float(scan_rate),
                         concentration_mM=float(concentration_mM),
-                        n=int(args.get("n_electrons", 1)),
-                        diffusion_coeff=float(
-                            args.get(
-                                "diffusion_coeff_cm2_s",
-                                DEFAULT_DIFFUSION_COEFF_CM2_S,
-                            )
+                        n=int(n_raw) if n_raw is not None else 1,
+                        diffusion_coeff=(
+                            float(d_raw)
+                            if d_raw is not None
+                            else DEFAULT_DIFFUSION_COEFF_CM2_S
                         ),
-                        peak=args.get("peak", "anodic"),
+                        peak=args.get("peak") or "anodic",
                     )
                     metrics["electroactive_area_cm2"] = a_cm2
-                    metrics["electroactive_area_mm2"] = a_cm2 * 100.0
+                    metrics["electroactive_area_mm2"] = a_cm2 * CM2_TO_MM2
                 except ValueError as exc:
                     notes.append(f"Randles-Sevcik area skipped: {exc}")
         fig = (

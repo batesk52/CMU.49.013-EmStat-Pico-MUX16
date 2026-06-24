@@ -6,6 +6,16 @@ Project-specific task tracking and history.
 
 ## In Progress
 
+### 2026-06-23: Multi-agent review of PR #21 + tool-layer hardening
+- [x | Session | 2026-06-23] Ran a 6-dimension adversarial review (3-lens verify per finding) of the `feature/cv-randles-sevcik-tool` branch, then fixed the confirmed tool-layer findings in `src/agent/vendor_analysis.py` (`analyze_cv`):
+  - **Explicit JSON null no longer crashes the tool** — `n_electrons` / `diffusion_coeff_cm2_s` were coerced with `int(args.get(..., default))` / `float(...)`, so an explicit `null` (key present) hit `int(None)`/`float(None)` → `TypeError`, which `_safe` turned into `ok=False`, discarding the already-computed peak/reversibility metrics. Now defaults apply for both absent and null; `peak` also falls back to `'anodic'` on null/empty.
+  - **Area skipped (with note) when peaks are not well-defined** — the branch guarded only on `analyzer.peaks is None`; an endpoint-background "peak" (`peaks_well_defined=False`) still returned a meaningless `electroactive_area_cm2`. Added an `elif not peaks_well_defined` skip + note.
+  - **Named `CM2_TO_MM2 = 100.0`** in place of the bare `* 100.0` literal.
+  - **Regression tests** — new `tests/agent/test_cv_randles.py` (5 tests) drives the real `analyze_cv` handler with synthetic CVs (loaders monkeypatched): ground-truth area recovery (0.05 cm^2 to rel 5%), reversibility flag, no-concentration skip, missing-scan_rate note, explicit-null robustness, and the not-well-defined skip. The vendored `cv.py` math stays read-only (its tests belong upstream in 49.011).
+  - **Validation** — `py_compile` clean; full suite **252 passed** (offscreen Qt).
+- **Not changed:** the `8568cc7` test deletion is legitimate — `forces_auto_save` / `ALWAYS_AUTOSAVE_TECHNIQUES` were removed by the later `85e9cb4` "auto-save opt-in" refactor, so the deleted `test_auto_save_provenance.py` covered code that no longer exists. The vendored single-rate vs scan-rate-series prefactor duplication is real but read-only — raise upstream in 49.011.
+- **Next:** the two newer branch commits (`bd1d385` EIS selectable range-mode, `85e9cb4` auto-save opt-in refactor) post-date the original review scope and were not adversarially reviewed.
+
 ### 2026-06-22: analyze_cv MCP tool surfaces redox-peak reversibility + Randles-Sevcik area
 - [x | Session | 2026-06-22] Wired the new CMU.49.011 `CVAnalyzer` capabilities into the agent's `analyze_cv` tool (branch `feature/cv-randles-sevcik-tool`). Motivated by TSC.45.001 bare Au-IDE diagnostics: the autonomous IDE-cleaning protocol needs the area-independent CV reversibility gate (delta_ep) AND the electroactive area (to area-normalize a high Rct into clean-vs-fouled).
   - **Vendored sync** — `src/vendor/electrochem_analysis/analysis/cv.py` re-synced from the updated 49.011 `cv.py` (CMU.49.011 PR `feature/randles-sevcik-area`). +287 lines, 0 deletions; only delta vs upstream is the vendored import path (`src.vendor.electrochem_analysis.utils.grouping`) and CRLF line endings, both preserved. Adds `extract_peaks()`, `calculate_electroactive_area()`, `calculate_area_from_scan_rates()`, `plot_randles_sevcik()`, peak metrics in `get_summary()`, and constants `RANDLES_SEVCIK_CONSTANT` / `DEFAULT_DIFFUSION_COEFF_CM2_S` / `REVERSIBLE_DELTA_EP_MV`.
