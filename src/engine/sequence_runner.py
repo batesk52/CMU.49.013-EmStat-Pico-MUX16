@@ -43,7 +43,7 @@ from typing import Optional
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal, pyqtSlot
 
 from src.data.exporters import make_sequence_dir, sequence_step_dirname
-from src.data.models import AutoSaveConfig, TechniqueConfig, forces_auto_save
+from src.data.models import AutoSaveConfig, TechniqueConfig
 from src.data.presets import PresetManager
 from src.data.sequence import Sequence, build_config
 
@@ -150,9 +150,8 @@ class SequenceRunner(QObject):
 
         Auto-save policy (requires ``base_export_dir``): when
         ``auto_save_all`` is set (the GUI auto-save toggle) every entry
-        auto-saves; otherwise only provenance-forced techniques
-        (:func:`forces_auto_save` — EIS/GEIS, whose generating script is
-        not recoverable from the data) do.  Auto-saving entries each get
+        auto-saves; otherwise nothing auto-saves — auto-save is fully
+        opt-in for every technique.  Auto-saving entries each get
         their own ``<base>/<stamp>_sequence/stepNN_<technique>/`` dir
         (``exact_dir`` — unique per entry, repeats included, so two
         same-second runs of one technique can never collide), matching
@@ -202,9 +201,7 @@ class SequenceRunner(QObject):
             for rep in range(repeat):
                 # Fresh config per entry (no aliasing across repeats).
                 config = build_config(step, preset)
-                if seq_dir is not None and (
-                    auto_save_all or forces_auto_save(config.technique)
-                ):
+                if seq_dir is not None and auto_save_all:
                     config.auto_save = AutoSaveConfig(
                         enabled=True,
                         output_dir=os.path.join(

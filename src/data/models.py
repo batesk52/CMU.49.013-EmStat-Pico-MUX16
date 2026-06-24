@@ -86,26 +86,6 @@ class AutoSaveConfig:
     exact_dir: bool = False
 
 
-# Techniques that must always auto-save for provenance: their generating
-# MethodSCRIPT (frequency table, amplitude, autoranging window) is not
-# otherwise recoverable from the saved data, so every run persists a
-# ``_script.mscr`` copy alongside the CSVs. Policy lives here (data
-# layer) so the GUI and the sequence runner apply the same rule.
-ALWAYS_AUTOSAVE_TECHNIQUES: frozenset[str] = frozenset({"eis", "geis"})
-
-
-def forces_auto_save(technique: str) -> bool:
-    """Return True if ``technique`` must always auto-save for provenance.
-
-    Args:
-        technique: Technique identifier (case-insensitive).
-
-    Returns:
-        True for techniques in :data:`ALWAYS_AUTOSAVE_TECHNIQUES`.
-    """
-    return technique.lower() in ALWAYS_AUTOSAVE_TECHNIQUES
-
-
 @dataclass
 class TechniqueConfig:
     """Configuration for an electrochemical technique.

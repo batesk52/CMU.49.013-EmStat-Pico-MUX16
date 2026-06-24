@@ -236,9 +236,8 @@ blocks on a new sidebar tab and run them back-to-back on the MUX-16.
   chains `engine.start_measurement` calls, advancing on the existing
   `measurement_finished` signal and gating on `isRunning()` so the single-run
   guard is honoured. The interactive export prompt is suppressed in "sequence
-  mode"; auto-save is opt-in (the same GUI toggle as single runs), with EIS/GEIS
-  steps provenance-forced per step (`forces_auto_save` in `models.py`) so their
-  `_script.mscr` always lands. Auto-saving entries each write into their own
+  mode"; auto-save is fully opt-in for every technique (the same GUI toggle as
+  single runs) — no technique is force-saved. Auto-saving entries each write into their own
   `<export_dir>/<stamp>_sequence/stepNN_<technique>/` dir (`exact_dir` writer
   mode — unique per entry, repeats included, so same-second runs can't collide),
   and the finished handler adds each auto-saved step's `.pssession`. Steps that

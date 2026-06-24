@@ -278,9 +278,9 @@ def test_recording_tab_cannot_be_closed_midrun(qapp) -> None:
 def test_sequence_export_base_respects_auto_save_toggle(qapp) -> None:
     """The export-base provider mirrors the GUI auto-save toggle.
 
-    The base dir is ALWAYS supplied (provenance-forced EIS/GEIS steps
-    auto-save even with the toggle off — the runner applies that rule);
-    ``auto_save_all`` carries the toggle for everything else.
+    The base dir is ALWAYS supplied so the runner has a valid root when
+    auto-save is on; ``auto_save_all`` carries the GUI toggle and is the
+    sole gate (auto-save is fully opt-in for every technique).
     """
     window = MainWindow()
     try:
