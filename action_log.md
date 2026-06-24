@@ -6,6 +6,13 @@ Project-specific task tracking and history.
 
 ## In Progress
 
+### 2026-06-24: PR #21 merged + post-merge minor cleanup (direct to main)
+- [x | Session | 2026-06-24] Reviewed the two later PR #21 commits (`bd1d385` EIS selectable range-mode, `85e9cb4` auto-save opt-in) with a 5-dimension adversarial pass — MERGE-OK, 0 blocker/major (the auto-save opt-in is intentional + tested, no provenance regression). Merged PR #21 (`777b5b3`), deleted the branch. Then swept the confirmed minors directly on `main`:
+  - Removed the orphaned `@pyqtSlot(str)` decorator stacked on `_on_start_measurement` (`src/gui/main_window.py`) left behind by the auto-save refactor.
+  - Agent `run_eis` `eis_range_mode` enum now built from `list(EIS_RANGE_MODES)` (`src/agent/tools.py`) instead of a hardcoded `["auto","static"]`, restoring the single-source guarantee with the GUI; softened the `cr` description to cover the static-pin vs auto-ceiling distinction.
+  - Fixed stale "provenance-forced EIS/GEIS auto-save" docs now that saving is fully opt-in: `src/engine/sequence_runner.py` (module + `from_sequence` docstrings), `src/gui/sequence_panel.py` (3 comments/docstrings), `README.md`.
+  - **Validation** — source clean of stale forced-autosave refs; `py_compile` + import OK; full suite **252 passed**.
+
 ### 2026-06-23: Multi-agent review of PR #21 + tool-layer hardening
 - [x | Session | 2026-06-23] Ran a 6-dimension adversarial review (3-lens verify per finding) of the `feature/cv-randles-sevcik-tool` branch, then fixed the confirmed tool-layer findings in `src/agent/vendor_analysis.py` (`analyze_cv`):
   - **Explicit JSON null no longer crashes the tool** — `n_electrons` / `diffusion_coeff_cm2_s` were coerced with `int(args.get(..., default))` / `float(...)`, so an explicit `null` (key present) hit `int(None)`/`float(None)` → `TypeError`, which `_safe` turned into `ok=False`, discarding the already-computed peak/reversibility metrics. Now defaults apply for both absent and null; `peak` also falls back to `'anodic'` on null/empty.

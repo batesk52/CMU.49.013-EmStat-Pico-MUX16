@@ -56,9 +56,9 @@ ConnectionProvider = Callable[[], object]
 
 # Type alias: a zero-arg callable returning ``(base_export_dir,
 # auto_save_all)`` for per-step auto-save. ``auto_save_all`` mirrors the
-# GUI auto-save toggle (every step writes); even when it is False the
-# runner still auto-saves provenance-forced techniques (EIS/GEIS) into
-# the base dir. Injected so the panel never decides the policy itself.
+# GUI auto-save toggle: when True every step writes into the base dir,
+# when False nothing auto-saves (auto-save is fully opt-in). Injected so
+# the panel never decides the policy itself.
 ExportBaseProvider = Callable[[], tuple[Optional[str], bool]]
 
 
@@ -134,8 +134,8 @@ class SequencePanel(QWidget):
 
         The provider returns ``(base_export_dir, auto_save_all)``: the
         root exports directory (or ``None`` to disable all writing) and
-        whether every step should auto-save (the GUI toggle) rather than
-        just the provenance-forced EIS/GEIS steps.
+        whether every step should auto-save (the GUI toggle). Auto-save
+        is fully opt-in; with the toggle off nothing auto-saves.
         """
         self._export_base_provider = provider
 
@@ -456,8 +456,8 @@ class SequencePanel(QWidget):
             else None
         )
         # Auto-save policy lives outside the panel: the provider returns
-        # (base_dir, auto_save_all). Even with auto_save_all False the
-        # runner auto-saves provenance-forced techniques (EIS/GEIS).
+        # (base_dir, auto_save_all). Auto-save is fully opt-in — with
+        # auto_save_all False, nothing auto-saves.
         base_export_dir, auto_save_all = (
             self._export_base_provider()
             if self._export_base_provider is not None

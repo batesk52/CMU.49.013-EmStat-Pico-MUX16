@@ -28,7 +28,7 @@ import logging
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
 from src.agent.engine_adapter import EngineAdapter
-from src.techniques.scripts import EIS_CURRENT_RANGES
+from src.techniques.scripts import EIS_CURRENT_RANGES, EIS_RANGE_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -115,8 +115,10 @@ def _cr_prop(technique: str | None = None) -> dict[str, Any]:
         return {
             "type": "string",
             "description": (
-                "Current range (SI-prefixed), held fixed for the whole sweep "
-                f"(EIS pins the range). EIS/GEIS run mode 3 -- use ONLY: "
+                "Current range (SI-prefixed). In 'static' mode (default) it is "
+                "pinned for the whole sweep; in 'auto' mode it is the maximum "
+                "(ceiling) range the autoranger steps down from. EIS/GEIS run "
+                "mode 3 -- use ONLY: "
                 f"{ladder} (default '100u'). Mode-2 values such as "
                 "'2u'/'10u'/'63u' return no data. The range must exceed the "
                 "highest-frequency current or the sweep under-ranges; the run "
@@ -332,7 +334,7 @@ def build_tool_defs() -> list[dict[str, Any]]:
                 "cr": _cr_prop("eis"),
                 "eis_range_mode": {
                     "type": "string",
-                    "enum": ["auto", "static"],
+                    "enum": list(EIS_RANGE_MODES),
                     "description": (
                         "Current-range mode for the sweep. 'static' (default) "
                         "PINS 'cr' for the whole sweep -- safer against the "

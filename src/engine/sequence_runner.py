@@ -17,13 +17,12 @@ Design (see ``architecture.md`` -> "Preset Sequencer (CMU.17.034)"):
   step's ``delay_s`` is applied only AFTER the last repeat, inserted via
   ``QTimer.singleShot`` so the GUI event loop keeps spinning.
 * ``sequence_mode`` is exposed so the main window can suppress the
-  interactive export prompt. With a ``base_export_dir``, auto-saving
-  entries (all of them when ``auto_save_all``, else just the
-  provenance-forced EIS/GEIS steps) each write into their own
-  ``<base>/<stamp>_sequence/stepNN_<technique>/`` dir — unique per queue
-  entry including repeats, so same-second runs cannot collide — matching
-  the end-of-run save prompt's layout exactly. Without a base dir the
-  sequence runs without writing.
+  interactive export prompt. With a ``base_export_dir`` AND
+  ``auto_save_all`` (auto-save is fully opt-in), every entry writes into
+  its own ``<base>/<stamp>_sequence/stepNN_<technique>/`` dir — unique per
+  queue entry including repeats, so same-second runs cannot collide —
+  matching the end-of-run save prompt's layout exactly. Without a base dir
+  or with the toggle off, the sequence runs without writing.
 
 Signals:
     sequence_progress(int, int): Emitted as ``(completed, total)`` each
@@ -164,9 +163,10 @@ class SequenceRunner(QObject):
             preset_manager: Store the step preset names resolve against.
             base_export_dir: Root exports directory for per-step
                 auto-save.  ``None`` disables auto-save entirely (no
-                entry writes, including forced techniques).
+                entry writes).
             auto_save_all: True when the user enabled the auto-save
-                toggle — every entry auto-saves, not just forced ones.
+                toggle — every entry auto-saves.  Auto-save is fully
+                opt-in: with the toggle off, nothing auto-saves.
             parent: Optional Qt parent.
 
         Returns:

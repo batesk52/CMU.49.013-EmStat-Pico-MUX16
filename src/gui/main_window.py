@@ -1043,7 +1043,6 @@ class MainWindow(QMainWindow):
         """
         return get_export_dir()
 
-    @pyqtSlot(str)
     @pyqtSlot()
     def _on_start_measurement(self) -> None:
         """Gather config from panels and start the measurement engine."""
