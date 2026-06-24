@@ -84,22 +84,48 @@ def test_preamble_eis_ignores_bw_hz_and_stays_200k() -> None:
 
 
 def test_preamble_eis_pins_current_range() -> None:
-    """EIS must PIN the current range, not autorange within a window.
+    """EIS PINS the current range BY DEFAULT (eis_range_mode unset/'static').
 
     In-loop current-range switching corrupts EIS on FW 1.6.01 (the low-
     frequency Nyquist arc reverses/breaks, Z' goes negative -- bench-validated
-    2026-06-20). So the preamble pins ``set_autoranging ba {cr} {cr}`` (min==max
-    disables autoranging) and must NOT emit a window like ``ba 1n {cr}``.
+    2026-06-20). So by default the preamble pins ``set_autoranging ba {cr} {cr}``
+    (min==max disables autoranging) and must NOT emit a window like ``ba 1n {cr}``.
     """
     lines = _preamble_eis({"cr": "100u"})
     assert "set_autoranging ba 100u 100u" in lines, (
-        f"EIS must pin the current range (min==max); got: {lines}"
+        f"EIS must pin the current range by default (min==max); got: {lines}"
     )
     assert "set_autoranging ba 1n 100u" not in lines, (
-        "EIS must not autorange (in-loop range switching corrupts EIS)"
+        "EIS must not autorange by default (in-loop switching corrupts EIS)"
     )
     # The nominal/start range is still set from cr.
     assert "set_range ba 100u" in lines
+
+
+def test_preamble_eis_range_mode_static_pins() -> None:
+    """eis_range_mode='static' is explicit pinning (same as the default)."""
+    lines = _preamble_eis({"cr": "100u", "eis_range_mode": "static"})
+    assert "set_autoranging ba 100u 100u" in lines
+    assert "set_autoranging ba 1n 100u" not in lines
+
+
+def test_preamble_eis_range_mode_auto_restores_window() -> None:
+    """eis_range_mode='auto' restores the pre-PR#18 autoranging window.
+
+    A pinned range buries the low-frequency points of a high-impedance cell
+    (current << full scale -> scattered/negative -Z'' tail). 'auto' emits
+    ``set_autoranging ba 1n {cr}`` (autorange from the most-sensitive floor up
+    to {cr} as the CEILING), the original IDE-validated behaviour, while the
+    default stays pinned.
+    """
+    auto = _preamble_eis({"cr": "100u", "eis_range_mode": "auto"})
+    assert "set_autoranging ba 1n 100u" in auto, (
+        f"eis_range_mode='auto' must autorange 1n..cr; got: {auto}"
+    )
+    assert "set_autoranging ba 100u 100u" not in auto, (
+        "eis_range_mode='auto' must not pin the range"
+    )
+    assert "set_range ba 100u" in auto
 
 
 @pytest.mark.parametrize("value, expected", [

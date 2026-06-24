@@ -108,15 +108,6 @@ APP_VERSION = "0.1.0"
 # Hover text for the pristine "Live" scratch tab (consumed by the next run).
 _SCRATCH_TOOLTIP = "New plot — choose a technique and run"
 
-# Provenance auto-save policy lives in the data layer (shared with the
-# sequence runner, which applies the same forcing per step); aliases kept
-# so existing callers/tests keep working.
-from src.data.models import (  # noqa: E402
-    ALWAYS_AUTOSAVE_TECHNIQUES as _ALWAYS_AUTOSAVE_TECHNIQUES,
-    forces_auto_save as _forces_auto_save,
-)
-
-
 class _AgentFileDialogs:
     """Native save/open dialogs for the agent's preset/sequence tools.
 
@@ -793,9 +784,7 @@ class MainWindow(QMainWindow):
         Mirrors the single-run policy exactly: the base resolves to the
         explicit auto-save folder (else the configured export dir), and
         ``auto_save_all`` is the GUI auto-save toggle. The base is ALWAYS
-        supplied because provenance-forced techniques (EIS/GEIS) must
-        auto-save their ``_script.mscr`` even when the toggle is off —
-        the runner applies that per-step forcing itself.
+        supplied so the runner has a valid root whenever auto-save is on.
         """
         base = self._meas_panel.auto_save_directory() or get_export_dir()
         return base, self._meas_panel.is_auto_save_enabled()
@@ -884,10 +873,6 @@ class MainWindow(QMainWindow):
         # Technique panel -> plot container
         self._tech_panel.technique_changed.connect(
             self._on_technique_preview
-        )
-        # Technique panel -> force auto-save default for EIS/GEIS
-        self._tech_panel.technique_changed.connect(
-            self._on_technique_changed_auto_save
         )
 
         # Electrode-config panel -> swap visible channel panel
@@ -1059,16 +1044,6 @@ class MainWindow(QMainWindow):
         return get_export_dir()
 
     @pyqtSlot(str)
-    def _on_technique_changed_auto_save(self, technique: str) -> None:
-        """Reflect the forced-auto-save default in the checkbox.
-
-        EIS/GEIS always auto-save (see :func:`_forces_auto_save`); checking
-        the box keeps the UI consistent with what the run will actually do.
-        Other techniques are left as the operator set them.
-        """
-        if _forces_auto_save(technique):
-            self._meas_panel.set_auto_save(True, self._default_export_dir())
-
     @pyqtSlot()
     def _on_start_measurement(self) -> None:
         """Gather config from panels and start the measurement engine."""
@@ -1113,18 +1088,13 @@ class MainWindow(QMainWindow):
             else:  # on_board
                 re_ce_channels = [ON_BOARD_RE_CE_CHANNEL] * len(channels)
 
-        # Build auto-save config. EIS/GEIS always auto-save so the exact
-        # MethodSCRIPT (DC bias + current ranging) is recorded as
-        # _script.mscr in the run folder — those settings are not otherwise
-        # recoverable from the saved data; other techniques honour the
-        # checkbox. Reset the active flag first so a stale True from a
-        # previous run that ended in error can't mislabel this run.
+        # Build auto-save config purely from the GUI toggle — auto-save is
+        # fully opt-in for every technique (no forced provenance saves).
+        # Reset the active flag first so a stale True from a previous run
+        # that ended in error can't mislabel this run.
         auto_save = None
         self._auto_save_active = False
-        if (
-            _forces_auto_save(technique)
-            or self._meas_panel.is_auto_save_enabled()
-        ):
+        if self._meas_panel.is_auto_save_enabled():
             auto_dir = (
                 self._meas_panel.auto_save_directory()
                 or self._default_export_dir()
@@ -1841,15 +1811,10 @@ class MainWindow(QMainWindow):
 
         # Auto-save is opt-in and the user's checkbox choice is theirs:
         # selecting a preset never CLEARS a manually enabled auto-save,
-        # and a preset's saved auto_save flag never forces it on. The one
-        # forcing exception is EIS/GEIS (script provenance), which turns
-        # the box on.
-        enable = (
-            self._meas_panel.is_auto_save_enabled()
-            or _forces_auto_save(preset.technique)
-        )
+        # and a preset's saved auto_save flag never forces it on.
         self._meas_panel.set_auto_save(
-            enable, self._default_export_dir()
+            self._meas_panel.is_auto_save_enabled(),
+            self._default_export_dir(),
         )
 
         self.statusBar().showMessage(

@@ -325,6 +325,9 @@ to completion, and exits 0. The agent loop module must import without an API key
   * load_session, analyze_cv, analyze_ecsa, analyze_ca, analyze_eis, analyze_cic, analyze_cp calling
     src.vendor.electrochem_analysis.*; return summaries + matplotlib Agg figures handed to the panel;
     registered into tools.py. Eager-import numpy/scipy/matplotlib(Agg)/pandas at module top.
+  * analyze_cv also returns redox-peak reversibility metrics (delta_ep_mv, ipa_ipc_ratio, e_half_v,
+    reversible -- the area-independent cleanliness gate) and, when concentration_mM is passed with
+    scan_rate, the Randles-Sevcik electroactive_area_cm2/_mm2 (area-normalize a paired EIS Rct with it).
   * Validate: `python claude_test_files/smoke_analysis_tools.py` (analyze a bundled sample session headlessly, exit 0)
 - [x] **src/vendor/electrochem_analysis/** - copy 49.011 src/analysis + src/dataloaders + src/utils, READ-ONLY, import-rewritten
   * Copy all modules; rewrite `from src.` / `import src.` -> `src.vendor.electrochem_analysis.`; add

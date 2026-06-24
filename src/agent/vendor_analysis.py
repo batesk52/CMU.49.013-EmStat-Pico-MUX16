@@ -44,7 +44,10 @@ from typing import Any, Callable, Optional
 from src.vendor.electrochem_analysis.analysis.ca import CAAnalyzer
 from src.vendor.electrochem_analysis.analysis.cic import CoganCICAnalyzer
 from src.vendor.electrochem_analysis.analysis.cp import CPAnalyzer
-from src.vendor.electrochem_analysis.analysis.cv import CVAnalyzer
+from src.vendor.electrochem_analysis.analysis.cv import (
+    CVAnalyzer,
+    DEFAULT_DIFFUSION_COEFF_CM2_S,
+)
 from src.vendor.electrochem_analysis.analysis.ecsa import ECSAAnalyzer
 from src.vendor.electrochem_analysis.analysis.eis import EISAnalyzer
 from src.vendor.electrochem_analysis.dataloaders import (
@@ -65,6 +68,9 @@ _TECHNIQUES = ("CV", "EIS", "CA", "CP")
 
 #: Cap on per-tool table rows (e.g. CP plateaus) kept in the result.
 _MAX_ROWS = 25
+
+#: cm^2 -> mm^2 area conversion (1 cm^2 = 100 mm^2).
+CM2_TO_MM2 = 100.0
 
 
 class _AnalysisError(Exception):
@@ -444,16 +450,74 @@ def build_analysis_tools(
         )
         scan_rate = args.get("scan_rate")
         area = args.get("electrode_area_cm2")
+        concentration_mM = args.get("concentration_mM")
         analyzer = CVAnalyzer(df)
+        notes = []
+
+        # Redox-peak / reversibility metrics (Epa/Epc, delta_ep, ipa/ipc,
+        # reversible flag) -- the area-INDEPENDENT cleanliness gate. Fold into
+        # get_summary() by extracting before it runs; skip gracefully if the
+        # scan has no resolvable peaks.
+        try:
+            analyzer.extract_peaks()
+        except ValueError as exc:
+            notes.append(f"Peak extraction skipped: {exc}")
+
         metrics = analyzer.get_summary(
             scan_rate=scan_rate, electrode_area=area
         )
-        notes = []
         if (scan_rate is None) != (area is None):
             notes.append(
                 "CSC needs BOTH scan_rate and electrode_area_cm2; "
                 "only one was given, so CSC was not computed."
             )
+
+        # Randles-Sevcik electroactive area (single-rate) when a redox-probe
+        # concentration is supplied with the scan rate. Gives the number that
+        # turns a high absolute Rct into an area-normalized Rct (Rct x A) the
+        # caller can compare to clean (~65-300 Ohm*cm^2) vs fouled bands.
+        if concentration_mM is not None:
+            if scan_rate is None:
+                notes.append(
+                    "Randles-Sevcik area needs scan_rate alongside "
+                    "concentration_mM."
+                )
+            elif analyzer.peaks is None:
+                notes.append(
+                    "Randles-Sevcik area needs resolvable CV peaks; "
+                    "peak extraction did not succeed."
+                )
+            elif not analyzer.peaks.get("peaks_well_defined", True):
+                notes.append(
+                    "Randles-Sevcik area skipped: the CV peaks are not "
+                    "well-defined (they sit at a sweep endpoint -- a rising "
+                    "background, not a true faradaic peak), so an "
+                    "electroactive-area estimate would be meaningless."
+                )
+            else:
+                # Optional numerics default when ABSENT; tolerate an
+                # explicit JSON null (a common model habit for optional
+                # fields) instead of letting int(None)/float(None) raise a
+                # TypeError that fails the whole tool and discards the
+                # peak/reversibility metrics already computed above.
+                n_raw = args.get("n_electrons")
+                d_raw = args.get("diffusion_coeff_cm2_s")
+                try:
+                    a_cm2 = analyzer.calculate_electroactive_area(
+                        scan_rate=float(scan_rate),
+                        concentration_mM=float(concentration_mM),
+                        n=int(n_raw) if n_raw is not None else 1,
+                        diffusion_coeff=(
+                            float(d_raw)
+                            if d_raw is not None
+                            else DEFAULT_DIFFUSION_COEFF_CM2_S
+                        ),
+                        peak=args.get("peak") or "anodic",
+                    )
+                    metrics["electroactive_area_cm2"] = a_cm2
+                    metrics["electroactive_area_mm2"] = a_cm2 * CM2_TO_MM2
+                except ValueError as exc:
+                    notes.append(f"Randles-Sevcik area skipped: {exc}")
         fig = (
             analyzer.plot_cv_with_cathodic_area()
             if analyzer.csc is not None
@@ -735,13 +799,21 @@ def build_analysis_tools(
                 "description": (
                     "Analyze a cyclic voltammetry scan from a saved "
                     ".pssession file with the vendored CVAnalyzer: peak "
-                    "anodic/cathodic currents, potential range, and -- "
-                    "when BOTH scan_rate and electrode_area_cm2 are "
-                    "given -- charge storage capacity (CSC, mC/cm^2) "
-                    "with open/closed loop detection. Emits a CV figure "
-                    "into the app. Call this when the user asks to "
-                    "analyze, summarize, or plot saved CV data; use "
-                    "load_session first if the scan name is unknown."
+                    "anodic/cathodic currents, potential range, redox-peak "
+                    "reversibility metrics (epa_v/epc_v, delta_ep_mv, "
+                    "ipa_ipc_ratio, e_half_v, peaks_well_defined, reversible "
+                    "-- the area-INDEPENDENT cleanliness gate: clean fast "
+                    "kinetics give delta_ep near 59 mV and reversible=true, a "
+                    "passivated surface gives drawn-out/absent peaks), and -- "
+                    "when BOTH scan_rate and electrode_area_cm2 are given -- "
+                    "charge storage capacity (CSC, mC/cm^2) with open/closed "
+                    "loop detection. When concentration_mM is given with "
+                    "scan_rate, also returns the Randles-Sevcik "
+                    "electroactive_area_cm2/_mm2 (divide a paired EIS Rct by "
+                    "this area to area-normalize it). Emits a CV figure into "
+                    "the app. Call this when the user asks to analyze, "
+                    "summarize, or plot saved CV data; use load_session first "
+                    "if the scan name is unknown."
                 ),
                 "input_schema": _schema(
                     {
@@ -751,7 +823,8 @@ def build_analysis_tools(
                             "type": "number",
                             "description": (
                                 "Scan rate in V/s; required together "
-                                "with electrode_area_cm2 for CSC."
+                                "with electrode_area_cm2 for CSC and with "
+                                "concentration_mM for Randles-Sevcik area."
                             ),
                         },
                         "electrode_area_cm2": {
@@ -759,6 +832,37 @@ def build_analysis_tools(
                             "description": (
                                 "Electrode area in cm^2; required "
                                 "together with scan_rate for CSC."
+                            ),
+                        },
+                        "concentration_mM": {
+                            "type": "number",
+                            "description": (
+                                "Redox-probe bulk concentration in mM "
+                                "(e.g. 5 for 5 mM ferri/ferrocyanide). With "
+                                "scan_rate, triggers a single-rate "
+                                "Randles-Sevcik electroactive-area estimate."
+                            ),
+                        },
+                        "n_electrons": {
+                            "type": "integer",
+                            "description": (
+                                "Electrons transferred for the redox couple "
+                                "(default 1). Used only for the area estimate."
+                            ),
+                        },
+                        "diffusion_coeff_cm2_s": {
+                            "type": "number",
+                            "description": (
+                                "Diffusion coefficient D in cm^2/s for the "
+                                "area estimate (default ~7.6e-6, ferricyanide)."
+                            ),
+                        },
+                        "peak": {
+                            "type": "string",
+                            "enum": ["anodic", "cathodic", "mean"],
+                            "description": (
+                                "Which peak current the area estimate uses "
+                                "(default 'anodic')."
                             ),
                         },
                     },

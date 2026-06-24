@@ -147,6 +147,13 @@ EIS_CURRENT_RANGES: list[str] = [
     "100n", "1u", "6u", "13u", "25u", "50u", "100u", "200u", "1m", "5m",
 ]
 
+# EIS current-range selection modes (GUI dropdown + agent tool enum). Single
+# source of truth so the GUI and agent cannot drift. "static" pins the chosen
+# `cr` for the whole sweep; "auto" autoranges from the most-sensitive floor
+# (1n) UP TO `cr` as a ceiling, stepping DOWN as the low-frequency current
+# falls. Default is "static" (first entry). See `_preamble_eis`.
+EIS_RANGE_MODES: list[str] = ["static", "auto"]
+
 
 def next_larger_eis_range(cr: str) -> str | None:
     """Return the next-larger EIS current range above ``cr``, or None.
@@ -279,6 +286,7 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "freq_end": 0.1,
         "n_freq": 50,
         "cr": "100u",
+        "eis_range_mode": "static",
     },
     "geis": {
         "t_eq": 0.0,
@@ -378,10 +386,34 @@ def _preamble(params: dict[str, Any]) -> list[str]:
 
 
 def _preamble_eis(params: dict[str, Any]) -> list[str]:
-    """Build preamble for EIS (high-speed mode required)."""
+    """Build preamble for EIS (high-speed mode required).
+
+    Current-range policy is selectable via ``eis_range_mode``
+    (``"static"`` | ``"auto"``):
+
+    * ``"static"`` (default) -- PIN the range for the whole sweep
+      (``set_autoranging ba {cr} {cr}``, min==max disables autoranging per
+      MethodSCRIPT v1.6 sec 14.50). In-loop range switching corrupts EIS on
+      FW 1.6.01 for some cells -- the low-frequency Nyquist arc reverses/breaks
+      and Z' goes negative (3-electrode, bench 2026-06-20). ``{cr}`` is held for
+      the whole sweep and must be chosen so the highest-frequency current does
+      not overload.
+    * ``"auto"`` -- real autoranging from the most-sensitive floor (``1n``) up
+      to ``{cr}`` as the CEILING (``set_autoranging ba 1n {cr}``). ``{cr}`` is
+      the max range here, not a starting point: the autoranger only steps DOWN
+      from it as the current falls. A single pinned range is badly mismatched to
+      the multi-decade |Z| span of a real sweep: e.g. a high-impedance IDE runs
+      ~73 uA at 100 kHz down to ~70 nA at low frequency, so a pinned 100u range
+      reads the low-frequency points at <0.1% of full scale, burying them in
+      quantization noise (the scattered/negative -Z'' tail). Autoranging
+      restores low-frequency SNR. This is the original pre-PR#18 behaviour,
+      restored as a selectable mode for 2-electrode IDE work (validated clean,
+      FW 1.6.01).
+    """
     lines: list[str] = []
     lines.append("e")
     cr = params.get("cr", "100u")
+    autorange = str(params.get("eis_range_mode", "static")).lower() == "auto"
     lines.append("var p")
     lines.append("var c")
     lines.append("set_pgstat_chan 1")
@@ -391,14 +423,10 @@ def _preamble_eis(params: dict[str, Any]) -> list[str]:
     lines.append("set_max_bandwidth 200k")
     lines.append("set_range_minmax da 0 0")
     lines.append(f"set_range ba {cr}")
-    # Pin the current range for the whole sweep: min==max DISABLES autoranging
-    # per MethodSCRIPT v1.6 sec 14.50. In-loop current-range switching corrupts
-    # EIS on FW 1.6.01 -- the low-frequency Nyquist arc reverses/breaks and Z'
-    # goes negative (bench-validated 2026-06-20, gold IDE and gold/PBS). So the
-    # user picks one range from the dropdown (the high-speed mode-3 ladder) and
-    # it is held for the entire sweep. {cr} must be chosen so the highest-
-    # frequency current does not overload.
-    lines.append(f"set_autoranging ba {cr} {cr}")
+    if autorange:
+        lines.append(f"set_autoranging ba 1n {cr}")
+    else:
+        lines.append(f"set_autoranging ba {cr} {cr}")
     lines.append("cell_on")
     return lines
 

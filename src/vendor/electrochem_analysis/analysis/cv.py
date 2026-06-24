@@ -27,6 +27,15 @@ from src.vendor.electrochem_analysis.utils.grouping import (
     interpolate_cv_to_common_index
 )
 
+# Randles-Sevcik analysis constants (T = 298 K)
+# ip = RANDLES_SEVCIK_CONSTANT * n^1.5 * A * sqrt(D) * C * sqrt(v)
+#   ip [A], A [cm^2], D [cm^2/s], C [mol/cm^3], v [V/s]
+RANDLES_SEVCIK_CONSTANT = 2.69e5
+# Diffusion coefficient of ferricyanide [Fe(CN)6]3- in aqueous KCl near 298 K
+DEFAULT_DIFFUSION_COEFF_CM2_S = 7.6e-6
+# Ideal peak separation for a reversible 1-electron couple at 298 K (mV)
+REVERSIBLE_DELTA_EP_MV = 59.0
+
 
 class CVAnalyzer:
     """
@@ -61,6 +70,7 @@ class CVAnalyzer:
         self.v_common = None  # Common voltage grid for visualization
         self.i_forward_interp = None  # Interpolated forward scan
         self.i_backward_interp = None  # Interpolated backward scan
+        self.peaks = None  # Dict of redox peak metrics (set by extract_peaks)
 
     def calculate_csc(self, scan_rate: float, electrode_area: float) -> float:
         """
@@ -176,6 +186,273 @@ class CVAnalyzer:
         self.csc = (charge / scan_rate / electrode_area) * 1000
 
         return self.csc
+
+    def extract_peaks(self, endpoint_guard_fraction: float = 0.05) -> Dict[str, Any]:
+        """
+        Extract anodic/cathodic redox peaks and reversibility metrics.
+
+        The anodic peak is the maximum current on the positive-going (oxidation)
+        sweep; the cathodic peak is the minimum current on the negative-going
+        (reduction) sweep. Peak separation (delta_ep) and the peak-current ratio
+        are the standard diagnostics of electron-transfer reversibility, and are
+        independent of absolute electrode area -- useful for judging whether a
+        high-impedance interface is clean (fast, reversible kinetics) or
+        passivated (suppressed / drawn-out peaks).
+
+        Args:
+            endpoint_guard_fraction: A peak whose index falls within this
+                fraction of the start/end of its own sweep is flagged as
+                sitting at a sweep endpoint (i.e. a rising background, not a
+                true faradaic peak). Default 0.05 (5%).
+
+        Returns:
+            Dict with keys:
+                epa_v, ipa_a            anodic peak potential (V) / current (A)
+                epc_v, ipc_a            cathodic peak potential (V) / current (A)
+                delta_ep_mv             |Epa - Epc| in mV
+                e_half_v                (Epa + Epc) / 2 in V
+                ipa_ipc_ratio           |ipa / ipc| (ideal ~1 for reversible)
+                peaks_well_defined      False if either peak sits at a sweep
+                                        endpoint (suggests no faradaic peak)
+                reversible              True if delta_ep_mv is within
+                                        ~2x the 59 mV ideal AND peaks well defined
+
+        Raises:
+            ValueError: If fewer than 4 data points are present.
+
+        Note:
+            Peak currents are raw extrema (no baseline subtraction). For an
+            area calculation that needs baseline-corrected ip, subtract a
+            local background before passing currents to
+            calculate_area_from_scan_rates. delta_ep / ratio / e_half are
+            unaffected by a flat baseline offset.
+        """
+        if len(self.data) < 4:
+            raise ValueError("Not enough data points for peak extraction (need at least 4)")
+
+        voltage = self.data['Potential (V)'].values
+        current = self.data['Current (A)'].values
+
+        # Sweep direction at each point (sign of dV); gradient keeps array length
+        dv = np.gradient(voltage)
+        anodic_mask = dv > 0   # potential increasing -> oxidation sweep
+        cathodic_mask = dv < 0  # potential decreasing -> reduction sweep
+
+        if not anodic_mask.any() or not cathodic_mask.any():
+            raise ValueError(
+                "Could not segment forward/reverse sweeps -- data may not be a CV"
+            )
+
+        anodic_idx = np.where(anodic_mask)[0]
+        cathodic_idx = np.where(cathodic_mask)[0]
+
+        # Anodic peak = max current on the oxidation sweep
+        ia_local = int(np.argmax(current[anodic_idx]))
+        ipa_idx = int(anodic_idx[ia_local])
+        # Cathodic peak = min current on the reduction sweep
+        ic_local = int(np.argmin(current[cathodic_idx]))
+        ipc_idx = int(cathodic_idx[ic_local])
+
+        epa = float(voltage[ipa_idx])
+        ipa = float(current[ipa_idx])
+        epc = float(voltage[ipc_idx])
+        ipc = float(current[ipc_idx])
+
+        delta_ep_mv = abs(epa - epc) * 1000.0
+        e_half = (epa + epc) / 2.0
+        ipa_ipc_ratio = abs(ipa / ipc) if ipc != 0 else float('inf')
+
+        # Flag peaks that sit at a sweep endpoint (rising background, not a peak)
+        guard_a = max(1, int(len(anodic_idx) * endpoint_guard_fraction))
+        guard_c = max(1, int(len(cathodic_idx) * endpoint_guard_fraction))
+        anodic_at_end = ia_local < guard_a or ia_local > len(anodic_idx) - guard_a - 1
+        cathodic_at_end = ic_local < guard_c or ic_local > len(cathodic_idx) - guard_c - 1
+        peaks_well_defined = not (anodic_at_end or cathodic_at_end)
+
+        reversible = (
+            peaks_well_defined
+            and delta_ep_mv <= 2.0 * REVERSIBLE_DELTA_EP_MV
+            and 0.5 <= ipa_ipc_ratio <= 2.0
+        )
+
+        self.peaks = {
+            'epa_v': epa,
+            'ipa_a': ipa,
+            'epc_v': epc,
+            'ipc_a': ipc,
+            'delta_ep_mv': float(delta_ep_mv),
+            'e_half_v': float(e_half),
+            'ipa_ipc_ratio': float(ipa_ipc_ratio),
+            'peaks_well_defined': bool(peaks_well_defined),
+            'reversible': bool(reversible),
+        }
+        return self.peaks
+
+    def calculate_electroactive_area(
+        self,
+        scan_rate: float,
+        concentration_mM: float,
+        n: int = 1,
+        diffusion_coeff: float = DEFAULT_DIFFUSION_COEFF_CM2_S,
+        peak: str = 'anodic',
+    ) -> float:
+        """
+        Estimate electroactive area from a single CV via the Randles-Sevcik
+        equation: ip = 2.69e5 * n^1.5 * A * sqrt(D) * C * sqrt(v).
+
+        This is the SINGLE-scan-rate estimate. The multi-rate regression
+        (calculate_area_from_scan_rates) is more robust because it rejects a
+        constant background; prefer it when scan-rate-series data is available.
+
+        Args:
+            scan_rate: Scan rate in V/s (> 0).
+            concentration_mM: Redox-probe bulk concentration in mM
+                (e.g. 5.0 for 5 mM ferri/ferrocyanide).
+            n: Number of electrons transferred (default 1).
+            diffusion_coeff: D in cm^2/s (default ferricyanide ~7.6e-6).
+            peak: Which peak current to use -- 'anodic', 'cathodic', or 'mean'.
+
+        Returns:
+            Electroactive area in cm^2.
+
+        Raises:
+            ValueError: On non-positive scan_rate / concentration, unknown
+                peak selection, or if peaks have not been extracted and cannot
+                be derived from the data.
+        """
+        if scan_rate <= 0:
+            raise ValueError(f"scan_rate must be positive, got {scan_rate}")
+        if concentration_mM <= 0:
+            raise ValueError(f"concentration_mM must be positive, got {concentration_mM}")
+        if peak not in ('anodic', 'cathodic', 'mean'):
+            raise ValueError(f"peak must be 'anodic', 'cathodic', or 'mean', got '{peak}'")
+
+        if self.peaks is None:
+            self.extract_peaks()
+
+        ipa = abs(self.peaks['ipa_a'])
+        ipc = abs(self.peaks['ipc_a'])
+        if peak == 'anodic':
+            ip = ipa
+        elif peak == 'cathodic':
+            ip = ipc
+        else:
+            ip = 0.5 * (ipa + ipc)
+
+        # Concentration mM -> mol/cm^3:  mM = mmol/L = 1e-3 mol/L = 1e-6 mol/cm^3
+        c_mol_cm3 = concentration_mM * 1e-6
+        denom = (
+            RANDLES_SEVCIK_CONSTANT
+            * (n ** 1.5)
+            * np.sqrt(diffusion_coeff)
+            * c_mol_cm3
+            * np.sqrt(scan_rate)
+        )
+        return float(ip / denom)
+
+    @staticmethod
+    def calculate_area_from_scan_rates(
+        scan_rates: List[float],
+        peak_currents: List[float],
+        concentration_mM: float,
+        n: int = 1,
+        diffusion_coeff: float = DEFAULT_DIFFUSION_COEFF_CM2_S,
+    ) -> Dict[str, float]:
+        """
+        Electroactive area from a scan-rate series via Randles-Sevcik.
+
+        Fits peak current ip against sqrt(scan_rate). The slope is
+        2.69e5 * n^1.5 * A * sqrt(D) * C, so A = slope / that prefactor.
+        Using the slope (rather than a single ip) cancels any scan-rate-
+        independent background current.
+
+        Args:
+            scan_rates: Scan rates in V/s (>= 2 values, all > 0).
+            peak_currents: Peak currents in A, same order as scan_rates.
+                Pass absolute (or baseline-corrected) values.
+            concentration_mM: Bulk redox-probe concentration in mM.
+            n: Electrons transferred (default 1).
+            diffusion_coeff: D in cm^2/s (default ferricyanide ~7.6e-6).
+
+        Returns:
+            Dict with: area_cm2, area_mm2, slope_a_per_sqrtvs,
+            intercept_a, r_squared.
+
+        Raises:
+            ValueError: On length mismatch, < 2 points, or non-positive inputs.
+        """
+        if len(scan_rates) != len(peak_currents):
+            raise ValueError("scan_rates and peak_currents must be the same length")
+        if len(scan_rates) < 2:
+            raise ValueError("Need at least 2 scan rates for a regression")
+        if concentration_mM <= 0:
+            raise ValueError(f"concentration_mM must be positive, got {concentration_mM}")
+
+        sqrt_v = np.sqrt(np.asarray(scan_rates, dtype=float))
+        ip = np.abs(np.asarray(peak_currents, dtype=float))
+        if np.any(sqrt_v <= 0):
+            raise ValueError("All scan_rates must be positive")
+
+        slope, intercept = np.polyfit(sqrt_v, ip, 1)
+        # Coefficient of determination
+        fit = slope * sqrt_v + intercept
+        ss_res = float(np.sum((ip - fit) ** 2))
+        ss_tot = float(np.sum((ip - np.mean(ip)) ** 2))
+        r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+
+        c_mol_cm3 = concentration_mM * 1e-6
+        prefactor = RANDLES_SEVCIK_CONSTANT * (n ** 1.5) * np.sqrt(diffusion_coeff) * c_mol_cm3
+        area_cm2 = float(slope / prefactor)
+
+        return {
+            'area_cm2': area_cm2,
+            'area_mm2': area_cm2 * 100.0,
+            'slope_a_per_sqrtvs': float(slope),
+            'intercept_a': float(intercept),
+            'r_squared': float(r_squared),
+        }
+
+    @staticmethod
+    def plot_randles_sevcik(
+        scan_rates: List[float],
+        peak_currents: List[float],
+        figsize: Tuple[int, int] = (6, 6),
+    ) -> plt.Figure:
+        """
+        Plot peak current vs sqrt(scan rate) with the linear Randles-Sevcik fit.
+
+        Minimal trace + fit line only (no value annotations), per project
+        plotting conventions.
+
+        Args:
+            scan_rates: Scan rates in V/s.
+            peak_currents: Peak currents in A (absolute values).
+            figsize: Figure size in inches.
+
+        Returns:
+            matplotlib Figure object.
+        """
+        sqrt_v = np.sqrt(np.asarray(scan_rates, dtype=float))
+        ip_ua = np.abs(np.asarray(peak_currents, dtype=float)) * 1e6
+
+        order = np.argsort(sqrt_v)
+        sqrt_v = sqrt_v[order]
+        ip_ua = ip_ua[order]
+
+        slope, intercept = np.polyfit(sqrt_v, ip_ua, 1)
+
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.plot(sqrt_v, ip_ua, 'ko', label='Peak current')
+        ax.plot(sqrt_v, slope * sqrt_v + intercept, 'r-', linewidth=1.0, label='Linear fit')
+
+        ax.set_xlabel('sqrt(scan rate) (V/s)^0.5', fontsize=11)
+        ax.set_ylabel('Peak current (µA)', fontsize=11)
+        ax.set_title('Randles-Sevcik', fontsize=12)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        ax.legend(loc='best', fontsize=9)
+
+        plt.tight_layout()
+        return fig
 
     def plot_cv(self, figsize: Tuple[int, int] = (6, 6)) -> plt.Figure:
         """
@@ -366,6 +643,16 @@ class CVAnalyzer:
                 summary['loop_status'] = self.loop_status
             if self.gap_voltage is not None:
                 summary['gap_voltage_v'] = float(self.gap_voltage)
+
+        # Add redox peak / reversibility metrics if they have been extracted
+        if self.peaks is not None:
+            summary['epa_v'] = self.peaks['epa_v']
+            summary['epc_v'] = self.peaks['epc_v']
+            summary['delta_ep_mv'] = self.peaks['delta_ep_mv']
+            summary['e_half_v'] = self.peaks['e_half_v']
+            summary['ipa_ipc_ratio'] = self.peaks['ipa_ipc_ratio']
+            summary['peaks_well_defined'] = self.peaks['peaks_well_defined']
+            summary['reversible'] = self.peaks['reversible']
 
         return summary
 

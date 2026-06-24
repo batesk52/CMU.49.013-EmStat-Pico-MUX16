@@ -314,13 +314,10 @@ def test_no_base_export_dir_leaves_auto_save_unset(qapp) -> None:
     assert runner.sequence_dir is None
 
 
-def test_eis_step_forced_to_auto_save_without_toggle(qapp) -> None:
-    """EIS steps auto-save for provenance even with auto_save_all=False.
-
-    The single-run GUI forces auto-save for EIS/GEIS (their generating
-    script is unrecoverable from the data); the runner applies the same
-    per-step rule, while non-forced techniques stay unsaved.
-    """
+def test_eis_step_follows_toggle_and_is_not_forced(qapp) -> None:
+    """EIS steps are NOT force-auto-saved: with auto_save_all=False no step
+    auto-saves, EIS included. Auto-save is fully opt-in for every technique
+    (the previous EIS/GEIS provenance forcing was removed)."""
     from src.data.presets import Preset, PresetManager
     from src.data.sequence import Sequence, SequenceStep
 
@@ -343,13 +340,8 @@ def test_eis_step_forced_to_auto_save_without_toggle(qapp) -> None:
     )
 
     cv_entry, eis_entry = runner._queue
-    assert cv_entry.config.auto_save is None  # toggle off, not forced
-    assert eis_entry.config.auto_save is not None  # provenance-forced
-    assert eis_entry.config.auto_save.enabled
-    assert os.path.basename(
-        eis_entry.config.auto_save.output_dir
-    ) == "step02_eis"
-    assert runner.sequence_dir is not None
+    assert cv_entry.config.auto_save is None  # toggle off
+    assert eis_entry.config.auto_save is None  # toggle off, EIS not forced
 
 
 def _tmp_store():

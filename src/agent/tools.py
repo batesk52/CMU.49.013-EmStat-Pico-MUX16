@@ -330,6 +330,23 @@ def build_tool_defs() -> list[dict[str, Any]]:
                     "Equilibration time in seconds (default 0)."
                 ),
                 "cr": _cr_prop("eis"),
+                "eis_range_mode": {
+                    "type": "string",
+                    "enum": ["auto", "static"],
+                    "description": (
+                        "Current-range mode for the sweep. 'static' (default) "
+                        "PINS 'cr' for the whole sweep -- safer against the "
+                        "in-loop range-switch corruption seen on some "
+                        "3-electrode cells. 'auto' autoranges from the "
+                        "most-sensitive floor UP TO 'cr' as a CEILING (not a "
+                        "starting point -- it only steps down from 'cr' as the "
+                        "low-frequency current falls), needed for "
+                        "high-impedance 2-electrode IDE cells whose "
+                        "low-frequency current is far below 'cr' (otherwise a "
+                        "scattered/negative -Z'' tail). Prefer 'static' unless "
+                        "the low-frequency points come back noisy."
+                    ),
+                },
             }),
         },
         {
