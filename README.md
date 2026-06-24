@@ -45,7 +45,7 @@ CMU.49.013-EmStat-Pico-MUX16/
 │   ├── agent/              # Embedded Claude agent (Qt<->asyncio bridge, tools, worker)
 │   ├── vendor/             # Read-only vendored CMU.49.011 analysis code
 │   └── mcp_server/         # Headless MCP stdio server (same tool defs for Claude Code)
-├── tests/                  # pytest suite mirroring src/ (259 tests, headless via QT_QPA_PLATFORM=offscreen)
+├── tests/                  # pytest suite mirroring src/ (252 tests, headless via QT_QPA_PLATFORM=offscreen)
 ├── docs/                   # Protocol references, enclosure design, lessons
 └── claude_test_files/      # Agent validation / smoke scripts (NOT the project test suite)
 ```

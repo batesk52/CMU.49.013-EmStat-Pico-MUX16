@@ -6,6 +6,12 @@ Project-specific task tracking and history.
 
 ## In Progress
 
+_None — analyze_cv Randles-Sevcik work (PR #21) merged to main 2026-06-24. See Completed below._
+
+---
+
+## Completed
+
 ### 2026-06-24: PR #21 merged + post-merge minor cleanup (direct to main)
 - [x | Session | 2026-06-24] Reviewed the two later PR #21 commits (`bd1d385` EIS selectable range-mode, `85e9cb4` auto-save opt-in) with a 5-dimension adversarial pass — MERGE-OK, 0 blocker/major (the auto-save opt-in is intentional + tested, no provenance regression). Merged PR #21 (`777b5b3`), deleted the branch. Then swept the confirmed minors directly on `main`:
   - Removed the orphaned `@pyqtSlot(str)` decorator stacked on `_on_start_measurement` (`src/gui/main_window.py`) left behind by the auto-save refactor.
@@ -30,10 +36,6 @@ Project-specific task tracking and history.
   - **Validation** — `py_compile` clean; vendored `CVAnalyzer` recovers a synthetic known area to 0.00500 cm^2 (PASS) with delta_ep 58.1 mV / reversible=True and `get_summary()` carrying the peak keys; `tests/agent/test_eis_apex.py` 4/4 pass (confirms `vendor_analysis` imports + analysis-tool layer intact). Other agent/GUI tests un-runnable in this env (no `serial`/PyQt6) — pre-existing, unrelated.
 - **Left off:** Implemented + validated on `feature/cv-randles-sevcik-tool` (commit pending). Upstream 49.011 branch pushed; PR open at github.com/batesk52/CMU.49.011-Electrochemistry (gh auth was down this session — PR may need manual open).
 - **Next:** push + PR. The autonomous IDE-diagnostic protocol can now call `analyze_cv` with `concentration_mM` for area + read `reversible`/`delta_ep_mv` as the clean/fouled gate. EIS Rct still flows through `analyze_eis` (apex guard applies); area-normalized Rct = `rct_ohm * electroactive_area_cm2`.
-
----
-
-## Completed
 
 ### 2026-06-22: Pull + context sync — PRs #19 (agent auto-tune/presets) & #20 (plot tabs) merged remotely
 - [x | Session | 2026-06-22] Reviewed and pulled two PRs Karl merged on the remote since the 2026-06-21 realignment; `main` fast-forwarded `acf7a12 → f63f646` (behind 6, clean FF, no local edits) and is back in sync with origin. **No source touched this session** — review + pull + core-doc sync only.
